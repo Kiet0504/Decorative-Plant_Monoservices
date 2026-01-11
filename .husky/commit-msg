@@ -1,0 +1,28 @@
+#!/bin/sh
+# Husky wrapper skipped due to install issues
+
+# Get the absolute path to the commit message
+# $1 gives us .git/COMMIT_EDITMSG relative to git root
+GIT_ROOT=$(git rev-parse --show-toplevel)
+MSG_PATH="$GIT_ROOT/$1"
+
+if ! node node_modules/@commitlint/cli/lib/cli.js --edit "$MSG_PATH"; then
+  echo "
+Invalid Commit Message Format
+----------------------------------------------------
+Examples of valid commits:
+   feat: add login page
+   fix: resolve navigation bug
+   chore: update dependencies
+   perf: optimize performance
+   test: add unit tests
+   build: update build process
+   ci: update CI/CD pipeline
+   revert: revert previous commit
+   docs: update documentation
+   style: update code style
+   refactor: refactor code
+----------------------------------------------------
+"
+  exit 1
+fi

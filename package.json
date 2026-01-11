@@ -1,0 +1,26 @@
+{
+  "name": "decorativeplant-be",
+  "version": "1.0.0",
+  "description": "Decorative Plant Backend - .NET API",
+  "private": true,
+  "scripts": {
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.3.1",
+    "@commitlint/config-conventional": "^20.3.1",
+    "husky": "^9.0.11",
+    "lint-staged": "^16.2.7"
+  },
+  "lint-staged": {
+    "*.cs": [
+      "sh scripts/format-staged.sh",
+      "git add -u"
+    ]
+  },
+  "commitlint": {
+    "extends": [
+      "@commitlint/config-conventional"
+    ]
+  }
+}
