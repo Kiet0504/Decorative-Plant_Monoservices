@@ -1,0 +1,3 @@
+#!/bin/sh
+# Husky wrapper skipped due to install issues
+node node_modules/lint-staged/bin/lint-staged.js

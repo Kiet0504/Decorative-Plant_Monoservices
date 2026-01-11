@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>decorativeplant_be</RootNamespace>
+    <UserSecretsId>ace32c0d-42bf-4443-8fa0-ba02efddf8a4</UserSecretsId>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.1" />
+    <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\decorativeplant-be.Application\decorativeplant-be.Application.csproj" />
+    <ProjectReference Include="..\decorativeplant-be.Infrastructure\decorativeplant-be.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
