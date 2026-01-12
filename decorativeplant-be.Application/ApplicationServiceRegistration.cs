@@ -1,5 +1,6 @@
 using System.Reflection;
 using FluentValidation;
+using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using decorativeplant_be.Application.Common.Behaviors;
 
