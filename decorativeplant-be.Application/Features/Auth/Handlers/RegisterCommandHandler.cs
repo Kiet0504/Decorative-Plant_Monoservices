@@ -16,17 +16,20 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
     private readonly UserManager<User> _userManager;
     private readonly IMapper _mapper;
     private readonly IJwtService _jwtService;
+    private readonly IRefreshTokenService _refreshTokenService;
     private readonly ILogger<RegisterCommandHandler> _logger;
 
     public RegisterCommandHandler(
         UserManager<User> userManager,
         IMapper mapper,
         IJwtService jwtService,
+        IRefreshTokenService refreshTokenService,
         ILogger<RegisterCommandHandler> logger)
     {
         _userManager = userManager;
         _mapper = mapper;
         _jwtService = jwtService;
+        _refreshTokenService = refreshTokenService;
         _logger = logger;
     }
 
@@ -60,6 +63,12 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
 
         var accessToken = _jwtService.GenerateAccessToken(claims);
         var refreshToken = _jwtService.GenerateRefreshToken();
+
+        // Store refresh token in Redis
+        var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
+        await _refreshTokenService.StoreRefreshTokenAsync(user.Id, refreshToken, expiration);
+
+        _logger.LogInformation("User {UserId} registered successfully", user.Id);
 
         return new TokenResponse
         {

@@ -34,4 +34,23 @@ public class AuthController : BaseController
         var result = await Mediator.Send(command);
         return Ok(ApiResponse<TokenResponse>.SuccessResponse(result, "Token refreshed successfully."));
     }
+
+    [HttpPost("logout")]
+    [Microsoft.AspNetCore.Authorization.Authorize]
+    public async Task<ActionResult<ApiResponse<bool>>> Logout([FromBody] LogoutCommand command)
+    {
+        // Get userId from claims if not provided
+        if (string.IsNullOrEmpty(command.UserId))
+        {
+            var userId = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userId))
+            {
+                return BadRequest(ApiResponse<bool>.ErrorResponse("User ID is required."));
+            }
+            command.UserId = userId;
+        }
+
+        var result = await Mediator.Send(command);
+        return Ok(result);
+    }
 }

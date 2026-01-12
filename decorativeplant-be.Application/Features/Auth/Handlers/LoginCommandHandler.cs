@@ -16,17 +16,20 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
     private readonly UserManager<User> _userManager;
     private readonly SignInManager<User> _signInManager;
     private readonly IJwtService _jwtService;
+    private readonly IRefreshTokenService _refreshTokenService;
     private readonly ILogger<LoginCommandHandler> _logger;
 
     public LoginCommandHandler(
         UserManager<User> userManager,
         SignInManager<User> signInManager,
         IJwtService jwtService,
+        IRefreshTokenService refreshTokenService,
         ILogger<LoginCommandHandler> logger)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _jwtService = jwtService;
+        _refreshTokenService = refreshTokenService;
         _logger = logger;
     }
 
@@ -60,8 +63,11 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
         var accessToken = _jwtService.GenerateAccessToken(claims);
         var refreshToken = _jwtService.GenerateRefreshToken();
 
-        // Store refresh token (in a real app, you'd store this in a database)
-        // For now, we'll just return it
+        // Store refresh token in Redis
+        var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
+        await _refreshTokenService.StoreRefreshTokenAsync(user.Id, refreshToken, expiration);
+
+        _logger.LogInformation("User {UserId} logged in successfully", user.Id);
 
         return new TokenResponse
         {
