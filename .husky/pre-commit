@@ -1,3 +1,16 @@
 #!/bin/sh
 # Husky wrapper skipped due to install issues
+
+# Run lint-staged for code formatting
 node node_modules/lint-staged/bin/lint-staged.js
+
+# Check for build errors
+echo "Checking for build errors..."
+sh scripts/build-solution.sh
+
+if [ $? -ne 0 ]; then
+  echo "Build failed! Please fix build errors before committing."
+  exit 1
+fi
+
+echo "Build check passed!"

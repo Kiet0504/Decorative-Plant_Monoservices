@@ -1,28 +1,114 @@
+using Serilog;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using DotNetEnv;
+using decorativeplant_be.Application;
 using decorativeplant_be.Infrastructure;
+using decorativeplant_be.Infrastructure.Data;
+using decorativeplant_be.API.Extensions;
+using decorativeplant_be.API.Middleware;
 
-var builder = WebApplication.CreateBuilder(args);
-
-// Add services to the container.
-builder.Services.AddControllers();
-
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
-
-// Add Infrastructure services (DbContext, Repositories, etc.)
-builder.Services.AddInfrastructureServices(builder.Configuration);
-
-var app = builder.Build();
-
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+// Load environment variables from .env file (if it exists)
+// This should be done before any configuration is read
+try
 {
-    app.MapOpenApi();
+    Env.Load();
+}
+catch (FileNotFoundException)
+{
+    // .env file is optional - environment variables can be set directly
+    Console.WriteLine("Warning: .env file not found. Using environment variables or appsettings.json.");
 }
 
-app.UseHttpsRedirection();
+// Configure Serilog
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(new ConfigurationBuilder()
+        .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+        .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
+        .AddEnvironmentVariables()
+        .Build())
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File("logs/log-.txt", rollingInterval: RollingInterval.Day)
+    .CreateLogger();
 
-app.UseAuthorization();
+try
+{
+    Log.Information("Starting web application");
 
-app.MapControllers();
+    var builder = WebApplication.CreateBuilder(args);
 
-app.Run();
+    // Use Serilog for logging
+    builder.Host.UseSerilog();
+
+    // Add services to the container
+    builder.Services.AddControllers();
+
+    // Add API Versioning
+    builder.Services.AddApiVersioning(options =>
+    {
+        options.DefaultApiVersion = new ApiVersion(1, 0);
+        options.AssumeDefaultVersionWhenUnspecified = true;
+        options.ReportApiVersions = true;
+    });
+
+    // Add Swagger/OpenAPI
+    builder.Services.AddSwaggerServices();
+
+    // Add Application services (MediatR, AutoMapper, FluentValidation)
+    builder.Services.AddApplicationServices();
+
+    // Add Infrastructure services (DbContext, Identity, JWT, Repositories, etc.)
+    builder.Services.AddInfrastructureServices(builder.Configuration);
+
+    // Add Health Checks
+    builder.Services.AddHealthChecks()
+        .AddDbContextCheck<ApplicationDbContext>("database");
+
+    var app = builder.Build();
+
+    // Configure the HTTP request pipeline
+    app.UseSerilogRequestLogging();
+
+    // Exception handling middleware (must be first)
+    app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+    // Request logging middleware
+    app.UseMiddleware<RequestLoggingMiddleware>();
+
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwagger();
+        app.UseSwaggerUI(c =>
+        {
+            c.SwaggerEndpoint("/swagger/v1/swagger.json", "Decorative Plant API v1");
+            c.RoutePrefix = string.Empty; // Set Swagger UI at the app's root
+        });
+    }
+
+    app.UseHttpsRedirection();
+
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    app.MapControllers();
+
+    // Map health check endpoints
+    app.MapHealthChecks("/health");
+    app.MapHealthChecks("/health/ready");
+    app.MapHealthChecks("/health/live");
+
+    Log.Information("Application started successfully");
+
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Application failed to start");
+    throw;
+}
+finally
+{
+    Log.CloseAndFlush();
+}
