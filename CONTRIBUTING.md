@@ -15,6 +15,8 @@ Thank you for your interest in contributing to the Decorative Plant Backend proj
 - [Husky Git Hooks](#husky-git-hooks)
 - [Project Structure](#project-structure)
 - [Environment Setup](#environment-setup)
+- [Docker Setup](#docker-setup)
+- [Supabase Integration](#supabase-integration)
 
 ## Code of Conduct
 
@@ -30,7 +32,7 @@ Thank you for your interest in contributing to the Decorative Plant Backend proj
 - [.NET 10.0 SDK](https://dotnet.microsoft.com/download)
 - [Node.js](https://nodejs.org/) (for Husky and commitlint)
 - [Git](https://git-scm.com/)
-- SQL Server (LocalDB or full instance)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (for local database and Redis)
 - Visual Studio 2022 or VS Code (recommended)
 
 ### Initial Setup
@@ -51,23 +53,34 @@ Thank you for your interest in contributing to the Decorative Plant Backend proj
    ```bash
    cp env.example .env
    ```
-   Edit `.env` with your configuration (see [README_ENV.md](README_ENV.md) for details).
+   Edit `.env` with your configuration (see [Environment Setup](#environment-setup) section for details).
 
-4. **Restore .NET Packages**
+4. **Start Docker Services (PostgreSQL and Redis)**
+   ```bash
+   docker-compose up -d postgres redis
+   ```
+   This starts the PostgreSQL database (with Supabase extensions) and Redis cache.
+
+5. **Restore .NET Packages**
    ```bash
    dotnet restore
    ```
 
-5. **Run Database Migrations**
+6. **Run Database Migrations**
    ```bash
    cd decorativeplant-be.API
    dotnet ef migrations add InitialCreate --project ../decorativeplant-be.Infrastructure
    dotnet ef database update --project ../decorativeplant-be.Infrastructure
    ```
 
-6. **Run the Application**
+7. **Run the Application**
    ```bash
    dotnet run --project decorativeplant-be.API
+   ```
+   
+   Or use Docker Compose to run everything:
+   ```bash
+   docker-compose up -d
    ```
 
 ## Development Workflow
@@ -454,8 +467,6 @@ git commit --no-verify -m "message"
 
 ### Required Environment Variables
 
-See [README_ENV.md](README_ENV.md) for detailed environment variable setup.
-
 **Quick setup:**
 ```bash
 cp env.example .env
@@ -464,9 +475,225 @@ cp env.example .env
 
 ### Key Configuration
 
-- Database connection string
-- JWT secret key and settings
-- Application environment
+The `.env` file should contain:
+
+- **Database Connection String** (`ConnectionStrings__DefaultConnection`)
+  - Local Docker: `Host=localhost;Port=5432;Database=DecorativePlantDB;Username=postgres;Password=postgres`
+  - Supabase Cloud: `Host=your-project.supabase.co;Port=5432;Database=postgres;Username=postgres;Password=your-password`
+
+- **Redis Connection String** (`ConnectionStrings__Redis`)
+  - Local Docker: `redis:6379` (from within container) or `localhost:6379` (from host)
+  - Redis Labs: `redis://username:password@host:port`
+
+- **JWT Settings**
+  - `JwtSettings__SecretKey`: At least 32 characters for HS256 algorithm
+  - `JwtSettings__Issuer`: Your API identifier
+  - `JwtSettings__Audience`: Your client identifier
+  - `JwtSettings__AccessTokenExpirationMinutes`: Access token lifetime (default: 30)
+  - `JwtSettings__RefreshTokenExpirationDays`: Refresh token lifetime (default: 7)
+
+- **Environment** (`ASPNETCORE_ENVIRONMENT`)
+  - `Development`, `Staging`, or `Production`
+
+See `env.example` for detailed examples and comments.
+
+## Docker Setup
+
+This project uses Docker Compose for local development with PostgreSQL and Redis.
+
+### Quick Start
+
+```bash
+# Start all services (PostgreSQL, Redis, API)
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop all services
+docker-compose down
+
+# Stop and remove volumes (clears database data)
+docker-compose down -v
+```
+
+### Services
+
+1. **PostgreSQL Database** (`postgres`)
+   - Image: `supabase/postgres:16.1.1.117` (includes Supabase extensions and RLS support)
+   - Port: `5432`
+   - Database: `DecorativePlantDB`
+   - Username: `postgres`
+   - Password: `postgres` (change in production!)
+   - Includes: PostgreSQL extensions (pg_stat_statements, pgcrypto, uuid-ossp, postgis, etc.)
+   - Supports: Row Level Security (RLS) policies
+   - Data persisted in `postgres_data` volume
+
+2. **Redis Cache** (`redis`)
+   - Port: `6379`
+   - Used for refresh token storage
+   - Data persisted in `redis_data` volume
+
+3. **API Application** (`api`)
+   - Ports: `8080` (HTTP), `8081` (HTTPS)
+   - Automatically connects to PostgreSQL and Redis
+   - Logs available in `./logs` directory
+
+### Running Migrations with Docker
+
+```bash
+# Ensure the database is running
+docker-compose up -d postgres
+
+# Run migrations from host machine
+dotnet ef database update --project decorativeplant-be.Infrastructure --startup-project decorativeplant-be.API
+```
+
+### Accessing Services
+
+**Database:**
+```bash
+# Using psql from host (if installed)
+psql -h localhost -p 5432 -U postgres -d DecorativePlantDB
+
+# Using Docker
+docker-compose exec postgres psql -U postgres -d DecorativePlantDB
+```
+
+**Redis:**
+```bash
+# Using redis-cli from host (if installed)
+redis-cli -h localhost -p 6379
+
+# Using Docker
+docker-compose exec redis redis-cli
+```
+
+### Troubleshooting Docker
+
+**Port Already in Use:**
+- Change ports in `docker-compose.yml` if 5432, 6379, 8080, or 8081 are in use
+
+**Database Connection Issues:**
+- Ensure PostgreSQL container is healthy: `docker-compose ps`
+- Check connection string format in `.env`
+- Verify network connectivity: `docker-compose exec api ping postgres`
+
+## Supabase Integration
+
+This project uses the `supabase/postgres` Docker image for local development, providing Supabase-compatible PostgreSQL with extensions and RLS support.
+
+### What's Included
+
+**✅ Using Supabase PostgreSQL Image:**
+- **PostgreSQL Extensions**:
+  - `pg_stat_statements` - Query performance statistics
+  - `pgcrypto` - Cryptographic functions
+  - `uuid-ossp` - UUID generation
+  - `postgis` - Geographic objects support
+  - `pgjwt` - JSON Web Token support
+  - And more Supabase-specific extensions
+
+- **Row Level Security (RLS)**:
+  - Full RLS support for fine-grained access control
+  - Test RLS policies locally before deploying to Supabase cloud
+  - Compatible with Supabase's RLS implementation
+
+- **Supabase-Compatible Schema**:
+  - Matches Supabase production environment
+  - Easy migration to Supabase cloud
+  - Same extensions and features available
+
+**❌ Not Using (Building Our Own):**
+- **Supabase Auth**: Using ASP.NET Core Identity + JWT instead
+- **Supabase REST API**: Building our own REST API with ASP.NET Core
+- **Supabase Frontend SDK**: Not needed for backend development
+
+### Using Supabase Extensions
+
+**Example: Using UUID Extension**
+```sql
+-- Enable uuid-ossp extension (already available in supabase/postgres)
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Use UUID in your tables
+CREATE TABLE products (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL
+);
+```
+
+**Example: Using pgcrypto**
+```sql
+-- Enable pgcrypto extension
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- Use cryptographic functions
+SELECT crypt('password', gen_salt('bf'));
+```
+
+**Example: Row Level Security (RLS)**
+```sql
+-- Enable RLS on a table
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+
+-- Create a policy
+CREATE POLICY "Users can view their own products"
+ON products
+FOR SELECT
+USING (auth.uid() = user_id);
+```
+
+Note: In local development, you'll need to mock `auth.uid()` or use your own authentication context since we're using ASP.NET Core Identity, not Supabase Auth.
+
+### Migrating to Supabase Cloud
+
+When ready to deploy to Supabase cloud:
+
+1. **Get Connection String**:
+   - Go to Supabase Dashboard > Settings > Database
+   - Copy the connection string
+
+2. **Update Environment Variables**:
+   ```env
+   ConnectionStrings__DefaultConnection=Host=your-project.supabase.co;Port=5432;Database=postgres;Username=postgres;Password=your-password
+   ```
+
+3. **Run Migrations**:
+   ```bash
+   dotnet ef database update --project decorativeplant-be.Infrastructure --startup-project decorativeplant-be.API
+   ```
+
+4. **Verify Extensions**:
+   ```sql
+   -- Check available extensions
+   SELECT * FROM pg_available_extensions;
+   
+   -- Enable needed extensions
+   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+   CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+   ```
+
+### Available Extensions
+
+The `supabase/postgres` image includes these extensions (and more):
+- `pg_stat_statements` - Query performance monitoring
+- `pgcrypto` - Cryptographic functions
+- `uuid-ossp` - UUID generation
+- `postgis` - Geographic/spatial data
+- `pgjwt` - JWT support
+- `pg_net` - Network requests from PostgreSQL
+- `pg_graphql` - GraphQL support
+- `pg_hashids` - HashID generation
+- `pg_jsonschema` - JSON schema validation
+
+### Benefits of This Approach
+
+1. **Local Development Matches Production**: Same extensions and features
+2. **RLS Testing**: Test RLS policies locally before deploying
+3. **Extension Compatibility**: Use Supabase extensions in your schema
+4. **Easy Migration**: Seamless transition to Supabase cloud
+5. **Full Control**: Build your own auth and API while leveraging Supabase's PostgreSQL features
 
 ## Additional Resources
 

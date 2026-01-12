@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database with Supabase extensions
+  # Uses supabase/postgres image which includes:
+  # - PostgreSQL extensions (pg_stat_statements, pgcrypto, uuid-ossp, postgis, etc.)
+  # - Row Level Security (RLS) support
+  # - Supabase-compatible schema
+  postgres:
+    image: supabase/postgres:16.1.1.117
+    container_name: decorativeplant-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: DecorativePlantDB
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - decorativeplant-network
+
+  # Redis Cache (for refresh tokens)
+  redis:
+    image: redis:7-alpine
+    container_name: decorativeplant-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - decorativeplant-network
+
+  # API Application
+  api:
+    build:
+      context: .
+      dockerfile: decorativeplant-be.API/Dockerfile
+    container_name: decorativeplant-api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=DecorativePlantDB;Username=postgres;Password=postgres
+      - ConnectionStrings__Redis=redis:6379
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - decorativeplant-network
+    volumes:
+      - ./logs:/app/logs
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  decorativeplant-network:
+    driver: bridge

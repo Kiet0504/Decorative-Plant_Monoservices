@@ -21,9 +21,9 @@ public static class InfrastructureServiceRegistration
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        // Add DbContext
+        // Add DbContext with PostgreSQL
         services.AddDbContext<ApplicationDbContext>(options =>
-            options.UseSqlServer(
+            options.UseNpgsql(
                 configuration.GetConnectionString("DefaultConnection"),
                 b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName)));
 
@@ -53,6 +53,9 @@ public static class InfrastructureServiceRegistration
         {
             services.AddStackExchangeRedisCache(options =>
             {
+                // Supports both formats:
+                // 1. Simple: host:port (for local Redis without auth)
+                // 2. Full: redis://username:password@host:port (for Redis Labs/cloud with auth)
                 options.Configuration = redisConnectionString;
                 options.InstanceName = "DecorativePlant:";
             });

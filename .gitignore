@@ -400,3 +400,6 @@ FodyWeavers.xsd
 .env
 .env.local
 .env.*.local
+
+# Docker
+docker-compose.override.yml
