@@ -25,7 +25,11 @@ public static class InfrastructureServiceRegistration
         services.AddDbContext<ApplicationDbContext>(options =>
             options.UseNpgsql(
                 configuration.GetConnectionString("DefaultConnection"),
-                b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName)));
+                b => 
+                {
+                    b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
+                    b.UseNetTopologySuite();
+                }));
 
         // Add Identity
         services.AddIdentityServices(configuration);

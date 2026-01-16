@@ -14,7 +14,7 @@ public static class IdentityServiceRegistration
         IConfiguration configuration)
     {
         // Add Identity
-        services.AddIdentity<User, IdentityRole>(options =>
+        services.AddIdentity<UserAccount, IdentityRole<Guid>>(options =>
         {
             // Password settings
             options.Password.RequireDigit = true;

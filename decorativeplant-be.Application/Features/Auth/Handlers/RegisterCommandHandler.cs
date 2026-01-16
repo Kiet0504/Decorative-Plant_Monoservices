@@ -13,14 +13,14 @@ namespace decorativeplant_be.Application.Features.Auth.Handlers;
 
 public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResponse>
 {
-    private readonly UserManager<User> _userManager;
+    private readonly UserManager<UserAccount> _userManager;
     private readonly IMapper _mapper;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
     private readonly ILogger<RegisterCommandHandler> _logger;
 
     public RegisterCommandHandler(
-        UserManager<User> userManager,
+        UserManager<UserAccount> userManager,
         IMapper mapper,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
@@ -41,7 +41,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             throw new ValidationException("Email is already registered.");
         }
 
-        var user = _mapper.Map<User>(request);
+        var user = _mapper.Map<UserAccount>(request);
         var result = await _userManager.CreateAsync(user, request.Password);
 
         if (!result.Succeeded)
@@ -55,7 +55,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
 
         var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.NameIdentifier, user.Id),
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
             new Claim(ClaimTypes.Name, user.UserName ?? string.Empty),
             new Claim(ClaimTypes.Role, "User")
@@ -66,7 +66,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
 
         // Store refresh token in Redis
         var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
-        await _refreshTokenService.StoreRefreshTokenAsync(user.Id, refreshToken, expiration);
+        await _refreshTokenService.StoreRefreshTokenAsync(user.Id.ToString(), refreshToken, expiration);
 
         _logger.LogInformation("User {UserId} registered successfully", user.Id);
 

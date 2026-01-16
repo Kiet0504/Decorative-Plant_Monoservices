@@ -9,7 +9,7 @@ public class MappingProfile : Profile
     public MappingProfile()
     {
         // Auth mappings
-        CreateMap<RegisterRequest, User>()
+        CreateMap<RegisterRequest, UserAccount>()
             .ForMember(dest => dest.UserName, opt => opt.MapFrom(src => src.Email))
             .ForMember(dest => dest.Email, opt => opt.MapFrom(src => src.Email))
             .ForMember(dest => dest.CreatedAt, opt => opt.MapFrom(src => DateTime.UtcNow))

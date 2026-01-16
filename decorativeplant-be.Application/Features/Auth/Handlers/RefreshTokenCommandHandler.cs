@@ -12,13 +12,13 @@ namespace decorativeplant_be.Application.Features.Auth.Handlers;
 
 public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, TokenResponse>
 {
-    private readonly UserManager<User> _userManager;
+    private readonly UserManager<UserAccount> _userManager;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
     private readonly ILogger<RefreshTokenCommandHandler> _logger;
 
     public RefreshTokenCommandHandler(
-        UserManager<User> userManager,
+        UserManager<UserAccount> userManager,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
         ILogger<RefreshTokenCommandHandler> logger)
@@ -57,7 +57,7 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
         // Generate new tokens
         var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.NameIdentifier, user.Id),
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
             new Claim(ClaimTypes.Name, user.UserName ?? string.Empty)
         };
@@ -73,7 +73,7 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
 
         // Store new refresh token in Redis
         var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
-        await _refreshTokenService.StoreRefreshTokenAsync(user.Id, newRefreshToken, expiration);
+        await _refreshTokenService.StoreRefreshTokenAsync(user.Id.ToString(), newRefreshToken, expiration);
 
         _logger.LogInformation("Refreshed tokens for user {UserId}", user.Id);
 

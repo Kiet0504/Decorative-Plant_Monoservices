@@ -13,15 +13,15 @@ namespace decorativeplant_be.Application.Features.Auth.Handlers;
 
 public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
 {
-    private readonly UserManager<User> _userManager;
-    private readonly SignInManager<User> _signInManager;
+    private readonly UserManager<UserAccount> _userManager;
+    private readonly SignInManager<UserAccount> _signInManager;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
     private readonly ILogger<LoginCommandHandler> _logger;
 
     public LoginCommandHandler(
-        UserManager<User> userManager,
-        SignInManager<User> signInManager,
+        UserManager<UserAccount> userManager,
+        SignInManager<UserAccount> signInManager,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
         ILogger<LoginCommandHandler> logger)
@@ -49,7 +49,7 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
 
         var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.NameIdentifier, user.Id),
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
             new Claim(ClaimTypes.Name, user.UserName ?? string.Empty)
         };
@@ -65,7 +65,7 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
 
         // Store refresh token in Redis
         var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
-        await _refreshTokenService.StoreRefreshTokenAsync(user.Id, refreshToken, expiration);
+        await _refreshTokenService.StoreRefreshTokenAsync(user.Id.ToString(), refreshToken, expiration);
 
         _logger.LogInformation("User {UserId} logged in successfully", user.Id);
 
