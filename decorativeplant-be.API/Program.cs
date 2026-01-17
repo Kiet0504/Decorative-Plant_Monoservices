@@ -2,6 +2,8 @@ using Serilog;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.EntityFrameworkCore;
 using DotNetEnv;
 using decorativeplant_be.Application;
 using decorativeplant_be.Infrastructure;
@@ -67,6 +69,26 @@ try
         .AddDbContextCheck<ApplicationDbContext>("database");
 
     var app = builder.Build();
+
+    // Auto-migrate database in Development environment
+    if (app.Environment.IsDevelopment())
+    {
+        using (var scope = app.Services.CreateScope())
+        {
+            var services = scope.ServiceProvider;
+            try
+            {
+                var context = services.GetRequiredService<ApplicationDbContext>();
+                context.Database.Migrate();
+                Log.Information("Database migrations applied successfully");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "An error occurred while migrating the database");
+                throw;
+            }
+        }
+    }
 
     // Configure the HTTP request pipeline
     app.UseSerilogRequestLogging();

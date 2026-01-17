@@ -25,16 +25,25 @@ public static class InfrastructureServiceRegistration
         services.AddDbContext<ApplicationDbContext>(options =>
             options.UseNpgsql(
                 configuration.GetConnectionString("DefaultConnection"),
-                b => b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName)));
-
-        // Add Identity
-        services.AddIdentityServices(configuration);
+                b =>
+                {
+                    b.MigrationsAssembly(typeof(ApplicationDbContext).Assembly.FullName);
+                    // Enable retry strategy for all connections (pure PostgreSQL supports it)
+                    b.EnableRetryOnFailure(
+                        maxRetryCount: 3,
+                        maxRetryDelay: TimeSpan.FromSeconds(5),
+                        errorCodesToAdd: null);
+                }));
 
         // Register UnitOfWork
         services.AddScoped<IUnitOfWork, UnitOfWork>();
 
         // Register RepositoryFactory
         services.AddScoped<IRepositoryFactory, RepositoryFactory>();
+
+        // Register Custom Authentication Services
+        services.AddScoped<IPasswordService, PasswordService>();
+        services.AddScoped<IUserAccountService, UserAccountService>();
 
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();

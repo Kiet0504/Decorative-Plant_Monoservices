@@ -1,33 +1,27 @@
-using AutoMapper;
 using MediatR;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Features.Auth.Commands;
 using decorativeplant_be.Application.Services;
-using decorativeplant_be.Domain.Entities;
 using System.Security.Claims;
 
 namespace decorativeplant_be.Application.Features.Auth.Handlers;
 
 public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
 {
-    private readonly UserManager<User> _userManager;
-    private readonly SignInManager<User> _signInManager;
+    private readonly IUserAccountService _userAccountService;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
     private readonly ILogger<LoginCommandHandler> _logger;
 
     public LoginCommandHandler(
-        UserManager<User> userManager,
-        SignInManager<User> signInManager,
+        IUserAccountService userAccountService,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
         ILogger<LoginCommandHandler> logger)
     {
-        _userManager = userManager;
-        _signInManager = signInManager;
+        _userAccountService = userAccountService;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
         _logger = logger;
@@ -35,29 +29,31 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
 
     public async Task<TokenResponse> Handle(LoginCommand request, CancellationToken cancellationToken)
     {
-        var user = await _userManager.FindByEmailAsync(request.Email);
-        if (user == null || !user.IsActive)
+        var userAccount = await _userAccountService.FindByEmailAsync(request.Email, cancellationToken);
+        if (userAccount == null || !userAccount.IsActive)
         {
             throw new UnauthorizedException("Invalid email or password.");
         }
 
-        var result = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: false);
-        if (!result.Succeeded)
+        var isValidPassword = await _userAccountService.ValidatePasswordAsync(userAccount, request.Password, cancellationToken);
+        if (!isValidPassword)
         {
             throw new UnauthorizedException("Invalid email or password.");
         }
+
+        // Get user with profile for display name
+        var (user, userProfile) = await _userAccountService.GetUserWithProfileAsync(userAccount.Id, cancellationToken);
 
         var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.NameIdentifier, user.Id),
-            new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
-            new Claim(ClaimTypes.Name, user.UserName ?? string.Empty)
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(ClaimTypes.Email, user.Email),
+            new Claim(ClaimTypes.Role, user.Role)
         };
 
-        var roles = await _userManager.GetRolesAsync(user);
-        foreach (var role in roles)
+        if (userProfile != null && !string.IsNullOrWhiteSpace(userProfile.DisplayName))
         {
-            claims.Add(new Claim(ClaimTypes.Role, role));
+            claims.Add(new Claim(ClaimTypes.Name, userProfile.DisplayName));
         }
 
         var accessToken = _jwtService.GenerateAccessToken(claims);
@@ -65,7 +61,7 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
 
         // Store refresh token in Redis
         var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
-        await _refreshTokenService.StoreRefreshTokenAsync(user.Id, refreshToken, expiration);
+        await _refreshTokenService.StoreRefreshTokenAsync(user.Id.ToString(), refreshToken, expiration);
 
         _logger.LogInformation("User {UserId} logged in successfully", user.Id);
 

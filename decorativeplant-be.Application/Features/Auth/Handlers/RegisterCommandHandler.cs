@@ -1,6 +1,4 @@
-using AutoMapper;
 using MediatR;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.Exceptions;
@@ -13,21 +11,21 @@ namespace decorativeplant_be.Application.Features.Auth.Handlers;
 
 public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResponse>
 {
-    private readonly UserManager<User> _userManager;
-    private readonly IMapper _mapper;
+    private readonly IUserAccountService _userAccountService;
+    private readonly IPasswordService _passwordService;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
     private readonly ILogger<RegisterCommandHandler> _logger;
 
     public RegisterCommandHandler(
-        UserManager<User> userManager,
-        IMapper mapper,
+        IUserAccountService userAccountService,
+        IPasswordService passwordService,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
         ILogger<RegisterCommandHandler> logger)
     {
-        _userManager = userManager;
-        _mapper = mapper;
+        _userAccountService = userAccountService;
+        _passwordService = passwordService;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
         _logger = logger;
@@ -35,40 +33,63 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
 
     public async Task<TokenResponse> Handle(RegisterCommand request, CancellationToken cancellationToken)
     {
-        var existingUser = await _userManager.FindByEmailAsync(request.Email);
+        // Validate password confirmation
+        if (request.Password != request.ConfirmPassword)
+        {
+            throw new ValidationException("Password and confirmation password do not match.");
+        }
+
+        // Check if email already exists
+        var existingUser = await _userAccountService.FindByEmailAsync(request.Email, cancellationToken);
         if (existingUser != null)
         {
             throw new ValidationException("Email is already registered.");
         }
 
-        var user = _mapper.Map<User>(request);
-        var result = await _userManager.CreateAsync(user, request.Password);
+        // Hash password
+        var passwordHash = _passwordService.HashPassword(request.Password);
 
-        if (!result.Succeeded)
+        // Create user profile if first/last name provided
+        UserProfile? userProfile = null;
+        if (!string.IsNullOrWhiteSpace(request.FirstName) || !string.IsNullOrWhiteSpace(request.LastName))
         {
-            var errors = result.Errors.Select(e => e.Description).ToList();
-            throw new ValidationException(errors);
+            userProfile = new UserProfile
+            {
+                DisplayName = $"{request.FirstName} {request.LastName}".Trim(),
+                CreatedAt = DateTime.UtcNow
+            };
         }
 
-        // Add default role (you can customize this)
-        await _userManager.AddToRoleAsync(user, "User");
+        // Create user account with default role "Buyer"
+        var userAccount = await _userAccountService.CreateUserAccountAsync(
+            email: request.Email,
+            passwordHash: passwordHash,
+            phone: null,
+            role: "Buyer", // Default role
+            userProfile: userProfile,
+            cancellationToken: cancellationToken);
 
+        // Generate JWT claims
         var claims = new List<Claim>
         {
-            new Claim(ClaimTypes.NameIdentifier, user.Id),
-            new Claim(ClaimTypes.Email, user.Email ?? string.Empty),
-            new Claim(ClaimTypes.Name, user.UserName ?? string.Empty),
-            new Claim(ClaimTypes.Role, "User")
+            new Claim(ClaimTypes.NameIdentifier, userAccount.Id.ToString()),
+            new Claim(ClaimTypes.Email, userAccount.Email),
+            new Claim(ClaimTypes.Role, userAccount.Role)
         };
+
+        if (userProfile != null && !string.IsNullOrWhiteSpace(userProfile.DisplayName))
+        {
+            claims.Add(new Claim(ClaimTypes.Name, userProfile.DisplayName));
+        }
 
         var accessToken = _jwtService.GenerateAccessToken(claims);
         var refreshToken = _jwtService.GenerateRefreshToken();
 
         // Store refresh token in Redis
         var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
-        await _refreshTokenService.StoreRefreshTokenAsync(user.Id, refreshToken, expiration);
+        await _refreshTokenService.StoreRefreshTokenAsync(userAccount.Id.ToString(), refreshToken, expiration);
 
-        _logger.LogInformation("User {UserId} registered successfully", user.Id);
+        _logger.LogInformation("User {UserId} registered successfully", userAccount.Id);
 
         return new TokenResponse
         {

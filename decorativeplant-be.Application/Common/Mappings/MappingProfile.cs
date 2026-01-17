@@ -8,13 +8,9 @@ public class MappingProfile : Profile
 {
     public MappingProfile()
     {
-        // Auth mappings
-        CreateMap<RegisterRequest, User>()
-            .ForMember(dest => dest.UserName, opt => opt.MapFrom(src => src.Email))
-            .ForMember(dest => dest.Email, opt => opt.MapFrom(src => src.Email))
-            .ForMember(dest => dest.CreatedAt, opt => opt.MapFrom(src => DateTime.UtcNow))
-            .ForMember(dest => dest.IsActive, opt => opt.MapFrom(src => true));
+        // Auth mappings - UserAccount and UserProfile are created manually in handlers
+        // No AutoMapper mappings needed as we're using direct entity creation
 
-        // Add more mappings as needed
+        // Add more mappings as needed for other entities
     }
 }

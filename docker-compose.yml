@@ -1,23 +1,18 @@
-version: '3.8'
-
 services:
-  # PostgreSQL Database with Supabase extensions
-  # Uses supabase/postgres image which includes:
-  # - PostgreSQL extensions (pg_stat_statements, pgcrypto, uuid-ossp, postgis, etc.)
-  # - Row Level Security (RLS) support
-  # - Supabase-compatible schema
+  # PostgreSQL Database (standard PostgreSQL with extensions)
   postgres:
-    image: supabase/postgres:16.1.1.117
+    image: postgres:16
     container_name: decorativeplant-postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: DecorativePlantDB
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-DecorativePlantDB}
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-extensions.sql:/docker-entrypoint-initdb.d/init-extensions.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -42,16 +37,37 @@ services:
     networks:
       - decorativeplant-network
 
+  # pgAdmin (PostgreSQL Web Administration)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: decorativeplant-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@decorativeplant.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - decorativeplant-network
+
   # API Application
   api:
     build:
       context: .
       dockerfile: decorativeplant-be.API/Dockerfile
     container_name: decorativeplant-api
+    env_file:
+      - .env
     environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=DecorativePlantDB;Username=postgres;Password=postgres
-      - ConnectionStrings__Redis=redis:6379
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-DecorativePlantDB};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+      - ConnectionStrings__Redis=${ConnectionStrings__Redis:-redis:6379}
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -68,6 +84,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  pgadmin_data:
 
 networks:
   decorativeplant-network:
