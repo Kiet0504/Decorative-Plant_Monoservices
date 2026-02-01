@@ -1,15 +1,15 @@
+using System.Text.Json.Nodes;
+
 namespace decorativeplant_be.Domain.Entities;
 
 public class Voucher : BaseEntity
 {
-    public Guid StoreId { get; set; }
-    public Store Store { get; set; } = null!;
-    
     public string Code { get; set; } = string.Empty;
-    public string DiscountType { get; set; } = string.Empty;
-    public decimal DiscountValue { get; set; }
-    public decimal MinOrderValue { get; set; }
-    public int MaxUsage { get; set; }
-    public DateTime ValidFrom { get; set; }
-    public DateTime ValidTo { get; set; }
+    
+    public Guid? BranchId { get; set; }
+    public Branch? Branch { get; set; }
+    
+    public JsonNode? Info { get; set; }
+    public JsonNode? Rules { get; set; }
+    public bool IsActive { get; set; }
 }

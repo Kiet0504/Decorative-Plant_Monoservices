@@ -2,11 +2,12 @@ using System.Text.Json.Nodes;
 
 namespace decorativeplant_be.Domain.Entities;
 
-public class CareSchedule : BaseEntity
+public class PlantDiagnosis : BaseEntity
 {
     public Guid GardenPlantId { get; set; }
     public GardenPlant GardenPlant { get; set; } = null!;
     
-    public JsonNode? TaskInfo { get; set; }
-    public bool IsActive { get; set; }
+    public JsonNode? UserInput { get; set; }
+    public JsonNode? AiResult { get; set; }
+    public JsonNode? Feedback { get; set; }
 }

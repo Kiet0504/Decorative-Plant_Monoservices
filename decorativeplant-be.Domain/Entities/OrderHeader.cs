@@ -4,20 +4,21 @@ namespace decorativeplant_be.Domain.Entities;
 
 public class OrderHeader : BaseEntity
 {
+    public string OrderCode { get; set; } = string.Empty;
+    
     public Guid UserId { get; set; }
     public UserAccount User { get; set; } = null!;
     
-    public Guid StoreId { get; set; }
-    public Store Store { get; set; } = null!;
+    public Guid? BranchId { get; set; }
+    public Branch? Branch { get; set; }
     
-    public Guid? VoucherId { get; set; }
-    public Voucher? Voucher { get; set; }
+    public JsonNode? TypeInfo { get; set; }
+    public JsonNode? Financials { get; set; }
+    public string? Status { get; set; }
+    public JsonNode? Notes { get; set; }
     
-    public decimal TotalAmount { get; set; }
-    public decimal DiscountAmount { get; set; }
-    public decimal FinalAmount { get; set; }
-    public string Status { get; set; } = string.Empty; // e.g., PENDING, PAID, SHIPPED
-    public string PaymentStatus { get; set; } = string.Empty;
-    public JsonNode? StatusTimelineJson { get; set; }
-    public DateTime OrderedAt { get; set; } = DateTime.UtcNow;
+    public JsonNode? DeliveryAddress { get; set; }
+    public JsonNode? PickupInfo { get; set; }
+    
+    public DateTime? ConfirmedAt { get; set; }
 }

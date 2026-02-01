@@ -1,16 +1,17 @@
+using System.Text.Json.Nodes;
+
 namespace decorativeplant_be.Domain.Entities;
 
 public class InventoryLocation : BaseEntity
 {
-    public Guid StoreId { get; set; }
-    public Store Store { get; set; } = null!;
-    
-    public Guid? AddressId { get; set; }
-    public StoreAddress? Address { get; set; }
+    public Guid? BranchId { get; set; } // Nullable? DBML says ref > branch.id. Assume optional or mandatory? Usually location belongs to branch.
+    public Branch? Branch { get; set; }
     
     public Guid? ParentLocationId { get; set; }
     public InventoryLocation? ParentLocation { get; set; }
     
-    public string Name { get; set; } = string.Empty;
-    public string Type { get; set; } = string.Empty;
+    public string? Code { get; set; }
+    public string? Name { get; set; }
+    public string? Type { get; set; }
+    public JsonNode? Details { get; set; } // capacity, environment_type
 }

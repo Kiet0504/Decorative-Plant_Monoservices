@@ -6,13 +6,12 @@ public class Notification : BaseEntity
 {
     public Guid UserId { get; set; }
     public UserAccount User { get; set; } = null!;
+
+    public string? Type { get; set; }
+    public string? Title { get; set; }
+    public string? Body { get; set; }
+    public JsonNode? Data { get; set; }
+    public bool IsRead { get; set; } = false;
     
-    public string Type { get; set; } = string.Empty;
-    public string Title { get; set; } = string.Empty;
-    public string Message { get; set; } = string.Empty;
-    public bool IsRead { get; set; }
-    public DateTime? ReadAt { get; set; }
-    public string ReferenceType { get; set; } = string.Empty; // e.g., ORDER, CARE_REMINDER
-    public Guid? ReferenceId { get; set; }
-    public JsonNode? PayloadJson { get; set; }
+    // CreatedAt inherited from BaseEntity
 }

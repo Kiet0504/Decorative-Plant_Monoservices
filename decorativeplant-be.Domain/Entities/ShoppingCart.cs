@@ -7,5 +7,5 @@ public class ShoppingCart : BaseEntity
     public Guid UserId { get; set; }
     public UserAccount User { get; set; } = null!;
     
-    public JsonNode? ItemsJson { get; set; }
+    public JsonNode? Items { get; set; } // [{"listing_id": "...", "quantity": 1}]
 }
