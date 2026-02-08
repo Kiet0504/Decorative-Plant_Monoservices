@@ -1,12 +1,15 @@
 namespace decorativeplant_be.Domain.Entities;
 
-public class SensorReading : BaseEntity
+/// <summary>
+/// Time-series sensor reading. component_key references key in iot_device.components JSONB.
+/// </summary>
+public class SensorReading
 {
+    public Guid Id { get; set; }
     public Guid DeviceId { get; set; }
-    public string ComponentKey { get; set; } = string.Empty; // temperature / soil_ph
-    public float Value { get; set; }
-    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public string? ComponentKey { get; set; }
+    public decimal Value { get; set; }
+    public DateTime? RecordedAt { get; set; }
 
-    // Navigation properties
-    public IotDevice IotDevice { get; set; } = null!;
+    public IotDevice Device { get; set; } = null!;
 }

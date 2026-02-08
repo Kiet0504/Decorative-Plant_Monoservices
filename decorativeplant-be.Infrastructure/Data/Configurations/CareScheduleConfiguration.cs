@@ -9,31 +9,9 @@ public class CareScheduleConfiguration : IEntityTypeConfiguration<CareSchedule>
     public void Configure(EntityTypeBuilder<CareSchedule> builder)
     {
         builder.ToTable("care_schedule");
-
-        builder.HasKey(cs => cs.Id);
-        builder.Property(cs => cs.Id)
-            .HasDefaultValueSql("gen_random_uuid()");
-
-        builder.Property(cs => cs.GardenPlantId)
-            .IsRequired();
-
-        builder.Property(cs => cs.TaskType)
-            .IsRequired()
-            .HasMaxLength(50);
-
-        builder.Property(cs => cs.Frequency)
-            .IsRequired()
-            .HasMaxLength(50);
-
-        builder.Property(cs => cs.IsActive)
-            .HasDefaultValue(true);
-
-        // Relationships
-        builder.HasOne(cs => cs.MyGardenPlant)
-            .WithMany(mgp => mgp.CareSchedules)
-            .HasForeignKey(cs => cs.GardenPlantId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasIndex(cs => cs.GardenPlantId);
+        builder.HasKey(c => c.Id);
+        builder.Property(c => c.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(c => c.TaskInfo).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.HasOne(c => c.GardenPlant).WithMany(g => g.CareSchedules).HasForeignKey(c => c.GardenPlantId).OnDelete(DeleteBehavior.Cascade);
     }
 }

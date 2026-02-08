@@ -41,8 +41,8 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
             throw new UnauthorizedException("Invalid email or password.");
         }
 
-        // Get user with profile for display name
-        var (user, userProfile) = await _userAccountService.GetUserWithProfileAsync(userAccount.Id, cancellationToken);
+        var user = await _userAccountService.GetByIdAsync(userAccount.Id, cancellationToken)
+            ?? userAccount;
 
         var claims = new List<Claim>
         {
@@ -51,15 +51,14 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
             new Claim(ClaimTypes.Role, user.Role)
         };
 
-        if (userProfile != null && !string.IsNullOrWhiteSpace(userProfile.DisplayName))
+        if (!string.IsNullOrWhiteSpace(user.DisplayName))
         {
-            claims.Add(new Claim(ClaimTypes.Name, userProfile.DisplayName));
+            claims.Add(new Claim(ClaimTypes.Name, user.DisplayName));
         }
 
         var accessToken = _jwtService.GenerateAccessToken(claims);
         var refreshToken = _jwtService.GenerateRefreshToken();
 
-        // Store refresh token in Redis
         var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
         await _refreshTokenService.StoreRefreshTokenAsync(user.Id.ToString(), refreshToken, expiration);
 

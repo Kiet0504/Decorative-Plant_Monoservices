@@ -4,7 +4,6 @@ using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Features.Auth.Commands;
 using decorativeplant_be.Application.Services;
-using decorativeplant_be.Domain.Entities;
 using System.Security.Claims;
 
 namespace decorativeplant_be.Application.Features.Auth.Handlers;
@@ -49,24 +48,17 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
         // Hash password
         var passwordHash = _passwordService.HashPassword(request.Password);
 
-        // Create user profile if first/last name provided
-        UserProfile? userProfile = null;
-        if (!string.IsNullOrWhiteSpace(request.FirstName) || !string.IsNullOrWhiteSpace(request.LastName))
-        {
-            userProfile = new UserProfile
-            {
-                DisplayName = $"{request.FirstName} {request.LastName}".Trim(),
-                CreatedAt = DateTime.UtcNow
-            };
-        }
+        var displayName = string.IsNullOrWhiteSpace(request.FirstName) && string.IsNullOrWhiteSpace(request.LastName)
+            ? null
+            : $"{request.FirstName} {request.LastName}".Trim();
 
-        // Create user account with default role "Buyer"
+        // Create user account with default role "customer" (new schema)
         var userAccount = await _userAccountService.CreateUserAccountAsync(
             email: request.Email,
             passwordHash: passwordHash,
             phone: null,
-            role: "Buyer", // Default role
-            userProfile: userProfile,
+            role: "customer",
+            displayName: displayName,
             cancellationToken: cancellationToken);
 
         // Generate JWT claims
@@ -77,9 +69,9 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             new Claim(ClaimTypes.Role, userAccount.Role)
         };
 
-        if (userProfile != null && !string.IsNullOrWhiteSpace(userProfile.DisplayName))
+        if (!string.IsNullOrWhiteSpace(userAccount.DisplayName))
         {
-            claims.Add(new Claim(ClaimTypes.Name, userProfile.DisplayName));
+            claims.Add(new Claim(ClaimTypes.Name, userAccount.DisplayName));
         }
 
         var accessToken = _jwtService.GenerateAccessToken(claims);

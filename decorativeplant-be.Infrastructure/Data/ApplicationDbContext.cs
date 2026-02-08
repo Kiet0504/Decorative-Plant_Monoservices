@@ -3,6 +3,9 @@ using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Infrastructure.Data;
 
+/// <summary>
+/// DbContext for Smart Ornamental Plant Support System. Schema per DBML/PostgresDB.dbml.
+/// </summary>
 public class ApplicationDbContext : DbContext
 {
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
@@ -10,56 +13,61 @@ public class ApplicationDbContext : DbContext
     {
     }
 
-    // Identity & Users
+    // Module 1: Identity & Access
     public DbSet<UserAccount> UserAccounts { get; set; } = null!;
-    public DbSet<UserProfile> UserProfiles { get; set; } = null!;
     public DbSet<Notification> Notifications { get; set; } = null!;
 
-    // Store & Inventory
-    public DbSet<Store> Stores { get; set; } = null!;
-    public DbSet<StoreAddress> StoreAddresses { get; set; } = null!;
-    public DbSet<StoreWallet> StoreWallets { get; set; } = null!;
-    public DbSet<WalletTransaction> WalletTransactions { get; set; } = null!;
-    public DbSet<PlatformFeePolicy> PlatformFeePolicies { get; set; } = null!;
-    public DbSet<SellerPackage> SellerPackages { get; set; } = null!;
-    public DbSet<SellerSubscription> SellerSubscriptions { get; set; } = null!;
-    public DbSet<InventoryLocation> InventoryLocations { get; set; } = null!;
+    // Module 2: Company & Branch
+    public DbSet<Company> Companies { get; set; } = null!;
+    public DbSet<Branch> Branches { get; set; } = null!;
+    public DbSet<StaffAssignment> StaffAssignments { get; set; } = null!;
+
+    // Module 3: Inventory & Cultivation
+    public DbSet<PlantCategory> PlantCategories { get; set; } = null!;
     public DbSet<PlantTaxonomy> PlantTaxonomies { get; set; } = null!;
+    public DbSet<InventoryLocation> InventoryLocations { get; set; } = null!;
+    public DbSet<Supplier> Suppliers { get; set; } = null!;
     public DbSet<PlantBatch> PlantBatches { get; set; } = null!;
     public DbSet<BatchStock> BatchStocks { get; set; } = null!;
-    public DbSet<BatchLog> BatchLogs { get; set; } = null!;
-    public DbSet<InventoryAdjustment> InventoryAdjustments { get; set; } = null!;
-    public DbSet<StorePlantDiagnosis> StorePlantDiagnoses { get; set; } = null!;
+    public DbSet<StockAdjustment> StockAdjustments { get; set; } = null!;
+    public DbSet<StockTransfer> StockTransfers { get; set; } = null!;
+    public DbSet<CultivationLog> CultivationLogs { get; set; } = null!;
+    public DbSet<HealthIncident> HealthIncidents { get; set; } = null!;
 
-    // IoT & Automation
+    // Module 4: IoT & Automation
     public DbSet<IotDevice> IotDevices { get; set; } = null!;
     public DbSet<SensorReading> SensorReadings { get; set; } = null!;
-    public DbSet<AutoRule> AutoRules { get; set; } = null!;
-    public DbSet<RuleExecutionLog> RuleExecutionLogs { get; set; } = null!;
+    public DbSet<AutomationRule> AutomationRules { get; set; } = null!;
+    public DbSet<AutomationExecutionLog> AutomationExecutionLogs { get; set; } = null!;
+    public DbSet<IotAlert> IotAlerts { get; set; } = null!;
 
-    // Commerce
-    public DbSet<Listing> Listings { get; set; } = null!;
+    // Module 5: Commerce
+    public DbSet<ProductListing> ProductListings { get; set; } = null!;
+    public DbSet<ShippingZone> ShippingZones { get; set; } = null!;
     public DbSet<Voucher> Vouchers { get; set; } = null!;
+    public DbSet<Promotion> Promotions { get; set; } = null!;
     public DbSet<ShoppingCart> ShoppingCarts { get; set; } = null!;
-    public DbSet<ProductReview> ProductReviews { get; set; } = null!;
-
-    // Orders & Shipping
     public DbSet<OrderHeader> OrderHeaders { get; set; } = null!;
     public DbSet<OrderItem> OrderItems { get; set; } = null!;
     public DbSet<PaymentTransaction> PaymentTransactions { get; set; } = null!;
     public DbSet<Shipping> Shippings { get; set; } = null!;
-    public DbSet<PickupAddressSnapshot> PickupAddressSnapshots { get; set; } = null!;
-    public DbSet<ShippingAddressSnapshot> ShippingAddressSnapshots { get; set; } = null!;
+    public DbSet<ReturnRequest> ReturnRequests { get; set; } = null!;
 
-    // My Garden
-    public DbSet<MyGardenPlant> MyGardenPlants { get; set; } = null!;
+    // Module 6: My Garden
+    public DbSet<GardenPlant> GardenPlants { get; set; } = null!;
     public DbSet<CareSchedule> CareSchedules { get; set; } = null!;
     public DbSet<CareLog> CareLogs { get; set; } = null!;
-    public DbSet<DiagnosisLog> DiagnosisLogs { get; set; } = null!;
+    public DbSet<PlantDiagnosis> PlantDiagnoses { get; set; } = null!;
+
+    // Module 7: Reviews
+    public DbSet<ProductReview> ProductReviews { get; set; } = null!;
+
+    // Module 8: Analytics & Config
+    public DbSet<AiTrainingFeedback> AiTrainingFeedbacks { get; set; } = null!;
+    public DbSet<SystemConfig> SystemConfigs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // Apply configurations from Configurations folder
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
     }
 }

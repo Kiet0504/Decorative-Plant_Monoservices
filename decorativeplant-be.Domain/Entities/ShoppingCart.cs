@@ -2,12 +2,15 @@ using System.Text.Json;
 
 namespace decorativeplant_be.Domain.Entities;
 
-public class ShoppingCart : BaseEntity
+/// <summary>
+/// Shopping cart. items JSONB = merged cart_item. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class ShoppingCart
 {
-    public Guid UserId { get; set; }
-    public JsonDocument? ItemsJson { get; set; } // Array: [{listing_id, qty, unit_price_snapshot}]
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public Guid Id { get; set; }
+    public Guid? UserId { get; set; }
+    public JsonDocument? Items { get; set; }
+    public DateTime? UpdatedAt { get; set; }
 
-    // Navigation properties
-    public UserAccount UserAccount { get; set; } = null!;
+    public UserAccount? User { get; set; }
 }

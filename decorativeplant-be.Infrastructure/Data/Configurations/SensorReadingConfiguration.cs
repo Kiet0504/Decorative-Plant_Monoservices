@@ -9,32 +9,11 @@ public class SensorReadingConfiguration : IEntityTypeConfiguration<SensorReading
     public void Configure(EntityTypeBuilder<SensorReading> builder)
     {
         builder.ToTable("sensor_reading");
-
-        builder.HasKey(sr => sr.Id);
-        builder.Property(sr => sr.Id)
-            .HasDefaultValueSql("gen_random_uuid()");
-
-        builder.Property(sr => sr.DeviceId)
-            .IsRequired();
-
-        builder.Property(sr => sr.ComponentKey)
-            .IsRequired()
-            .HasMaxLength(50);
-
-        builder.Property(sr => sr.Value)
-            .IsRequired();
-
-        builder.Property(sr => sr.Timestamp)
-            .IsRequired()
-            .HasDefaultValueSql("now()");
-
-        // Relationships
-        builder.HasOne(sr => sr.IotDevice)
-            .WithMany(id => id.SensorReadings)
-            .HasForeignKey(sr => sr.DeviceId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasIndex(sr => sr.DeviceId);
-        builder.HasIndex(sr => sr.Timestamp);
+        builder.HasKey(s => s.Id);
+        builder.Property(s => s.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(s => s.DeviceId).IsRequired();
+        builder.Property(s => s.ComponentKey).HasMaxLength(50);
+        builder.Property(s => s.Value).HasPrecision(10, 2);
+        builder.HasOne(s => s.Device).WithMany(d => d.SensorReadings).HasForeignKey(s => s.DeviceId).OnDelete(DeleteBehavior.Cascade);
     }
 }

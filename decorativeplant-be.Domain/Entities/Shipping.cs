@@ -2,20 +2,18 @@ using System.Text.Json;
 
 namespace decorativeplant_be.Domain.Entities;
 
-public class Shipping : BaseEntity
+/// <summary>
+/// Shipping record. JSONB: carrier_info, delivery_details, events. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class Shipping
 {
-    public Guid OrderId { get; set; }
-    public Guid PickupAddressId { get; set; }
-    public Guid DeliveryAddressId { get; set; }
-    public string Carrier { get; set; } = string.Empty; // GHN/GHTK
+    public Guid Id { get; set; }
+    public Guid? OrderId { get; set; }
     public string? TrackingCode { get; set; }
-    public string Status { get; set; } = string.Empty;
-    public decimal ShippingFee { get; set; } // Actual fee paid to carrier
-    public JsonDocument? EventsJson { get; set; } // Shipping history from webhook
-    public DateTime? EstimatedDelivery { get; set; }
+    public JsonDocument? CarrierInfo { get; set; }
+    public string? Status { get; set; }
+    public JsonDocument? DeliveryDetails { get; set; }
+    public JsonDocument? Events { get; set; }
 
-    // Navigation properties
-    public OrderHeader OrderHeader { get; set; } = null!;
-    public PickupAddressSnapshot PickupAddressSnapshot { get; set; } = null!;
-    public ShippingAddressSnapshot ShippingAddressSnapshot { get; set; } = null!;
+    public OrderHeader? Order { get; set; }
 }

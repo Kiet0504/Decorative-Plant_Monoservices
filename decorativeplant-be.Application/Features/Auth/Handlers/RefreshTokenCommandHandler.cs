@@ -48,17 +48,14 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
             throw new UnauthorizedException("Invalid refresh token.");
         }
 
-        // Get user account
-        var (userAccount, userProfile) = await _userAccountService.GetUserWithProfileAsync(userId, cancellationToken);
-        if (!userAccount.IsActive)
+        var userAccount = await _userAccountService.GetByIdAsync(userId, cancellationToken);
+        if (userAccount == null || !userAccount.IsActive)
         {
             throw new UnauthorizedException("User account is inactive.");
         }
 
-        // Revoke the old refresh token (one-time use)
         await _refreshTokenService.RevokeRefreshTokenAsync(userIdString, request.RefreshToken);
 
-        // Generate new tokens
         var claims = new List<Claim>
         {
             new Claim(ClaimTypes.NameIdentifier, userAccount.Id.ToString()),
@@ -66,15 +63,14 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
             new Claim(ClaimTypes.Role, userAccount.Role)
         };
 
-        if (userProfile != null && !string.IsNullOrWhiteSpace(userProfile.DisplayName))
+        if (!string.IsNullOrWhiteSpace(userAccount.DisplayName))
         {
-            claims.Add(new Claim(ClaimTypes.Name, userProfile.DisplayName));
+            claims.Add(new Claim(ClaimTypes.Name, userAccount.DisplayName));
         }
 
         var accessToken = _jwtService.GenerateAccessToken(claims);
         var newRefreshToken = _jwtService.GenerateRefreshToken();
 
-        // Store new refresh token in Redis
         var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
         await _refreshTokenService.StoreRefreshTokenAsync(userAccount.Id.ToString(), newRefreshToken, expiration);
 

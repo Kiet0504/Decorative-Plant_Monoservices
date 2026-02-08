@@ -1,26 +1,30 @@
+using System.Text.Json;
+
 namespace decorativeplant_be.Domain.Entities;
 
-public class OrderHeader : BaseEntity
+/// <summary>
+/// Order header. JSONB: type_info, financials, notes, delivery_address, pickup_info.
+/// See docs/JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class OrderHeader
 {
-    public string OrderCode { get; set; } = string.Empty;
-    public Guid UserId { get; set; }
-    public Guid StoreId { get; set; }
-    public string Status { get; set; } = string.Empty; // Pending/Paid/Processing/Completed/Cancelled
-    public string PaymentStatus { get; set; } = string.Empty;
-    public decimal TotalAmount { get; set; }
-    public decimal ShippingFee { get; set; } // Sum of child shipping fees
-    public decimal DiscountAmount { get; set; }
-    public string? BuyerNote { get; set; }
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public Guid Id { get; set; }
+    public string? OrderCode { get; set; }
+    public Guid? UserId { get; set; }
+    public Guid? BranchId { get; set; }
+    public JsonDocument? TypeInfo { get; set; }
+    public JsonDocument? Financials { get; set; }
+    public string? Status { get; set; }
+    public JsonDocument? Notes { get; set; }
+    public JsonDocument? DeliveryAddress { get; set; }
+    public JsonDocument? PickupInfo { get; set; }
+    public DateTime? CreatedAt { get; set; }
+    public DateTime? ConfirmedAt { get; set; }
 
-    // Navigation properties
-    public UserAccount UserAccount { get; set; } = null!;
-    public Store Store { get; set; } = null!;
+    public UserAccount? User { get; set; }
+    public Branch? Branch { get; set; }
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
     public ICollection<PaymentTransaction> PaymentTransactions { get; set; } = new List<PaymentTransaction>();
-    public Shipping? Shipping { get; set; }
-    public PickupAddressSnapshot? PickupAddressSnapshot { get; set; }
-    public ShippingAddressSnapshot? ShippingAddressSnapshot { get; set; }
-    public ICollection<ProductReview> ProductReviews { get; set; } = new List<ProductReview>();
-    public ICollection<WalletTransaction> WalletTransactions { get; set; } = new List<WalletTransaction>();
+    public ICollection<Shipping> Shippings { get; set; } = new List<Shipping>();
+    public ICollection<ReturnRequest> ReturnRequests { get; set; } = new List<ReturnRequest>();
 }

@@ -1,4 +1,3 @@
-using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
@@ -11,18 +10,15 @@ public class UserAccountService : IUserAccountService
     private readonly IRepositoryFactory _repositoryFactory;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IPasswordService _passwordService;
-    private readonly ApplicationDbContext _context;
 
     public UserAccountService(
         IRepositoryFactory repositoryFactory,
         IUnitOfWork unitOfWork,
-        IPasswordService passwordService,
-        ApplicationDbContext context)
+        IPasswordService passwordService)
     {
         _repositoryFactory = repositoryFactory;
         _unitOfWork = unitOfWork;
         _passwordService = passwordService;
-        _context = context;
     }
 
     public async Task<UserAccount> CreateUserAccountAsync(
@@ -30,7 +26,7 @@ public class UserAccountService : IUserAccountService
         string passwordHash,
         string? phone,
         string role,
-        UserProfile? userProfile = null,
+        string? displayName = null,
         CancellationToken cancellationToken = default)
     {
         var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
@@ -42,21 +38,12 @@ public class UserAccountService : IUserAccountService
             Phone = phone,
             Role = role,
             IsActive = true,
+            DisplayName = displayName,
             CreatedAt = DateTime.UtcNow
         };
 
         await userAccountRepository.AddAsync(userAccount, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-        if (userProfile != null)
-        {
-            userProfile.UserId = userAccount.Id;
-            userProfile.UserAccount = userAccount;
-            userAccount.UserProfile = userProfile;
-
-            await _context.UserProfiles.AddAsync(userProfile, cancellationToken);
-            await _unitOfWork.SaveChangesAsync(cancellationToken);
-        }
 
         return userAccount;
     }
@@ -69,28 +56,18 @@ public class UserAccountService : IUserAccountService
             cancellationToken);
     }
 
-    public async Task<(UserAccount userAccount, UserProfile? userProfile)> GetUserWithProfileAsync(
-        Guid userId,
-        CancellationToken cancellationToken = default)
+    public async Task<UserAccount?> GetByIdAsync(Guid userId, CancellationToken cancellationToken = default)
     {
         var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
-        var userAccount = await userAccountRepository.FirstOrDefaultAsync(
+        return await userAccountRepository.FirstOrDefaultAsync(
             u => u.Id == userId,
             cancellationToken);
-
-        if (userAccount == null)
-        {
-            throw new InvalidOperationException($"User account with ID {userId} not found.");
-        }
-
-        var userProfile = await _context.UserProfiles
-            .FirstOrDefaultAsync(p => p.UserId == userId, cancellationToken);
-
-        return (userAccount, userProfile);
     }
 
     public Task<bool> ValidatePasswordAsync(UserAccount userAccount, string password, CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrEmpty(userAccount.PasswordHash))
+            return Task.FromResult(false);
         return Task.FromResult(_passwordService.VerifyPassword(password, userAccount.PasswordHash));
     }
 }

@@ -9,47 +9,13 @@ public class ProductReviewConfiguration : IEntityTypeConfiguration<ProductReview
     public void Configure(EntityTypeBuilder<ProductReview> builder)
     {
         builder.ToTable("product_review");
-
-        builder.HasKey(pr => pr.Id);
-        builder.Property(pr => pr.Id)
-            .HasDefaultValueSql("gen_random_uuid()");
-
-        builder.Property(pr => pr.ListingId)
-            .IsRequired();
-
-        builder.Property(pr => pr.UserId)
-            .IsRequired();
-
-        builder.Property(pr => pr.OrderId)
-            .IsRequired();
-
-        builder.Property(pr => pr.Rating)
-            .IsRequired();
-
-        builder.Property(pr => pr.ImagesJson)
-            .HasColumnType("jsonb");
-
-        builder.Property(pr => pr.CreatedAt)
-            .IsRequired()
-            .HasDefaultValueSql("now()");
-
-        // Relationships
-        builder.HasOne(pr => pr.Listing)
-            .WithMany(l => l.ProductReviews)
-            .HasForeignKey(pr => pr.ListingId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(pr => pr.UserAccount)
-            .WithMany(u => u.ProductReviews)
-            .HasForeignKey(pr => pr.UserId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne(pr => pr.OrderHeader)
-            .WithMany(o => o.ProductReviews)
-            .HasForeignKey(pr => pr.OrderId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasIndex(pr => pr.ListingId);
-        builder.HasIndex(pr => pr.UserId);
+        builder.HasKey(p => p.Id);
+        builder.Property(p => p.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(p => p.Content).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.Property(p => p.StatusInfo).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.Property(p => p.Images).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.HasOne(p => p.Listing).WithMany(l => l.ProductReviews).HasForeignKey(p => p.ListingId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(p => p.User).WithMany(u => u.ProductReviews).HasForeignKey(p => p.UserId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(p => p.Order).WithMany().HasForeignKey(p => p.OrderId).OnDelete(DeleteBehavior.SetNull);
     }
 }

@@ -1,17 +1,23 @@
+using System.Text.Json;
+
 namespace decorativeplant_be.Domain.Entities;
 
-public class OrderItem : BaseEntity
+/// <summary>
+/// Order line item. JSONB: pricing, snapshots. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class OrderItem
 {
-    public Guid OrderId { get; set; }
-    public Guid ListingId { get; set; }
-    public Guid StockId { get; set; }
+    public Guid Id { get; set; }
+    public Guid? OrderId { get; set; }
+    public Guid? ListingId { get; set; }
+    public Guid? StockId { get; set; }
+    public Guid? BatchId { get; set; }
     public int Quantity { get; set; }
-    public decimal UnitPrice { get; set; } // Price at purchase time
-    public string TitleSnapshot { get; set; } = string.Empty;
+    public JsonDocument? Pricing { get; set; }
+    public JsonDocument? Snapshots { get; set; }
 
-    // Navigation properties
-    public OrderHeader OrderHeader { get; set; } = null!;
-    public Listing Listing { get; set; } = null!;
-    public BatchStock BatchStock { get; set; } = null!;
-    public ICollection<MyGardenPlant> MyGardenPlants { get; set; } = new List<MyGardenPlant>();
+    public OrderHeader? Order { get; set; }
+    public ProductListing? Listing { get; set; }
+    public BatchStock? Stock { get; set; }
+    public PlantBatch? Batch { get; set; }
 }

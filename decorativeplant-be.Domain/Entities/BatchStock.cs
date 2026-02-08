@@ -1,21 +1,23 @@
+using System.Text.Json;
+
 namespace decorativeplant_be.Domain.Entities;
 
-public class BatchStock : BaseEntity
+/// <summary>
+/// Stock of a batch at a location. JSONB: quantities, last_count_info. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class BatchStock
 {
-    public Guid BatchId { get; set; }
-    public Guid LocationId { get; set; }
-    public int Quantity { get; set; } // Current quantity
-    public int ReservedQuantity { get; set; } // In cart/pending orders
-    public string Unit { get; set; } = string.Empty; // pot/plant
-    public string? PotSize { get; set; } // C5, C10, 10cm...
-    public string? CurrentHealthStatus { get; set; }
-    public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+    public Guid Id { get; set; }
+    public Guid? BatchId { get; set; }
+    public Guid? LocationId { get; set; }
+    public JsonDocument? Quantities { get; set; }
+    public string? HealthStatus { get; set; }
+    public JsonDocument? LastCountInfo { get; set; }
+    public DateTime? UpdatedAt { get; set; }
 
-    // Navigation properties
-    public PlantBatch PlantBatch { get; set; } = null!;
-    public InventoryLocation InventoryLocation { get; set; } = null!;
-    public ICollection<InventoryAdjustment> InventoryAdjustments { get; set; } = new List<InventoryAdjustment>();
-    public ICollection<StorePlantDiagnosis> StorePlantDiagnoses { get; set; } = new List<StorePlantDiagnosis>();
-    public ICollection<Listing> Listings { get; set; } = new List<Listing>();
+    public PlantBatch? Batch { get; set; }
+    public InventoryLocation? Location { get; set; }
+    public ICollection<StockAdjustment> StockAdjustments { get; set; } = new List<StockAdjustment>();
+    public ICollection<HealthIncident> HealthIncidents { get; set; } = new List<HealthIncident>();
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
 }

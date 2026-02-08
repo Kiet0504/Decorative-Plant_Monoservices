@@ -2,14 +2,18 @@ using System.Text.Json;
 
 namespace decorativeplant_be.Domain.Entities;
 
-public class CareLog : BaseEntity
+/// <summary>
+/// Care log for garden plant. JSONB: log_info, images. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class CareLog
 {
-    public Guid GardenPlantId { get; set; }
-    public string Action { get; set; } = string.Empty;
-    public string? Notes { get; set; }
-    public JsonDocument? ImagesJson { get; set; }
-    public DateTime PerformedAt { get; set; } = DateTime.UtcNow;
+    public Guid Id { get; set; }
+    public Guid? GardenPlantId { get; set; }
+    public Guid? ScheduleId { get; set; }
+    public JsonDocument? LogInfo { get; set; }
+    public JsonDocument? Images { get; set; }
+    public DateTime? PerformedAt { get; set; }
 
-    // Navigation properties
-    public MyGardenPlant MyGardenPlant { get; set; } = null!;
+    public GardenPlant? GardenPlant { get; set; }
+    public CareSchedule? Schedule { get; set; }
 }

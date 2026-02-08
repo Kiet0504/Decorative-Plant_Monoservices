@@ -2,22 +2,23 @@ using System.Text.Json;
 
 namespace decorativeplant_be.Domain.Entities;
 
-public class IotDevice : BaseEntity
+/// <summary>
+/// IoT device. JSONB: device_info, activity_log, components. sensor_reading uses device_id + component_key.
+/// See docs/JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class IotDevice
 {
-    public Guid StoreId { get; set; }
-    public Guid? LocationId { get; set; } // Attached to Location (bulk) OR Stock (expensive Bonsai)
-    public Guid? StockId { get; set; } // Null if attached to Location
-    public string Name { get; set; } = string.Empty; // e.g., "Soil sensor Tray 05"
-    public string? MacAddress { get; set; }
-    public string? FirmwareVer { get; set; }
-    public string Status { get; set; } = string.Empty; // Online/Offline
-    public JsonDocument? ComponentsJson { get; set; } // List of sensors: {temp: true, soil_moisture: true}
-    public DateTime? LastSeenAt { get; set; }
+    public Guid Id { get; set; }
+    public Guid? BranchId { get; set; }
+    public Guid? LocationId { get; set; }
+    public JsonDocument? DeviceInfo { get; set; }
+    public string? Status { get; set; }
+    public JsonDocument? ActivityLog { get; set; }
+    public JsonDocument? Components { get; set; }
 
-    // Navigation properties
-    public Store Store { get; set; } = null!;
+    public Branch? Branch { get; set; }
     public InventoryLocation? Location { get; set; }
-    public BatchStock? Stock { get; set; }
     public ICollection<SensorReading> SensorReadings { get; set; } = new List<SensorReading>();
-    public ICollection<AutoRule> AutoRules { get; set; } = new List<AutoRule>();
+    public ICollection<AutomationRule> AutomationRules { get; set; } = new List<AutomationRule>();
+    public ICollection<IotAlert> IotAlerts { get; set; } = new List<IotAlert>();
 }

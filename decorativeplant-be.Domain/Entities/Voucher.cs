@@ -1,16 +1,18 @@
+using System.Text.Json;
+
 namespace decorativeplant_be.Domain.Entities;
 
-public class Voucher : BaseEntity
+/// <summary>
+/// Voucher. JSONB: info, rules. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class Voucher
 {
-    public Guid? StoreId { get; set; } // NULL = platform-wide voucher
-    public string Code { get; set; } = string.Empty;
-    public string DiscountType { get; set; } = string.Empty; // Percent/Fixed
-    public decimal DiscountValue { get; set; }
-    public decimal MinOrderValue { get; set; }
-    public int? MaxUsage { get; set; }
-    public DateTime ValidFrom { get; set; }
-    public DateTime ValidTo { get; set; }
+    public Guid Id { get; set; }
+    public string? Code { get; set; }
+    public Guid? BranchId { get; set; }
+    public JsonDocument? Info { get; set; }
+    public JsonDocument? Rules { get; set; }
+    public bool IsActive { get; set; }
 
-    // Navigation properties
-    public Store? Store { get; set; }
+    public Branch? Branch { get; set; }
 }

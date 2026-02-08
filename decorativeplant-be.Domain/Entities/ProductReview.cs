@@ -2,17 +2,21 @@ using System.Text.Json;
 
 namespace decorativeplant_be.Domain.Entities;
 
-public class ProductReview : BaseEntity
+/// <summary>
+/// Product review. JSONB: content, status_info, images. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class ProductReview
 {
-    public Guid ListingId { get; set; }
-    public Guid UserId { get; set; }
-    public Guid OrderId { get; set; }
-    public int Rating { get; set; } // 1-5
-    public string? Comment { get; set; }
-    public JsonDocument? ImagesJson { get; set; }
+    public Guid Id { get; set; }
+    public Guid? ListingId { get; set; }
+    public Guid? UserId { get; set; }
+    public Guid? OrderId { get; set; }
+    public JsonDocument? Content { get; set; }
+    public JsonDocument? StatusInfo { get; set; }
+    public JsonDocument? Images { get; set; }
+    public DateTime? CreatedAt { get; set; }
 
-    // Navigation properties
-    public Listing Listing { get; set; } = null!;
-    public UserAccount UserAccount { get; set; } = null!;
-    public OrderHeader OrderHeader { get; set; } = null!;
+    public ProductListing? Listing { get; set; }
+    public UserAccount? User { get; set; }
+    public OrderHeader? Order { get; set; }
 }

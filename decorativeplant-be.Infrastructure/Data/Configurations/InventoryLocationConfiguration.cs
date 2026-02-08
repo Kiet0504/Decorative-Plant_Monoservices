@@ -9,42 +9,13 @@ public class InventoryLocationConfiguration : IEntityTypeConfiguration<Inventory
     public void Configure(EntityTypeBuilder<InventoryLocation> builder)
     {
         builder.ToTable("inventory_location");
-
-        builder.HasKey(il => il.Id);
-        builder.Property(il => il.Id)
-            .HasDefaultValueSql("gen_random_uuid()");
-
-        builder.Property(il => il.StoreId)
-            .IsRequired();
-
-        builder.Property(il => il.Name)
-            .IsRequired()
-            .HasMaxLength(100);
-
-        builder.Property(il => il.Type)
-            .IsRequired()
-            .HasMaxLength(50);
-
-        builder.Property(il => il.CreatedAt)
-            .IsRequired()
-            .HasDefaultValueSql("now()");
-
-        // Relationships
-        builder.HasOne(il => il.Store)
-            .WithMany(s => s.InventoryLocations)
-            .HasForeignKey(il => il.StoreId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(il => il.Address)
-            .WithMany(sa => sa.InventoryLocations)
-            .HasForeignKey(il => il.AddressId)
-            .OnDelete(DeleteBehavior.SetNull);
-
-        builder.HasOne(il => il.ParentLocation)
-            .WithMany(il => il.ChildLocations)
-            .HasForeignKey(il => il.ParentLocationId)
-            .OnDelete(DeleteBehavior.SetNull);
-
-        builder.HasIndex(il => il.StoreId);
+        builder.HasKey(i => i.Id);
+        builder.Property(i => i.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(i => i.Code).HasMaxLength(50);
+        builder.Property(i => i.Name).HasMaxLength(255);
+        builder.Property(i => i.Type).HasMaxLength(50);
+        builder.Property(i => i.Details).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.HasOne(i => i.Branch).WithMany(b => b.InventoryLocations).HasForeignKey(i => i.BranchId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(i => i.ParentLocation).WithMany(i => i.ChildLocations).HasForeignKey(i => i.ParentLocationId).OnDelete(DeleteBehavior.SetNull);
     }
 }

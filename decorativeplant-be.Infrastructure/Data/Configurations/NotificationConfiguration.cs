@@ -9,42 +9,14 @@ public class NotificationConfiguration : IEntityTypeConfiguration<Notification>
     public void Configure(EntityTypeBuilder<Notification> builder)
     {
         builder.ToTable("notification");
-
         builder.HasKey(n => n.Id);
-        builder.Property(n => n.Id)
-            .HasDefaultValueSql("gen_random_uuid()");
-
-        builder.Property(n => n.UserId)
-            .IsRequired();
-
-        builder.Property(n => n.Title)
-            .IsRequired()
-            .HasMaxLength(255);
-
-        builder.Property(n => n.Body)
-            .IsRequired();
-
-        builder.Property(n => n.Type)
-            .IsRequired()
-            .HasMaxLength(50);
-
-        builder.Property(n => n.PayloadJson)
-            .HasColumnType("jsonb");
-
-        builder.Property(n => n.IsRead)
-            .HasDefaultValue(false);
-
-        builder.Property(n => n.CreatedAt)
-            .IsRequired()
-            .HasDefaultValueSql("now()");
-
-        // Relationships
-        builder.HasOne(n => n.UserAccount)
-            .WithMany(u => u.Notifications)
-            .HasForeignKey(n => n.UserId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasIndex(n => n.UserId);
-        builder.HasIndex(n => n.IsRead);
+        builder.Property(n => n.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(n => n.UserId).IsRequired();
+        builder.Property(n => n.Type).HasMaxLength(50);
+        builder.Property(n => n.Title).HasMaxLength(255);
+        builder.Property(n => n.Data).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.Property(n => n.IsRead).HasDefaultValue(false);
+        builder.Property(n => n.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasOne(n => n.User).WithMany(u => u.Notifications).HasForeignKey(n => n.UserId).OnDelete(DeleteBehavior.Cascade);
     }
 }

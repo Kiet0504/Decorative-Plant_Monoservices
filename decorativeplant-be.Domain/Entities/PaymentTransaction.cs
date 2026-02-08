@@ -1,15 +1,17 @@
+using System.Text.Json;
+
 namespace decorativeplant_be.Domain.Entities;
 
-public class PaymentTransaction : BaseEntity
+/// <summary>
+/// Payment transaction. JSONB: details. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class PaymentTransaction
 {
-    public Guid OrderId { get; set; }
-    public decimal Amount { get; set; }
-    public string Provider { get; set; } = string.Empty; // Momo/VNPay/Stripe
-    public string Type { get; set; } = string.Empty; // Payment/Refund
-    public string? TransactionRef { get; set; }
-    public string Status { get; set; } = string.Empty;
+    public Guid Id { get; set; }
+    public Guid? OrderId { get; set; }
+    public string? TransactionCode { get; set; }
+    public JsonDocument? Details { get; set; }
+    public DateTime? CreatedAt { get; set; }
 
-    // Navigation properties
-    public OrderHeader OrderHeader { get; set; } = null!;
-    public ICollection<SellerSubscription> SellerSubscriptions { get; set; } = new List<SellerSubscription>();
+    public OrderHeader? Order { get; set; }
 }

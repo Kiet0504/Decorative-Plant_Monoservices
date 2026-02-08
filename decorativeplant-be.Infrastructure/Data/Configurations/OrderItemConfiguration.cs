@@ -9,47 +9,13 @@ public class OrderItemConfiguration : IEntityTypeConfiguration<OrderItem>
     public void Configure(EntityTypeBuilder<OrderItem> builder)
     {
         builder.ToTable("order_item");
-
-        builder.HasKey(oi => oi.Id);
-        builder.Property(oi => oi.Id)
-            .HasDefaultValueSql("gen_random_uuid()");
-
-        builder.Property(oi => oi.OrderId)
-            .IsRequired();
-
-        builder.Property(oi => oi.ListingId)
-            .IsRequired();
-
-        builder.Property(oi => oi.StockId)
-            .IsRequired();
-
-        builder.Property(oi => oi.Quantity)
-            .IsRequired();
-
-        builder.Property(oi => oi.UnitPrice)
-            .IsRequired()
-            .HasPrecision(12, 2);
-
-        builder.Property(oi => oi.TitleSnapshot)
-            .IsRequired()
-            .HasMaxLength(255);
-
-        // Relationships
-        builder.HasOne(oi => oi.OrderHeader)
-            .WithMany(oh => oh.OrderItems)
-            .HasForeignKey(oi => oi.OrderId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        builder.HasOne(oi => oi.Listing)
-            .WithMany(l => l.OrderItems)
-            .HasForeignKey(oi => oi.ListingId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasOne(oi => oi.BatchStock)
-            .WithMany(bs => bs.OrderItems)
-            .HasForeignKey(oi => oi.StockId)
-            .OnDelete(DeleteBehavior.Restrict);
-
-        builder.HasIndex(oi => oi.OrderId);
+        builder.HasKey(o => o.Id);
+        builder.Property(o => o.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(o => o.Pricing).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.Property(o => o.Snapshots).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.HasOne(o => o.Order).WithMany(h => h.OrderItems).HasForeignKey(o => o.OrderId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(o => o.Listing).WithMany(l => l.OrderItems).HasForeignKey(o => o.ListingId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(o => o.Stock).WithMany(s => s.OrderItems).HasForeignKey(o => o.StockId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(o => o.Batch).WithMany(b => b.OrderItems).HasForeignKey(o => o.BatchId).OnDelete(DeleteBehavior.SetNull);
     }
 }

@@ -1,13 +1,17 @@
+using System.Text.Json;
+
 namespace decorativeplant_be.Domain.Entities;
 
-public class CareSchedule : BaseEntity
+/// <summary>
+/// Care schedule for garden plant. JSONB: task_info. See JSONB_SCHEMA_REFERENCE.md
+/// </summary>
+public class CareSchedule
 {
-    public Guid GardenPlantId { get; set; }
-    public string TaskType { get; set; } = string.Empty; // Water/Fertilize
-    public string Frequency { get; set; } = string.Empty; // Daily/Weekly
-    public DateTime? NextDueDate { get; set; }
-    public bool IsActive { get; set; } = true;
+    public Guid Id { get; set; }
+    public Guid? GardenPlantId { get; set; }
+    public JsonDocument? TaskInfo { get; set; }
+    public bool IsActive { get; set; }
 
-    // Navigation properties
-    public MyGardenPlant MyGardenPlant { get; set; } = null!;
+    public GardenPlant? GardenPlant { get; set; }
+    public ICollection<CareLog> CareLogs { get; set; } = new List<CareLog>();
 }
