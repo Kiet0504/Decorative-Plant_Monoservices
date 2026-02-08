@@ -99,7 +99,8 @@ try
     // Request logging middleware
     app.UseMiddleware<RequestLoggingMiddleware>();
 
-    if (app.Environment.IsDevelopment())
+    // Swagger: enable in Development, or when running in Docker (so you can test from host)
+    if (app.Environment.IsDevelopment() || string.Equals(Environment.GetEnvironmentVariable("SWAGGER_ENABLED"), "true", StringComparison.OrdinalIgnoreCase))
     {
         app.UseSwagger();
         app.UseSwaggerUI(c =>

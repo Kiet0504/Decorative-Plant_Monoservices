@@ -27,6 +27,7 @@ public class UserAccountService : IUserAccountService
         string? phone,
         string role,
         string? displayName = null,
+        bool emailVerified = false,
         CancellationToken cancellationToken = default)
     {
         var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
@@ -39,6 +40,7 @@ public class UserAccountService : IUserAccountService
             Role = role,
             IsActive = true,
             DisplayName = displayName,
+            EmailVerified = emailVerified,
             CreatedAt = DateTime.UtcNow
         };
 
@@ -69,5 +71,17 @@ public class UserAccountService : IUserAccountService
         if (string.IsNullOrEmpty(userAccount.PasswordHash))
             return Task.FromResult(false);
         return Task.FromResult(_passwordService.VerifyPassword(password, userAccount.PasswordHash));
+    }
+
+    public async Task UpdatePasswordAsync(Guid userId, string newPasswordHash, CancellationToken cancellationToken = default)
+    {
+        var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
+        var user = await userAccountRepository.GetByIdAsync(userId, cancellationToken);
+        if (user == null)
+            throw new InvalidOperationException("User not found.");
+        user.PasswordHash = newPasswordHash;
+        user.UpdatedAt = DateTime.UtcNow;
+        await userAccountRepository.UpdateAsync(user, cancellationToken);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
     }
 }

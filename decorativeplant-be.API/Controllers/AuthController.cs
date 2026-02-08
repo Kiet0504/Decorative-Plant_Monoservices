@@ -53,4 +53,28 @@ public class AuthController : BaseController
         var result = await Mediator.Send(command);
         return Ok(result);
     }
+
+    /// <summary>Request a password reset. Sends an OTP to the user's email if the account exists.</summary>
+    [HttpPost("forgot-password")]
+    public async Task<ActionResult<ApiResponse<object>>> ForgotPassword([FromBody] RequestPasswordResetCommand command)
+    {
+        await Mediator.Send(command);
+        return Ok(ApiResponse<object>.SuccessResponse(new { }, "If an account exists for this email, a verification code has been sent."));
+    }
+
+    /// <summary>Reset password using the OTP received by email.</summary>
+    [HttpPost("reset-password")]
+    public async Task<ActionResult<ApiResponse<object>>> ResetPassword([FromBody] ResetPasswordCommand command)
+    {
+        await Mediator.Send(command);
+        return Ok(ApiResponse<object>.SuccessResponse(new { }, "Password has been reset. You can now log in with your new password."));
+    }
+
+    /// <summary>Send a registration OTP to the given email. Use the same email and OTP when calling register.</summary>
+    [HttpPost("send-registration-otp")]
+    public async Task<ActionResult<ApiResponse<object>>> SendRegistrationOtp([FromBody] SendRegistrationOtpCommand command)
+    {
+        await Mediator.Send(command);
+        return Ok(ApiResponse<object>.SuccessResponse(new { }, "Verification code sent to your email."));
+    }
 }

@@ -14,6 +14,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
     private readonly IPasswordService _passwordService;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
+    private readonly IOtpService _otpService;
     private readonly ILogger<RegisterCommandHandler> _logger;
 
     public RegisterCommandHandler(
@@ -21,12 +22,14 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
         IPasswordService passwordService,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
+        IOtpService otpService,
         ILogger<RegisterCommandHandler> logger)
     {
         _userAccountService = userAccountService;
         _passwordService = passwordService;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
+        _otpService = otpService;
         _logger = logger;
     }
 
@@ -45,6 +48,15 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             throw new ValidationException("Email is already registered.");
         }
 
+        var emailVerified = false;
+        if (!string.IsNullOrWhiteSpace(request.Otp))
+        {
+            var isValid = await _otpService.ValidateAndConsumeOtpAsync(request.Email.Trim(), request.Otp!.Trim(), "Registration", cancellationToken);
+            if (!isValid)
+                throw new ValidationException("Invalid or expired verification code. Request a new code and try again.");
+            emailVerified = true;
+        }
+
         // Hash password
         var passwordHash = _passwordService.HashPassword(request.Password);
 
@@ -59,6 +71,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             phone: null,
             role: "customer",
             displayName: displayName,
+            emailVerified: emailVerified,
             cancellationToken: cancellationToken);
 
         // Generate JWT claims

@@ -80,11 +80,14 @@ services:
       - decorativeplant-network
     volumes:
       - ./logs:/app/logs
+      # Persist Data Protection keys so they survive container restarts (removes the key-persistence warning)
+      - dataprotection_keys:/home/app/.aspnet/DataProtection-Keys
 
 volumes:
   postgres_data:
   redis_data:
   pgadmin_data:
+  dataprotection_keys:
 
 networks:
   decorativeplant-network:

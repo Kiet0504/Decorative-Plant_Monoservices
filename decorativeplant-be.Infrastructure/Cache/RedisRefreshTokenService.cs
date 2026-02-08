@@ -3,23 +3,29 @@ using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
+using StackExchange.Redis;
 using decorativeplant_be.Application.Services;
 
 namespace decorativeplant_be.Infrastructure.Cache;
 
 public class RedisRefreshTokenService : IRefreshTokenService
 {
+    private const string InstanceName = "DecorativePlant:";
+    private const string TokenKeyPrefix = InstanceName + "refresh_token:";
+    private const string TokenLookupPrefix = InstanceName + "token_lookup:";
+
     private readonly IDistributedCache _cache;
     private readonly ILogger<RedisRefreshTokenService> _logger;
-    private const string TokenKeyPrefix = "refresh_token:";
-    private const string TokenLookupPrefix = "token_lookup:";
+    private readonly IConnectionMultiplexer? _redis;
 
     public RedisRefreshTokenService(
         IDistributedCache cache,
-        ILogger<RedisRefreshTokenService> logger)
+        ILogger<RedisRefreshTokenService> logger,
+        IConnectionMultiplexer? redis = null)
     {
         _cache = cache;
         _logger = logger;
+        _redis = redis;
     }
 
     public async Task StoreRefreshTokenAsync(string userId, string refreshToken, TimeSpan expiration)
@@ -27,8 +33,8 @@ public class RedisRefreshTokenService : IRefreshTokenService
         try
         {
             var tokenHash = GetTokenHash(refreshToken);
-            var key = $"{TokenKeyPrefix}{userId}:{tokenHash}";
-            var lookupKey = $"{TokenLookupPrefix}{tokenHash}";
+            var key = $"refresh_token:{userId}:{tokenHash}";
+            var lookupKey = $"token_lookup:{tokenHash}";
             
             var tokenData = new RefreshTokenData
             {
@@ -64,7 +70,7 @@ public class RedisRefreshTokenService : IRefreshTokenService
         try
         {
             var tokenHash = GetTokenHash(refreshToken);
-            var key = $"{TokenKeyPrefix}{userId}:{tokenHash}";
+            var key = $"refresh_token:{userId}:{tokenHash}";
             var cachedToken = await _cache.GetStringAsync(key);
             
             if (string.IsNullOrEmpty(cachedToken))
@@ -95,7 +101,7 @@ public class RedisRefreshTokenService : IRefreshTokenService
         try
         {
             var tokenHash = GetTokenHash(refreshToken);
-            var lookupKey = $"{TokenLookupPrefix}{tokenHash}";
+            var lookupKey = $"token_lookup:{tokenHash}";
             var userId = await _cache.GetStringAsync(lookupKey);
             return userId;
         }
@@ -111,8 +117,8 @@ public class RedisRefreshTokenService : IRefreshTokenService
         try
         {
             var tokenHash = GetTokenHash(refreshToken);
-            var key = $"{TokenKeyPrefix}{userId}:{tokenHash}";
-            var lookupKey = $"{TokenLookupPrefix}{tokenHash}";
+            var key = $"refresh_token:{userId}:{tokenHash}";
+            var lookupKey = $"token_lookup:{tokenHash}";
             
             await _cache.RemoveAsync(key);
             await _cache.RemoveAsync(lookupKey);
@@ -128,17 +134,40 @@ public class RedisRefreshTokenService : IRefreshTokenService
 
     public async Task RevokeAllUserTokensAsync(string userId)
     {
+        if (_redis == null)
+        {
+            _logger.LogWarning("RevokeAllUserTokensAsync: Redis not configured; tokens will expire naturally.");
+            return;
+        }
+
         try
         {
-            // Note: This is a simplified implementation
-            // In production, you might want to maintain a set of all tokens per user
-            // For now, we'll log that all tokens should be considered revoked
-            // The tokens will expire naturally based on their TTL
-            _logger.LogInformation("All refresh tokens for user {UserId} will expire naturally", userId);
-            
-            // If you need immediate revocation of all tokens, consider maintaining
-            // a list of active tokens per user in Redis
-            await Task.CompletedTask;
+            var db = _redis.GetDatabase();
+            var pattern = $"{TokenKeyPrefix}{userId}:*";
+            var revoked = 0;
+
+            foreach (var endpoint in _redis.GetEndPoints())
+            {
+                var server = _redis.GetServer(endpoint);
+                foreach (var key in server.Keys(pattern: pattern))
+                {
+                    var keyStr = key.ToString();
+                    if (keyStr.StartsWith(TokenKeyPrefix, StringComparison.Ordinal))
+                    {
+                        var parts = keyStr.Split(':');
+                        if (parts.Length >= 4)
+                        {
+                            var tokenHash = parts[^1];
+                            var lookupKey = $"{TokenLookupPrefix}{tokenHash}";
+                            await db.KeyDeleteAsync(key);
+                            await db.KeyDeleteAsync(lookupKey);
+                            revoked++;
+                        }
+                    }
+                }
+            }
+
+            _logger.LogInformation("Revoked {Count} refresh token(s) for user {UserId}", revoked, userId);
         }
         catch (Exception ex)
         {

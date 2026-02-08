@@ -1,6 +1,6 @@
 @decorativeplant_be_HostAddress = http://localhost:5193
 
-GET {{decorativeplant_be_HostAddress}}/weatherforecast/
+GET {{decorativeplant_be_HostAddress}}/health
 Accept: application/json
 
 ###

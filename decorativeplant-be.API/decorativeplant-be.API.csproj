@@ -31,4 +31,8 @@
     <ProjectReference Include="..\decorativeplant-be.Infrastructure\decorativeplant-be.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="EmailTemplates\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

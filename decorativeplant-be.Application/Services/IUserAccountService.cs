@@ -10,6 +10,7 @@ public interface IUserAccountService
         string? phone,
         string role,
         string? displayName = null,
+        bool emailVerified = false,
         CancellationToken cancellationToken = default);
 
     Task<UserAccount?> FindByEmailAsync(string email, CancellationToken cancellationToken = default);
@@ -17,4 +18,9 @@ public interface IUserAccountService
     Task<UserAccount?> GetByIdAsync(Guid userId, CancellationToken cancellationToken = default);
 
     Task<bool> ValidatePasswordAsync(UserAccount userAccount, string password, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates the password for the given user (e.g. after password reset).
+    /// </summary>
+    Task UpdatePasswordAsync(Guid userId, string newPasswordHash, CancellationToken cancellationToken = default);
 }

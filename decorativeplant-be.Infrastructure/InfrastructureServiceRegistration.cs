@@ -12,6 +12,7 @@ using decorativeplant_be.Infrastructure.Data.Repositories;
 using decorativeplant_be.Infrastructure.Identity;
 using decorativeplant_be.Infrastructure.Jwt;
 using decorativeplant_be.Infrastructure.Cache;
+using decorativeplant_be.Infrastructure.Email;
 
 namespace decorativeplant_be.Infrastructure;
 
@@ -62,12 +63,12 @@ public static class InfrastructureServiceRegistration
         {
             services.AddStackExchangeRedisCache(options =>
             {
-                // Supports both formats:
-                // 1. Simple: host:port (for local Redis without auth)
-                // 2. Full: redis://username:password@host:port (for Redis Labs/cloud with auth)
                 options.Configuration = redisConnectionString;
                 options.InstanceName = "DecorativePlant:";
             });
+            // Register Redis connection for key scan/revoke-all (e.g. on password reset)
+            services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
+                StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
         }
         else
         {
@@ -75,8 +76,20 @@ public static class InfrastructureServiceRegistration
             services.AddDistributedMemoryCache();
         }
 
-        // Register Refresh Token Service
-        services.AddScoped<IRefreshTokenService, RedisRefreshTokenService>();
+        // Register Refresh Token Service (optional Redis connection for RevokeAll when Redis is configured)
+        services.AddScoped<IRefreshTokenService>(sp =>
+        {
+            var cache = sp.GetRequiredService<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
+            var logger = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RedisRefreshTokenService>>();
+            var connection = sp.GetService<StackExchange.Redis.IConnectionMultiplexer>();
+            return new RedisRefreshTokenService(cache, logger, connection);
+        });
+
+        // Email and OTP
+        services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
+        services.AddScoped<IEmailService, SmtpEmailService>();
+        services.AddScoped<IEmailTemplateService, EmailTemplateService>();
+        services.AddScoped<IOtpService, OtpService>();
 
         // Configure JWT Authentication
         services.AddAuthentication(options =>

@@ -1,0 +1,5 @@
+Verify your email
+
+Use this code to complete your registration: {{Code}}
+
+This code expires in {{ExpiresInMinutes}} minutes.
