@@ -29,7 +29,7 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
 
     public async Task<TokenResponse> Handle(LoginCommand request, CancellationToken cancellationToken)
     {
-        var userAccount = await _userAccountService.FindByEmailAsync(request.Email, cancellationToken);
+        var userAccount = await _userAccountService.FindByEmailAsync(request.Email, cancellationToken: cancellationToken);
         if (userAccount == null || !userAccount.IsActive)
         {
             throw new UnauthorizedException("Invalid email or password.");

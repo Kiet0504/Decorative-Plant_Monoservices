@@ -34,6 +34,8 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*
 COPY decorativeplant-be.API/entrypoint.sh /entrypoint.sh
+# Fix potential Windows CRLF issues
+RUN sed -i 's/\r$//' /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 WORKDIR /app
 COPY --from=publish /app/publish .

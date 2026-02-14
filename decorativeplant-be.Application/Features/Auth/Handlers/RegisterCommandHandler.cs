@@ -16,6 +16,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
     private readonly IRefreshTokenService _refreshTokenService;
     private readonly IOtpService _otpService;
     private readonly ILogger<RegisterCommandHandler> _logger;
+    private readonly IEmailTemplateService _emailTemplateService;
 
     public RegisterCommandHandler(
         IUserAccountService userAccountService,
@@ -23,6 +24,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
         IOtpService otpService,
+        IEmailTemplateService emailTemplateService,
         ILogger<RegisterCommandHandler> logger)
     {
         _userAccountService = userAccountService;
@@ -30,6 +32,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
         _otpService = otpService;
+        _emailTemplateService = emailTemplateService;
         _logger = logger;
     }
 
@@ -41,8 +44,8 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             throw new ValidationException("Password and confirmation password do not match.");
         }
 
-        // Check if email already exists
-        var existingUser = await _userAccountService.FindByEmailAsync(request.Email, cancellationToken);
+        // Check if email already exists (including inactive)
+        var existingUser = await _userAccountService.FindByEmailAsync(request.Email, true, cancellationToken);
         if (existingUser != null)
         {
             throw new ValidationException("Email is already registered.");
@@ -73,6 +76,36 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             displayName: displayName,
             emailVerified: emailVerified,
             cancellationToken: cancellationToken);
+
+
+        if (!emailVerified)
+        {
+             // Send OTP
+             const int expiresInMinutes = 10;
+             var code = await _otpService.CreateOtpAsync(request.Email, "Registration", expiresInMinutes, cancellationToken);
+             var model = new Dictionary<string, string>
+             {
+                 ["Code"] = code,
+                 ["ExpiresInMinutes"] = expiresInMinutes.ToString()
+             };
+
+             await _emailTemplateService.SendTemplateAsync(
+                 "RegistrationOtp",
+                 model,
+                 request.Email,
+                 "Verify your email for registration",
+                 cancellationToken: cancellationToken);
+                 
+             _logger.LogInformation("User {UserId} registered but not verified. OTP sent.", userAccount.Id);
+             
+             // Return success but no tokens
+             return new TokenResponse
+             {
+                 AccessToken = string.Empty,
+                 RefreshToken = string.Empty,
+                 ExpiresAt = DateTime.UtcNow
+             };
+        }
 
         // Generate JWT claims
         var claims = new List<Claim>

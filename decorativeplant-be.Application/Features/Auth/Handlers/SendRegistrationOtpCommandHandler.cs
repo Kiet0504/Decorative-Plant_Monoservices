@@ -28,7 +28,7 @@ public class SendRegistrationOtpCommandHandler : IRequestHandler<SendRegistratio
     public async Task<Unit> Handle(SendRegistrationOtpCommand request, CancellationToken cancellationToken)
     {
         var email = request.Email.Trim().ToLowerInvariant();
-        var existing = await _userAccountService.FindByEmailAsync(email, cancellationToken);
+        var existing = await _userAccountService.FindByEmailAsync(email, true, cancellationToken);
         if (existing != null)
             throw new ValidationException("Email is already registered.");
 
