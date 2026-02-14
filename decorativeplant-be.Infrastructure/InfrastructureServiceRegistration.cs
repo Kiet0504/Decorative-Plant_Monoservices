@@ -42,6 +42,9 @@ public static class InfrastructureServiceRegistration
         // Register RepositoryFactory
         services.AddScoped<IRepositoryFactory, RepositoryFactory>();
 
+        // Register Garden Repository (for entities that do not inherit BaseEntity)
+        services.AddScoped<IGardenRepository, GardenRepository>();
+
         // Register Custom Authentication Services
         services.AddScoped<IPasswordService, PasswordService>();
         services.AddScoped<IUserAccountService, UserAccountService>();
