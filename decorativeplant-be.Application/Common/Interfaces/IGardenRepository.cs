@@ -35,4 +35,17 @@ public interface IGardenRepository
     Task<IEnumerable<PlantDiagnosis>> GetPlantDiagnosesByPlantIdAsync(
         Guid gardenPlantId,
         CancellationToken cancellationToken = default);
+
+    Task<PlantDiagnosis> AddPlantDiagnosisAsync(PlantDiagnosis diagnosis, CancellationToken cancellationToken = default);
+
+    Task<PlantDiagnosis?> GetPlantDiagnosisByIdAsync(Guid id, CancellationToken cancellationToken = default);
+
+    Task UpdatePlantDiagnosisAsync(PlantDiagnosis diagnosis, CancellationToken cancellationToken = default);
+
+    Task<(IEnumerable<PlantDiagnosis> Items, int TotalCount)> GetDiagnosesByUserIdAsync(
+        Guid userId,
+        Guid? gardenPlantId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default);
 }

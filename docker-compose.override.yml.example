@@ -2,14 +2,12 @@
 # Copy this file to docker-compose.override.yml and customize as needed
 # docker-compose.override.yml is automatically used by docker-compose
 
-version: '3.8'
-
 services:
   api:
     environment:
-      # Override with your local .env values if needed
       - ASPNETCORE_ENVIRONMENT=Development
-      # Add any additional environment variables here
+      - SWAGGER_ENABLED=true
+      - ConnectionStrings__Redis=redis:6379
     volumes:
       # Mount source code for hot reload (optional, for development)
       - ./decorativeplant-be.API:/app

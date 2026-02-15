@@ -8,11 +8,13 @@ namespace decorativeplant_be.Domain.Entities;
 public class PlantDiagnosis
 {
     public Guid Id { get; set; }
+    public Guid? UserId { get; set; }
     public Guid? GardenPlantId { get; set; }
     public JsonDocument? UserInput { get; set; }
     public JsonDocument? AiResult { get; set; }
     public JsonDocument? Feedback { get; set; }
     public DateTime? CreatedAt { get; set; }
 
+    public UserAccount? User { get; set; }
     public GardenPlant? GardenPlant { get; set; }
 }

@@ -13,6 +13,7 @@ using decorativeplant_be.Infrastructure.Identity;
 using decorativeplant_be.Infrastructure.Jwt;
 using decorativeplant_be.Infrastructure.Cache;
 using decorativeplant_be.Infrastructure.Email;
+using decorativeplant_be.Infrastructure.Services;
 
 namespace decorativeplant_be.Infrastructure;
 
@@ -87,6 +88,11 @@ public static class InfrastructureServiceRegistration
             var connection = sp.GetService<StackExchange.Redis.IConnectionMultiplexer>();
             return new RedisRefreshTokenService(cache, logger, connection);
         });
+
+        // AI Diagnosis (OpenAI)
+        services.Configure<AiDiagnosisSettings>(configuration.GetSection(AiDiagnosisSettings.SectionName));
+        services.AddHttpClient();
+        services.AddScoped<IAiDiagnosisService, OpenAiDiagnosisService>();
 
         // Email and OTP
         services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));

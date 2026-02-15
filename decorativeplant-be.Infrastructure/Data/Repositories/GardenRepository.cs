@@ -116,4 +116,62 @@ public class GardenRepository : IGardenRepository
             .OrderByDescending(p => p.CreatedAt)
             .ToListAsync(cancellationToken);
     }
+
+    public async Task<PlantDiagnosis> AddPlantDiagnosisAsync(PlantDiagnosis diagnosis, CancellationToken cancellationToken = default)
+    {
+        diagnosis.CreatedAt ??= DateTime.UtcNow;
+        await _context.PlantDiagnoses.AddAsync(diagnosis, cancellationToken);
+        return diagnosis;
+    }
+
+    public async Task<PlantDiagnosis?> GetPlantDiagnosisByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await _context.PlantDiagnoses
+            .Include(p => p.GardenPlant)
+            .FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+    }
+
+    public Task UpdatePlantDiagnosisAsync(PlantDiagnosis diagnosis, CancellationToken cancellationToken = default)
+    {
+        _context.PlantDiagnoses.Update(diagnosis);
+        return Task.CompletedTask;
+    }
+
+    public async Task<(IEnumerable<PlantDiagnosis> Items, int TotalCount)> GetDiagnosesByUserIdAsync(
+        Guid userId,
+        Guid? gardenPlantId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        IQueryable<PlantDiagnosis> query;
+
+        if (gardenPlantId.HasValue)
+        {
+            var plant = await _context.GardenPlants.FindAsync([gardenPlantId.Value], cancellationToken);
+            if (plant == null || plant.UserId != userId)
+            {
+                return (Enumerable.Empty<PlantDiagnosis>(), 0);
+            }
+            query = _context.PlantDiagnoses.Where(p => p.GardenPlantId == gardenPlantId.Value);
+        }
+        else
+        {
+            var plantIdsForUser = _context.GardenPlants
+                .Where(g => g.UserId == userId)
+                .Select(g => g.Id);
+            query = _context.PlantDiagnoses
+                .Where(p => p.UserId == userId || (p.GardenPlantId != null && plantIdsForUser.Contains(p.GardenPlantId!.Value)));
+        }
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        var items = await query
+            .Include(p => p.GardenPlant)
+            .OrderByDescending(p => p.CreatedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        return (items, totalCount);
+    }
 }
