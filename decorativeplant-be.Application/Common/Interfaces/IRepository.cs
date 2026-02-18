@@ -3,7 +3,7 @@ using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Common.Interfaces;
 
-public interface IRepository<T> where T : BaseEntity
+public interface IRepository<T> where T : class
 {
     Task<T?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
     Task<IEnumerable<T>> GetAllAsync(CancellationToken cancellationToken = default);
