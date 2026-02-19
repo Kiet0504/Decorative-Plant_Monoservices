@@ -1,12 +1,13 @@
 using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Domain.Entities;
+using decorativeplant_be.Application.Common.Interfaces;
 
 namespace decorativeplant_be.Infrastructure.Data;
 
 /// <summary>
 /// DbContext for Smart Ornamental Plant Support System. Schema per DBML/PostgresDB.dbml.
 /// </summary>
-public class ApplicationDbContext : DbContext
+public class ApplicationDbContext : DbContext, IApplicationDbContext
 {
     public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
         : base(options)

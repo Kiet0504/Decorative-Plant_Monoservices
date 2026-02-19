@@ -85,6 +85,13 @@ public static class InfrastructureServiceRegistration
             return new RedisRefreshTokenService(cache, logger, connection);
         });
 
+        // PayOS Payment Service
+        services.AddSingleton<IPayOSService, decorativeplant_be.Infrastructure.Services.PayOSService>();
+
+        // Register IApplicationDbContext
+        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IApplicationDbContext>(sp =>
+            sp.GetRequiredService<ApplicationDbContext>());
+
         // Email and OTP
         services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));
         services.AddScoped<IEmailService, SmtpEmailService>();
