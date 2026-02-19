@@ -782,12 +782,17 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Property<Guid?>("GardenPlantId")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("UserId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("UserInput")
                         .HasColumnType("jsonb");
 
                     b.HasKey("Id");
 
                     b.HasIndex("GardenPlantId");
+
+                    b.HasIndex("UserId");
 
                     b.ToTable("plant_diagnosis", (string)null);
                 });
@@ -1685,7 +1690,14 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .HasForeignKey("GardenPlantId")
                         .OnDelete(DeleteBehavior.Cascade);
 
+                    b.HasOne("decorativeplant_be.Domain.Entities.UserAccount", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("GardenPlant");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.PlantTaxonomy", b =>

@@ -18,6 +18,10 @@ public class AuthController : BaseController
     public async Task<ActionResult<ApiResponse<TokenResponse>>> Register([FromBody] RegisterCommand command)
     {
         var result = await Mediator.Send(command);
+        if (string.IsNullOrEmpty(result.AccessToken))
+        {
+            return Ok(ApiResponse<TokenResponse>.SuccessResponse(result, "User registered successfully. Please check your email for verification code."));
+        }
         return Ok(ApiResponse<TokenResponse>.SuccessResponse(result, "User registered successfully."));
     }
 
@@ -76,5 +80,13 @@ public class AuthController : BaseController
     {
         await Mediator.Send(command);
         return Ok(ApiResponse<object>.SuccessResponse(new { }, "Verification code sent to your email."));
+    }
+
+    /// <summary>Verify email using OTP and activate account.</summary>
+    [HttpPost("verify-email")]
+    public async Task<ActionResult<ApiResponse<TokenResponse>>> VerifyEmail([FromBody] VerifyEmailCommand command)
+    {
+        var result = await Mediator.Send(command);
+        return Ok(ApiResponse<TokenResponse>.SuccessResponse(result, "Email verified successfully. You are now logged in."));
     }
 }

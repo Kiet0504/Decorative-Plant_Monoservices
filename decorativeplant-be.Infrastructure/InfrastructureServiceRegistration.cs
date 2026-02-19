@@ -13,6 +13,7 @@ using decorativeplant_be.Infrastructure.Identity;
 using decorativeplant_be.Infrastructure.Jwt;
 using decorativeplant_be.Infrastructure.Cache;
 using decorativeplant_be.Infrastructure.Email;
+using decorativeplant_be.Infrastructure.Services;
 
 namespace decorativeplant_be.Infrastructure;
 
@@ -41,6 +42,9 @@ public static class InfrastructureServiceRegistration
 
         // Register RepositoryFactory
         services.AddScoped<IRepositoryFactory, RepositoryFactory>();
+
+        // Register Garden Repository (for entities that do not inherit BaseEntity)
+        services.AddScoped<IGardenRepository, GardenRepository>();
 
         // Register Custom Authentication Services
         services.AddScoped<IPasswordService, PasswordService>();
@@ -91,6 +95,10 @@ public static class InfrastructureServiceRegistration
         // Register IApplicationDbContext
         services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IApplicationDbContext>(sp =>
             sp.GetRequiredService<ApplicationDbContext>());
+        // AI Diagnosis (OpenAI)
+        services.Configure<AiDiagnosisSettings>(configuration.GetSection(AiDiagnosisSettings.SectionName));
+        services.AddHttpClient();
+        services.AddScoped<IAiDiagnosisService, OpenAiDiagnosisService>();
 
         // Email and OTP
         services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));

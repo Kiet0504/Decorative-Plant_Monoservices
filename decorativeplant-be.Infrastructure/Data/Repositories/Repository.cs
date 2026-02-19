@@ -6,7 +6,7 @@ using decorativeplant_be.Infrastructure.Data;
 
 namespace decorativeplant_be.Infrastructure.Data.Repositories;
 
-public class Repository<T> : IRepository<T> where T : BaseEntity
+public class Repository<T> : IRepository<T> where T : class
 {
     protected readonly ApplicationDbContext _context;
     protected readonly DbSet<T> _dbSet;
@@ -39,14 +39,20 @@ public class Repository<T> : IRepository<T> where T : BaseEntity
 
     public virtual async Task<T> AddAsync(T entity, CancellationToken cancellationToken = default)
     {
-        entity.CreatedAt = DateTime.UtcNow;
+        if (entity is BaseEntity baseEntity)
+        {
+            baseEntity.CreatedAt = DateTime.UtcNow;
+        }
         await _dbSet.AddAsync(entity, cancellationToken);
         return entity;
     }
 
     public virtual Task UpdateAsync(T entity, CancellationToken cancellationToken = default)
     {
-        entity.UpdatedAt = DateTime.UtcNow;
+        if (entity is BaseEntity baseEntity)
+        {
+            baseEntity.UpdatedAt = DateTime.UtcNow;
+        }
         _dbSet.Update(entity);
         return Task.CompletedTask;
     }

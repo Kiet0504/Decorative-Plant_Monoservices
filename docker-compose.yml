@@ -66,6 +66,9 @@ services:
       - .env
     environment:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
+      - SWAGGER_ENABLED=${SWAGGER_ENABLED:-false}
+      - APP_UID=${APP_UID:-1654}
+      - APP_GID=${APP_GID:-1654}
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-DecorativePlantDB};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - ConnectionStrings__Redis=${ConnectionStrings__Redis:-redis:6379}
     ports:

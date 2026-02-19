@@ -38,7 +38,7 @@ public class ResetPasswordCommandHandler : IRequestHandler<ResetPasswordCommand,
         if (!isValid)
             throw new ValidationException("Invalid or expired verification code. Please request a new one.");
 
-        var user = await _userAccountService.FindByEmailAsync(email, cancellationToken);
+        var user = await _userAccountService.FindByEmailAsync(email, cancellationToken: cancellationToken);
         if (user == null)
             throw new ValidationException("Account not found.");
 

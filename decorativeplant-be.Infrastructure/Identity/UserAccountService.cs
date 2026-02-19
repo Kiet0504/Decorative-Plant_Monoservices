@@ -2,6 +2,7 @@ using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 using decorativeplant_be.Infrastructure.Data;
+using decorativeplant_be.Application.Common.Exceptions;
 
 namespace decorativeplant_be.Infrastructure.Identity;
 
@@ -38,7 +39,7 @@ public class UserAccountService : IUserAccountService
             PasswordHash = passwordHash,
             Phone = phone,
             Role = role,
-            IsActive = true,
+            IsActive = emailVerified, // Only active if verified
             DisplayName = displayName,
             EmailVerified = emailVerified,
             CreatedAt = DateTime.UtcNow
@@ -50,11 +51,11 @@ public class UserAccountService : IUserAccountService
         return userAccount;
     }
 
-    public async Task<UserAccount?> FindByEmailAsync(string email, CancellationToken cancellationToken = default)
+    public async Task<UserAccount?> FindByEmailAsync(string email, bool includeInactive = false, CancellationToken cancellationToken = default)
     {
         var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
         return await userAccountRepository.FirstOrDefaultAsync(
-            u => u.Email == email && u.IsActive,
+            u => u.Email == email && (includeInactive || u.IsActive),
             cancellationToken);
     }
 
@@ -83,5 +84,25 @@ public class UserAccountService : IUserAccountService
         user.UpdatedAt = DateTime.UtcNow;
         await userAccountRepository.UpdateAsync(user, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<UserAccount> VerifyEmailAsync(string email, CancellationToken cancellationToken = default)
+    {
+        var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
+        var user = await userAccountRepository.FirstOrDefaultAsync(u => u.Email == email, cancellationToken);
+        if (user == null)
+            throw new ValidationException("User not found.");
+
+        if (user.EmailVerified && user.IsActive)
+            return user;
+
+        user.EmailVerified = true;
+        user.IsActive = true;
+        user.UpdatedAt = DateTime.UtcNow;
+
+        await userAccountRepository.UpdateAsync(user, cancellationToken);
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        return user;
     }
 }

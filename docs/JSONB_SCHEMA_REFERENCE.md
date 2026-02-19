@@ -855,7 +855,16 @@
   "source": "purchased|gift|propagation|manual_add",
   "adopted_date": "2024-01-15",
   "health": "healthy|needs_attention|struggling",
-  "size": "medium"
+  "size": "small|medium|large",
+  "milestones": [
+    {
+      "id": "uuid",
+      "type": "first_leaf|new_growth|flowering|repotted|other",
+      "occurred_at": "2024-02-10T14:00:00Z",
+      "notes": "...",
+      "image_url": "https://..."
+    }
+  ]
 }
 ```
 
@@ -882,7 +891,7 @@
 
 ```json
 {
-  "action_type": "watered|fertilized|pruned|repotted",
+  "action_type": "watered|fertilized|pruned|repotted|inspected",
   "description": "...",
   "products": { "fertilizer": "NPK 10-10-10", "amount": "1 tbsp" },
   "observations": "...",

@@ -28,7 +28,7 @@ public class RequestPasswordResetCommandHandler : IRequestHandler<RequestPasswor
     public async Task<Unit> Handle(RequestPasswordResetCommand request, CancellationToken cancellationToken)
     {
         var email = request.Email.Trim().ToLowerInvariant();
-        var user = await _userAccountService.FindByEmailAsync(email, cancellationToken);
+        var user = await _userAccountService.FindByEmailAsync(email, cancellationToken: cancellationToken);
         if (user == null)
         {
             _logger.LogWarning("Password reset requested for non-existent email {Email}", email);

@@ -4,5 +4,5 @@ namespace decorativeplant_be.Application.Common.Interfaces;
 
 public interface IRepositoryFactory
 {
-    IRepository<T> CreateRepository<T>() where T : BaseEntity;
+    IRepository<T> CreateRepository<T>() where T : class;
 }
