@@ -85,4 +85,28 @@ public class InventoryController : BaseController
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<PagedResultDto<StockTransferDto>>.SuccessResponse(result, "Transfers retrieved."));
     }
+
+    /// <summary>
+    /// Get items with low stock.
+    /// </summary>
+    [HttpGet("low-stock")]
+    [Authorize(Roles = "Admin,Manager,Staff")]
+    public async Task<ActionResult<ApiResponse<List<LowStockItemDto>>>> GetLowStock([FromQuery] Guid? branchId, [FromQuery] int threshold = 10)
+    {
+        var query = new GetLowStockQuery { BranchId = branchId, Threshold = threshold };
+        var result = await Mediator.Send(query);
+        return Ok(ApiResponse<List<LowStockItemDto>>.SuccessResponse(result));
+    }
+
+    /// <summary>
+    /// Check product availability.
+    /// </summary>
+    [HttpGet("availability/{productListingId}")]
+    [AllowAnonymous]
+    public async Task<ActionResult<ApiResponse<ProductAvailabilityDto>>> GetAvailability(Guid productListingId)
+    {
+        var query = new GetProductAvailabilityQuery { ProductListingId = productListingId };
+        var result = await Mediator.Send(query);
+        return Ok(ApiResponse<ProductAvailabilityDto>.SuccessResponse(result));
+    }
 }
