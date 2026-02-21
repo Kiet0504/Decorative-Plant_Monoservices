@@ -49,8 +49,7 @@ public static class HealthIncidentMapper
             // Entity definition doesn't have ReportedBy/ResolvedBy columns. They should be in JSON StatusInfo or audit logs.
             // For now, mapping from JSON if present.
              ReportedBy = entity.StatusInfo?.RootElement.TryGetProperty("reported_by", out var rb) == true && Guid.TryParse(rb.GetString(), out var rbg) ? rbg : null,
-             ResolvedBy = entity.StatusInfo?.RootElement.TryGetProperty("resolved_by", out var rsb) == true && Guid.TryParse(rsb.GetString(), out var rsbg) ? rsbg : null,
-             AiEmbedding = entity.AiEmbedding != null ? JsonSerializer.Deserialize<object>(entity.AiEmbedding.RootElement.GetRawText(), JsonOptions) : null
+             ResolvedBy = entity.StatusInfo?.RootElement.TryGetProperty("resolved_by", out var rsb) == true && Guid.TryParse(rsb.GetString(), out var rsbg) ? rsbg : null
         };
     }
 

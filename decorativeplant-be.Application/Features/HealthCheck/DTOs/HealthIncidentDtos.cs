@@ -19,7 +19,6 @@ public class HealthIncidentDto
     public DateTime? ResolvedAt { get; set; }
     public Guid? ResolvedBy { get; set; }
     public string? ResolvedByName { get; set; }
-    public object? AiEmbedding { get; set; }
 }
 
 public class CreateHealthIncidentDto

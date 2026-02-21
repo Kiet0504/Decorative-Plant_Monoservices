@@ -34,7 +34,6 @@ public class UpdatePlantTaxonomyCommandHandler : IRequestHandler<UpdatePlantTaxo
         entity.CareInfo = PlantTaxonomyMapper.BuildJson(request.CareInfo);
         entity.GrowthInfo = PlantTaxonomyMapper.BuildJson(request.GrowthInfo);
         entity.ImageUrl = request.ImageUrl;
-        entity.Images = PlantTaxonomyMapper.BuildJson(request.Images);
         entity.CategoryId = request.CategoryId;
 
         await repo.UpdateAsync(entity, cancellationToken);

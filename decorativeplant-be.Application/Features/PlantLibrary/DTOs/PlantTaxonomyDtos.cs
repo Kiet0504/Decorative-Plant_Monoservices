@@ -15,7 +15,6 @@ public class PlantTaxonomyDto
     public object? GrowthInfo { get; set; }
     
     public string? ImageUrl { get; set; }
-    public object? Images { get; set; }
     public Guid? CategoryId { get; set; }
     public string? CategoryName { get; set; }
 }
@@ -40,11 +39,10 @@ public class CreatePlantTaxonomyDto
     public Dictionary<string, object>? GrowthInfo { get; set; }
     
     public string? ImageUrl { get; set; }
-    public List<string>? Images { get; set; }
     public Guid? CategoryId { get; set; }
 }
 
 public class UpdatePlantTaxonomyDto : CreatePlantTaxonomyDto
 {
-    public Guid Id { get; set; }
+    // Inherits everything, used for body
 }

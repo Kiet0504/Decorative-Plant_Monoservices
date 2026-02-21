@@ -26,12 +26,6 @@ public static class PlantBatchMapper
             try { specs = JsonSerializer.Deserialize<object>(entity.Specs.RootElement.GetRawText(), JsonOptions); } catch {}
         }
 
-        object? embedding = null;
-        if (entity.AiEmbedding != null)
-        {
-            try { embedding = JsonSerializer.Deserialize<object>(entity.AiEmbedding.RootElement.GetRawText(), JsonOptions); } catch {}
-        }
-
         return new PlantBatchDto
         {
             Id = entity.Id,
@@ -40,12 +34,11 @@ public static class PlantBatchMapper
             ParentBatchCode = entity.ParentBatch?.BatchCode,
             BranchId = entity.BranchId,
             TaxonomyId = entity.TaxonomyId,
-            SpeciesName = entity.Taxonomy?.ScientificName,
+            SpeciesName = entity.Taxonomy?.ScientificName, // Or common name if available/preferred
             SupplierId = entity.SupplierId,
             SupplierName = entity.Supplier?.Name,
             SourceInfo = sourceInfo,
             Specs = specs,
-            AiEmbedding = embedding,
             InitialQuantity = entity.InitialQuantity ?? 0,
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             CreatedAt = entity.CreatedAt
