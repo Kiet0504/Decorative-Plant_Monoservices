@@ -11,7 +11,8 @@ public class ReportHealthIncidentCommand : IRequest<HealthIncidentDto>
     public string? Description { get; set; }
     public List<string>? ImageUrls { get; set; }
     public DateTime? ReportedAt { get; set; }
+    public object? AiEmbedding { get; set; } // For sub-task 9.3
     
-    // Internal
-    public Guid? ReportedBy { get; set; }
+    // Internal user info
+    public Guid? PerformedBy { get; set; }
 }

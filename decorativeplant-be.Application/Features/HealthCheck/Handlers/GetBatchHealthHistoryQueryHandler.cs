@@ -19,10 +19,16 @@ public class GetBatchHealthHistoryQueryHandler : IRequestHandler<GetBatchHealthH
     {
         var repo = _repositoryFactory.CreateRepository<HealthIncident>();
         var incidents = await repo.FindAsync(h => h.BatchId == request.BatchId, cancellationToken);
-
-        // Map to DTO
-        var dtos = incidents.Select(HealthIncidentMapper.ToDto).ToList();
         
+        // Load batch info for mapper
+        var batchRepo = _repositoryFactory.CreateRepository<PlantBatch>();
+        var batch = await batchRepo.GetByIdAsync(request.BatchId, cancellationToken);
+
+        var dtos = incidents.Select(i => {
+            i.Batch = batch;
+            return HealthIncidentMapper.ToDto(i);
+        }).OrderByDescending(d => d.ReportedAt).ToList();
+
         return dtos;
     }
 }

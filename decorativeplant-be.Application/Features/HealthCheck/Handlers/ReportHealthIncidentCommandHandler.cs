@@ -1,9 +1,9 @@
+using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.HealthCheck.DTOs;
 using decorativeplant_be.Application.Features.HealthCheck.Commands;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
-using decorativeplant_be.Application.Common.Exceptions;
 
 namespace decorativeplant_be.Application.Features.HealthCheck.Handlers;
 
@@ -21,23 +21,18 @@ public class ReportHealthIncidentCommandHandler : IRequestHandler<ReportHealthIn
     public async Task<HealthIncidentDto> Handle(ReportHealthIncidentCommand request, CancellationToken cancellationToken)
     {
         var batchRepo = _repositoryFactory.CreateRepository<PlantBatch>();
-        if (!await batchRepo.ExistsAsync(x => x.Id == request.BatchId, cancellationToken))
+        var batch = await batchRepo.GetByIdAsync(request.BatchId, cancellationToken);
+        if (batch == null)
+        {
             throw new NotFoundException(nameof(PlantBatch), request.BatchId);
-
-        // Construct StatusInfo JSON
-        var statusInfo = new Dictionary<string, object>
-        {
-            { "status", "Reported" },
-            { "reported_at", request.ReportedAt ?? DateTime.UtcNow },
-            { "reported_by", request.ReportedBy?.ToString() ?? "" }
-        };
-
-        // Construct Images JSON
-        Dictionary<string, object>? images = null;
-        if (request.ImageUrls != null && request.ImageUrls.Any())
-        {
-            images = new Dictionary<string, object> { { "urls", request.ImageUrls } };
         }
+
+        var statusInfo = new
+        {
+            status = "Reported",
+            reported_at = request.ReportedAt ?? DateTime.UtcNow,
+            reported_by = request.PerformedBy
+        };
 
         var entity = new HealthIncident
         {
@@ -46,16 +41,26 @@ public class ReportHealthIncidentCommandHandler : IRequestHandler<ReportHealthIn
             IncidentType = request.IncidentType,
             Severity = request.Severity,
             Description = request.Description,
-            StatusInfo = HealthIncidentMapper.BuildJson(statusInfo),
-            Images = HealthIncidentMapper.BuildJson(images)
+            Details = HealthIncidentMapper.BuildJson(new { ai_embedding = request.AiEmbedding }),
+            Images = HealthIncidentMapper.BuildJson(request.ImageUrls),
+            StatusInfo = HealthIncidentMapper.BuildJson(statusInfo)
         };
 
         var repo = _repositoryFactory.CreateRepository<HealthIncident>();
         await repo.AddAsync(entity, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        // Fetch Batch for DTO
-        entity.Batch = await batchRepo.GetByIdAsync(request.BatchId, cancellationToken);
+        // Fetch relations for DTO
+        entity.Batch = batch;
+        if (request.PerformedBy.HasValue)
+        {
+            var userRepo = _repositoryFactory.CreateRepository<UserAccount>();
+            var user = await userRepo.FirstOrDefaultAsync(u => u.Id == request.PerformedBy.Value, cancellationToken);
+            // In a real app, Mapper or Handler would use the joined entity.
+            // For simplicity in this generic pattern, we'll rely on the mapper's JSON extraction for names if needed,
+            // or fetch the user here.
+            // Let's just pass the entity to mapper.
+        }
 
         return HealthIncidentMapper.ToDto(entity);
     }

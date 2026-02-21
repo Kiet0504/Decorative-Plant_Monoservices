@@ -13,61 +13,39 @@ namespace decorativeplant_be.API.Controllers;
 public class HealthIncidentController : BaseController
 {
     /// <summary>
-    /// Report a new health incident (Pest, Disease, etc.).
+    /// Report a new health incident for a plant batch.
     /// </summary>
     [HttpPost]
     [Authorize(Roles = "Admin,Manager,Staff")]
-    public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> Report([FromBody] CreateHealthIncidentDto dto)
+    public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> Report([FromBody] ReportHealthIncidentCommand command)
     {
-        var command = new ReportHealthIncidentCommand
-        {
-            BatchId = dto.BatchId,
-            IncidentType = dto.IncidentType,
-            Severity = dto.Severity,
-            Description = dto.Description,
-            ImageUrls = dto.ImageUrls,
-            ReportedAt = dto.ReportedAt,
-            ReportedBy = GetUserId()
-        };
-
+        command.PerformedBy = GetUserId();
         var result = await Mediator.Send(command);
         return StatusCode(201, ApiResponse<HealthIncidentDto>.SuccessResponse(result, "Health incident reported.", 201));
     }
 
     /// <summary>
-    /// Mark a health incident as resolved.
+    /// Update treatment details, cost, and recovery status for an incident.
     /// </summary>
-    [HttpPut("{id}/resolve")]
+    [HttpPut("{id}/treatment")]
     [Authorize(Roles = "Admin,Manager,Staff")]
-    public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> Resolve(Guid id, [FromBody] ResolveHealthIncidentDto dto)
+    public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> UpdateTreatment(Guid id, [FromBody] UpdateHealthIncidentTreatmentCommand command)
     {
-        if (id != dto.Id)
-        {
-            return BadRequest(ApiResponse<HealthIncidentDto>.ErrorResponse("ID mismatch."));
-        }
-
-        var command = new ResolveHealthIncidentCommand
-        {
-            Id = dto.Id,
-            ResolutionNotes = dto.ResolutionNotes,
-            TreatmentDetails = dto.TreatmentDetails,
-            ResolvedAt = dto.ResolvedAt,
-            ResolvedBy = GetUserId()
-        };
-
+        if (id != command.Id) return BadRequest(ApiResponse<HealthIncidentDto>.ErrorResponse("ID mismatch."));
+        
+        command.PerformedBy = GetUserId();
         var result = await Mediator.Send(command);
-        return Ok(ApiResponse<HealthIncidentDto>.SuccessResponse(result, "Health incident resolved."));
+        return Ok(ApiResponse<HealthIncidentDto>.SuccessResponse(result, "Treatment updated."));
     }
 
     /// <summary>
-    /// Get health history for a specific batch.
+    /// Get the health history (incidents) for a specific batch.
     /// </summary>
-    [HttpGet("batches/{batchId}/history")] // Note: Route is structured under batches logic but controller handles incidents
+    [HttpGet("batches/{batchId}/history")]
     [Authorize(Roles = "Admin,Manager,Staff")]
     public async Task<ActionResult<ApiResponse<List<HealthIncidentDto>>>> GetBatchHistory(Guid batchId)
     {
-        var query = new GetBatchHealthHistoryQuery { BatchId = batchId };
-        var result = await Mediator.Send(query);
-        return Ok(ApiResponse<List<HealthIncidentDto>>.SuccessResponse(result, "Health history retrieved."));
+        var result = await Mediator.Send(new GetBatchHealthHistoryQuery { BatchId = batchId });
+        return Ok(ApiResponse<List<HealthIncidentDto>>.SuccessResponse(result, "Batch health history retrieved."));
     }
 }
