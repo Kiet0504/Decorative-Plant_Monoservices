@@ -18,6 +18,7 @@ public class HealthIncident
     public JsonDocument? TreatmentInfo { get; set; }
     public JsonDocument? StatusInfo { get; set; }
     public JsonDocument? Images { get; set; }
+    public JsonDocument? AiEmbedding { get; set; }
 
     public PlantBatch? Batch { get; set; }
     public BatchStock? Stock { get; set; }

@@ -14,5 +14,6 @@ public class CreatePlantTaxonomyCommand : IRequest<PlantTaxonomyDto>
     public Dictionary<string, object>? GrowthInfo { get; set; }
     
     public string? ImageUrl { get; set; }
+    public List<string>? Images { get; set; }
     public Guid? CategoryId { get; set; }
 }

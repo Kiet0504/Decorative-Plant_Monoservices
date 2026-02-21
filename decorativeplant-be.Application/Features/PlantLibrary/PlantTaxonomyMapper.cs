@@ -45,6 +45,12 @@ public static class PlantTaxonomyMapper
             try { growthInfo = JsonSerializer.Deserialize<object>(entity.GrowthInfo.RootElement.GetRawText(), JsonOptions); } catch {}
         }
 
+        object? images = null;
+        if (entity.Images != null)
+        {
+            try { images = JsonSerializer.Deserialize<object>(entity.Images.RootElement.GetRawText(), JsonOptions); } catch {}
+        }
+
         return new PlantTaxonomyDto
         {
             Id = entity.Id,
@@ -55,6 +61,7 @@ public static class PlantTaxonomyMapper
             CareInfo = careInfo,
             GrowthInfo = growthInfo,
             ImageUrl = entity.ImageUrl,
+            Images = images,
             CategoryId = entity.CategoryId,
             CategoryName = entity.Category?.Name
         };

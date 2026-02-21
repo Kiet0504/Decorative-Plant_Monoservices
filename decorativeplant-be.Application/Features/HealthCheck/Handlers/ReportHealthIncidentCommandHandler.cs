@@ -47,7 +47,8 @@ public class ReportHealthIncidentCommandHandler : IRequestHandler<ReportHealthIn
             Severity = request.Severity,
             Description = request.Description,
             StatusInfo = HealthIncidentMapper.BuildJson(statusInfo),
-            Images = HealthIncidentMapper.BuildJson(images)
+            Images = HealthIncidentMapper.BuildJson(images),
+            AiEmbedding = null // Placeholder for AI process
         };
 
         var repo = _repositoryFactory.CreateRepository<HealthIncident>();

@@ -34,6 +34,7 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
             CareInfo = careInfoJson,
             GrowthInfo = growthInfoJson,
             ImageUrl = request.ImageUrl,
+            Images = PlantTaxonomyMapper.BuildJson(request.Images),
             CategoryId = request.CategoryId
         };
 

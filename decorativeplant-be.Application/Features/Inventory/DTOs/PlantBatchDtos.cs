@@ -17,6 +17,7 @@ public class PlantBatchDto
     // JSONB Fields
     public object? SourceInfo { get; set; }
     public object? Specs { get; set; }
+    public object? AiEmbedding { get; set; }
     
     public int InitialQuantity { get; set; }
     public int CurrentTotalQuantity { get; set; }

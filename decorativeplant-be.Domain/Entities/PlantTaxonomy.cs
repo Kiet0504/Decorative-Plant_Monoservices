@@ -14,6 +14,7 @@ public class PlantTaxonomy : BaseEntity
     public JsonDocument? CareInfo { get; set; }
     public JsonDocument? GrowthInfo { get; set; }
     public string? ImageUrl { get; set; }
+    public JsonDocument? Images { get; set; }
     public Guid? CategoryId { get; set; }
 
     public PlantCategory? Category { get; set; }

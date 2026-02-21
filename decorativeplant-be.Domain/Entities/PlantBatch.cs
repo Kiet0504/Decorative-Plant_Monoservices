@@ -18,6 +18,7 @@ public class PlantBatch
     public int? InitialQuantity { get; set; }
     public int? CurrentTotalQuantity { get; set; }
     public DateTime? CreatedAt { get; set; }
+    public JsonDocument? AiEmbedding { get; set; }
 
     public Branch? Branch { get; set; }
     public PlantTaxonomy? Taxonomy { get; set; }
