@@ -11,6 +11,7 @@ public class IotDeviceConfiguration : IEntityTypeConfiguration<IotDevice>
         builder.ToTable("iot_device");
         builder.HasKey(i => i.Id);
         builder.Property(i => i.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(i => i.SecretKey).IsRequired().HasMaxLength(255);
         builder.Property(i => i.DeviceInfo).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(i => i.Status).HasMaxLength(50);
         builder.Property(i => i.ActivityLog).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);

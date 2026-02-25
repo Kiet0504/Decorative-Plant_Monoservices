@@ -46,6 +46,9 @@ public static class InfrastructureServiceRegistration
         // Register Garden Repository (for entities that do not inherit BaseEntity)
         services.AddScoped<IGardenRepository, GardenRepository>();
 
+        // Register IoT Repository
+        services.AddScoped<IIotRepository, IotRepository>();
+
         // Register Custom Authentication Services
         services.AddScoped<IPasswordService, PasswordService>();
         services.AddScoped<IUserAccountService, UserAccountService>();
