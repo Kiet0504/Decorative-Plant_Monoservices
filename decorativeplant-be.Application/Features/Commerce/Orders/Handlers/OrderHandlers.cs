@@ -3,6 +3,7 @@ using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
+using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
@@ -28,7 +29,10 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
         var orderItems = new List<OrderItem>();
         decimal subtotal = 0;
 
-        foreach (var item in req.Items)
+        using var transaction = await _context.Database.BeginTransactionAsync(ct);
+        try
+        {
+            foreach (var item in req.Items)
         {
             var listing = await _context.ProductListings.FindAsync(new object[] { item.ListingId }, ct)
                 ?? throw new NotFoundException($"Listing {item.ListingId} not found.");
@@ -62,6 +66,53 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
             });
         }
 
+        decimal discount = 0;
+        if (!string.IsNullOrEmpty(req.VoucherCode))
+        {
+            var voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
+            if (voucher != null)
+            {
+                int usageLimit = int.MaxValue;
+                int usedCount = 0;
+                decimal minOrder = 0;
+
+                if (voucher.Rules != null)
+                {
+                    var rulesRoot = voucher.Rules.RootElement;
+                    usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
+                    usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
+                    minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
+                }
+
+                if (usedCount < usageLimit && subtotal >= minOrder)
+                {
+                    if (voucher.Info != null)
+                    {
+                        var infoRoot = voucher.Info.RootElement;
+                        var type = infoRoot.TryGetProperty("discount_type", out var dt) ? dt.GetString() : null;
+                        var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
+                        var val = decimal.Parse(valStr);
+
+                        if (type == "percentage") discount = subtotal * (val / 100);
+                        else if (type == "fixed") discount = val;
+                    }
+
+                    if (voucher.Rules != null)
+                    {
+                        var rules = new Dictionary<string, object?>();
+                        foreach (var p in voucher.Rules.RootElement.EnumerateObject())
+                            rules[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : 
+                                (p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : p.Value.GetRawText());
+                        rules["used_count"] = usedCount + 1;
+                        voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
+                    }
+                }
+            }
+        }
+
+        decimal total = subtotal - discount;
+        if (total < 0) total = 0;
+
         var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
 
         var order = new OrderHeader
@@ -71,7 +122,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
             UserId = cmd.UserId,
             BranchId = req.BranchId,
             TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
-            Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = subtotal.ToString("0"), shipping = "0", discount = "0", tax = "0", total = subtotal.ToString("0") })),
+            Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = subtotal.ToString("0"), shipping = "0", discount = discount.ToString("0"), tax = "0", total = total.ToString("0") })),
             Status = "pending",
             Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
             DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City })) : null,
@@ -79,11 +130,18 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
             OrderItems = orderItems
         };
 
-        _context.OrderHeaders.Add(order);
-        await _context.SaveChangesAsync(ct);
+            _context.OrderHeaders.Add(order);
+            await _context.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
 
-        _logger.LogInformation("Created Order {OrderCode}", orderCode);
-        return MapToResponse(order);
+            _logger.LogInformation("Created Order {OrderCode}", orderCode);
+            return MapToResponse(order);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
     }
 
     internal static OrderResponse MapToResponse(OrderHeader o)
@@ -200,26 +258,70 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
                 notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
         notes["cancellation_reason"] = cmd.Request.CancellationReason;
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+        
+        // Restore stock
+        if (order.OrderItems != null)
+        {
+            foreach (var item in order.OrderItems)
+            {
+                if (item.StockId.HasValue)
+                {
+                    var stock = await _context.BatchStocks.FindAsync(new object[] { item.StockId.Value }, ct);
+                    if (stock != null && stock.Quantities != null)
+                    {
+                        var root = stock.Quantities.RootElement;
+                        var total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
+                        var reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
+                        var available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
+                        
+                        // Deduct from reserved and add back to available
+                        var q = item.Quantity;
+                        reserved -= q;
+                        if (reserved < 0) reserved = 0;
+                        available += q;
+                        
+                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                        {
+                            quantity = total,
+                            reserved_quantity = reserved,
+                            available_quantity = available
+                        }));
+                    }
+                }
+            }
+        }
 
         await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);
     }
 }
 
-public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, List<OrderResponse>>
+public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<OrderResponse>>
 {
     private readonly IApplicationDbContext _context;
     public GetOrdersHandler(IApplicationDbContext context) => _context = context;
 
-    public async Task<List<OrderResponse>> Handle(GetOrdersQuery query, CancellationToken ct)
+    public async Task<PagedResult<OrderResponse>> Handle(GetOrdersQuery query, CancellationToken ct)
     {
         var q = _context.OrderHeaders.Include(o => o.OrderItems).AsQueryable();
         if (query.UserId.HasValue) q = q.Where(o => o.UserId == query.UserId);
         if (query.BranchId.HasValue) q = q.Where(o => o.BranchId == query.BranchId);
         if (!string.IsNullOrEmpty(query.Status)) q = q.Where(o => o.Status == query.Status);
 
-        var orders = await q.OrderByDescending(o => o.CreatedAt).ToListAsync(ct);
-        return orders.Select(CreateOrderHandler.MapToResponse).ToList();
+        var total = await q.CountAsync(ct);
+        
+        var orders = await q.OrderByDescending(o => o.CreatedAt)
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToListAsync(ct);
+            
+        return new PagedResult<OrderResponse>
+        {
+            Items = orders.Select(CreateOrderHandler.MapToResponse).ToList(),
+            TotalCount = total,
+            Page = query.Page,
+            PageSize = query.PageSize
+        };
     }
 }
 

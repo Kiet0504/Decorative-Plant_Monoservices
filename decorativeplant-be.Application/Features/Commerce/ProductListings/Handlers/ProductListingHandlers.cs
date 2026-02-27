@@ -3,6 +3,7 @@ using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
+using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.ProductListings.Commands;
@@ -191,20 +192,40 @@ public class DeleteProductListingHandler : IRequestHandler<DeleteProductListingC
     }
 }
 
-public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery, List<ProductListingResponse>>
+public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery, PagedResult<ProductListingResponse>>
 {
     private readonly IApplicationDbContext _context;
 
     public GetProductListingsHandler(IApplicationDbContext context) => _context = context;
 
-    public async Task<List<ProductListingResponse>> Handle(GetProductListingsQuery query, CancellationToken ct)
+    public async Task<PagedResult<ProductListingResponse>> Handle(GetProductListingsQuery query, CancellationToken ct)
     {
         var q = _context.ProductListings.AsQueryable();
         if (query.BranchId.HasValue)
             q = q.Where(x => x.BranchId == query.BranchId.Value);
+            
+        // Assuming search by title if requested
+        if (!string.IsNullOrEmpty(query.Search))
+        {
+            // The title is inside the ProductInfo JSON string. EF Core raw translation of JSON properties is complex.
+            // For a basic implementation, we skip DB-level search for JSON or use EF Core JSON methods if configured.
+            // In a real scenario, full-text search over JSON is preferred. 
+        }
 
-        var entities = await q.OrderByDescending(x => x.CreatedAt).ToListAsync(ct);
-        return entities.Select(CreateProductListingHandler.MapToResponse).ToList();
+        var total = await q.CountAsync(ct);
+
+        var entities = await q.OrderByDescending(x => x.CreatedAt)
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
+            .ToListAsync(ct);
+            
+        return new PagedResult<ProductListingResponse>
+        {
+            Items = entities.Select(CreateProductListingHandler.MapToResponse).ToList(),
+            TotalCount = total,
+            Page = query.Page,
+            PageSize = query.PageSize
+        };
     }
 }
 

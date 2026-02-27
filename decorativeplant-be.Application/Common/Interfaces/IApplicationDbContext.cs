@@ -22,5 +22,10 @@ public interface IApplicationDbContext
     // Module 7: Reviews
     DbSet<ProductReview> ProductReviews { get; }
 
+    // Module 4: Inventory
+    DbSet<BatchStock> BatchStocks { get; }
+
+    Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
+    
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

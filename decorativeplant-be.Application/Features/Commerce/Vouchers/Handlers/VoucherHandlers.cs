@@ -2,6 +2,7 @@ using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
+using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Vouchers.Commands;
@@ -103,16 +104,30 @@ public class DeleteVoucherHandler : IRequestHandler<DeleteVoucherCommand, bool>
     }
 }
 
-public class GetVouchersHandler : IRequestHandler<GetVouchersQuery, List<VoucherResponse>>
+public class GetVouchersHandler : IRequestHandler<GetVouchersQuery, PagedResult<VoucherResponse>>
 {
     private readonly IApplicationDbContext _context;
     public GetVouchersHandler(IApplicationDbContext context) => _context = context;
-    public async Task<List<VoucherResponse>> Handle(GetVouchersQuery q, CancellationToken ct)
+    public async Task<PagedResult<VoucherResponse>> Handle(GetVouchersQuery q, CancellationToken ct)
     {
         var query = _context.Vouchers.AsQueryable();
         if (q.BranchId.HasValue) query = query.Where(v => v.BranchId == q.BranchId);
         if (q.ActiveOnly == true) query = query.Where(v => v.IsActive);
-        return (await query.ToListAsync(ct)).Select(CreateVoucherHandler.MapToResponse).ToList();
+        
+        var total = await query.CountAsync(ct);
+        
+        var items = await query
+            .Skip((q.Page - 1) * q.PageSize)
+            .Take(q.PageSize)
+            .ToListAsync(ct);
+            
+        return new PagedResult<VoucherResponse>
+        {
+            Items = items.Select(CreateVoucherHandler.MapToResponse).ToList(),
+            TotalCount = total,
+            Page = q.Page,
+            PageSize = q.PageSize
+        };
     }
 }
 

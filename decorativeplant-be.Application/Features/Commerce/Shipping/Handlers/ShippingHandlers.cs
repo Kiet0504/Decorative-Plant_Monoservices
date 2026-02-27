@@ -2,6 +2,7 @@ using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
+using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Shipping.Commands;
@@ -179,15 +180,29 @@ public class DeleteShippingZoneHandler : IRequestHandler<DeleteShippingZoneComma
     }
 }
 
-public class GetShippingZonesHandler : IRequestHandler<GetShippingZonesQuery, List<ShippingZoneResponse>>
+public class GetShippingZonesHandler : IRequestHandler<GetShippingZonesQuery, PagedResult<ShippingZoneResponse>>
 {
     private readonly IApplicationDbContext _context;
     public GetShippingZonesHandler(IApplicationDbContext context) => _context = context;
-    public async Task<List<ShippingZoneResponse>> Handle(GetShippingZonesQuery q, CancellationToken ct)
+    public async Task<PagedResult<ShippingZoneResponse>> Handle(GetShippingZonesQuery q, CancellationToken ct)
     {
         var query = _context.ShippingZones.AsQueryable();
         if (q.BranchId.HasValue) query = query.Where(z => z.BranchId == q.BranchId);
-        return (await query.ToListAsync(ct)).Select(CreateShippingZoneHandler.MapToResponse).ToList();
+        
+        var total = await query.CountAsync(ct);
+        
+        var list = await query
+            .Skip((q.Page - 1) * q.PageSize)
+            .Take(q.PageSize)
+            .ToListAsync(ct);
+            
+        return new PagedResult<ShippingZoneResponse>
+        {
+            Items = list.Select(CreateShippingZoneHandler.MapToResponse).ToList(),
+            TotalCount = total,
+            Page = q.Page,
+            PageSize = q.PageSize
+        };
     }
 }
 

@@ -88,20 +88,34 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
 public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookCommand, bool>
 {
     private readonly IApplicationDbContext _context;
+    private readonly IPayOSService _payOS;
     private readonly ILogger<HandlePayOSWebhookHandler> _logger;
 
-    public HandlePayOSWebhookHandler(IApplicationDbContext context, ILogger<HandlePayOSWebhookHandler> logger)
-    { _context = context; _logger = logger; }
+    public HandlePayOSWebhookHandler(IApplicationDbContext context, IPayOSService payOS, ILogger<HandlePayOSWebhookHandler> logger)
+    { _context = context; _payOS = payOS; _logger = logger; }
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
     {
         if (cmd.Webhook.Data == null) return false;
+        
+        // Serialize the data back to JSON string for signature verification
+        var dataString = JsonSerializer.Serialize(cmd.Webhook.Data);
+        if (!_payOS.VerifyWebhookSignature(dataString, cmd.Webhook.Signature))
+        {
+            _logger.LogWarning("Invalid webhook signature for order code: {OrderCode}", cmd.Webhook.Data.OrderCode);
+            throw new BadRequestException("Invalid webhook signature.");
+        }
+
         var orderCode = cmd.Webhook.Data.OrderCode;
-        var payments = await _context.PaymentTransactions.ToListAsync(ct);
-        var payment = payments.FirstOrDefault(p =>
+        var orderCodeStr = orderCode.ToString();
+        
+        // Optimization: Lazily load matching payment instead of buffering all into memory
+        var payment = _context.PaymentTransactions.AsEnumerable().FirstOrDefault(p =>
         {
             if (p.Details == null) return false;
-            return p.Details.RootElement.TryGetProperty("payos_order_code", out var poc) && poc.ValueKind == JsonValueKind.Number && poc.GetInt64() == orderCode;
+            return p.Details.RootElement.TryGetProperty("payos_order_code", out var poc) && 
+                   poc.ValueKind == JsonValueKind.Number && 
+                   poc.GetInt64() == orderCode;
         });
         if (payment == null) return false;
 

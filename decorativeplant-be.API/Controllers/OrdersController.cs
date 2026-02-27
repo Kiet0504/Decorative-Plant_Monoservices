@@ -5,20 +5,22 @@ using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace decorativeplant_be.API.Controllers;
 
 [Route("api/v{version:apiVersion}/orders")]
+[EnableRateLimiting("CartAndOrderPolicy")]
 public class OrdersController : BaseController
 {
     private Guid GetUserId() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? throw new UnauthorizedAccessException());
 
     [HttpGet]
     [Authorize]
-    public async Task<IActionResult> GetOrders([FromQuery] Guid? branchId, [FromQuery] string? status)
+    public async Task<IActionResult> GetOrders([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await Mediator.Send(new GetOrdersQuery { UserId = GetUserId(), BranchId = branchId, Status = status });
-        return Ok(ApiResponse<List<OrderResponse>>.SuccessResponse(result));
+        var result = await Mediator.Send(new GetOrdersQuery { UserId = GetUserId(), BranchId = branchId, Status = status, Page = page, PageSize = pageSize });
+        return Ok(ApiResponse<PagedResult<OrderResponse>>.SuccessResponse(result));
     }
 
     [HttpGet("{id:guid}")]

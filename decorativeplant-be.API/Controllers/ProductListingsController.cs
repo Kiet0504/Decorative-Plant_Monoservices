@@ -11,10 +11,10 @@ namespace decorativeplant_be.API.Controllers;
 public class ProductListingsController : BaseController
 {
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] string? search)
+    public async Task<IActionResult> GetAll([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await Mediator.Send(new GetProductListingsQuery { BranchId = branchId, Status = status, Search = search });
-        return Ok(ApiResponse<List<ProductListingResponse>>.SuccessResponse(result));
+        var result = await Mediator.Send(new GetProductListingsQuery { BranchId = branchId, Status = status, Search = search, Page = page, PageSize = pageSize });
+        return Ok(ApiResponse<PagedResult<ProductListingResponse>>.SuccessResponse(result));
     }
 
     [HttpGet("{id:guid}")]

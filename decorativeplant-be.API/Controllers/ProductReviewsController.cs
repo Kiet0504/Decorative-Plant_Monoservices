@@ -14,10 +14,10 @@ public class ProductReviewsController : BaseController
     private Guid GetUserId() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? throw new UnauthorizedAccessException());
 
     [HttpGet("listing/{listingId:guid}")]
-    public async Task<IActionResult> GetByListing(Guid listingId)
+    public async Task<IActionResult> GetByListing(Guid listingId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await Mediator.Send(new GetReviewsByListingQuery { ListingId = listingId });
-        return Ok(ApiResponse<List<ProductReviewResponse>>.SuccessResponse(result));
+        var result = await Mediator.Send(new GetReviewsByListingQuery { ListingId = listingId, Page = page, PageSize = pageSize });
+        return Ok(ApiResponse<PagedResult<ProductReviewResponse>>.SuccessResponse(result));
     }
 
     [HttpGet("{id:guid}")]

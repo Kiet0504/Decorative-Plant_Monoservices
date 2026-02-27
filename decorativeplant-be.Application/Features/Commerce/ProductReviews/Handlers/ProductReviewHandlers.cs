@@ -2,6 +2,7 @@ using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
+using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.ProductReviews.Commands;
@@ -18,6 +19,20 @@ public class CreateProductReviewHandler : IRequestHandler<CreateProductReviewCom
     public async Task<ProductReviewResponse> Handle(CreateProductReviewCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
+
+        if (req.OrderId.HasValue)
+        {
+            var order = await _context.OrderHeaders.Include(o => o.OrderItems)
+                .FirstOrDefaultAsync(o => o.Id == req.OrderId.Value, ct)
+                ?? throw new BadRequestException("Invalid OrderId for review verification.");
+
+            if (order.UserId != cmd.UserId) throw new BadRequestException("Order does not belong to the authenticated user.");
+            if (order.Status != "completed" && order.Status != "delivered") throw new BadRequestException("Order must be completed or delivered to leave a verified review.");
+            
+            bool hasItem = order.OrderItems != null && order.OrderItems.Any(i => i.ListingId == req.ListingId);
+            if (!hasItem) throw new BadRequestException("Order does not contain the reviewed product.");
+        }
+
         var entity = new ProductReview
         {
             Id = Guid.NewGuid(), ListingId = req.ListingId, UserId = cmd.UserId, OrderId = req.OrderId,
@@ -81,18 +96,41 @@ public class DeleteProductReviewHandler : IRequestHandler<DeleteProductReviewCom
     public async Task<bool> Handle(DeleteProductReviewCommand cmd, CancellationToken ct)
     {
         var e = await _context.ProductReviews.FindAsync(new object[] { cmd.Id }, ct) ?? throw new NotFoundException($"Review {cmd.Id} not found.");
-        _context.ProductReviews.Remove(e); await _context.SaveChangesAsync(ct); return true;
+        e.StatusInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { status = "deleted" }));
+        await _context.SaveChangesAsync(ct); 
+        return true;
     }
 }
 
-public class GetReviewsByListingHandler : IRequestHandler<GetReviewsByListingQuery, List<ProductReviewResponse>>
+public class GetReviewsByListingHandler : IRequestHandler<GetReviewsByListingQuery, PagedResult<ProductReviewResponse>>
 {
     private readonly IApplicationDbContext _context;
     public GetReviewsByListingHandler(IApplicationDbContext context) => _context = context;
-    public async Task<List<ProductReviewResponse>> Handle(GetReviewsByListingQuery q, CancellationToken ct)
+    public async Task<PagedResult<ProductReviewResponse>> Handle(GetReviewsByListingQuery q, CancellationToken ct)
     {
-        var list = await _context.ProductReviews.Where(r => r.ListingId == q.ListingId).OrderByDescending(r => r.CreatedAt).ToListAsync(ct);
-        return list.Select(CreateProductReviewHandler.MapToResponse).ToList();
+        var query = _context.ProductReviews.Where(r => r.ListingId == q.ListingId);
+        
+        var listRaw = await query.OrderByDescending(r => r.CreatedAt).ToListAsync(ct);
+        var excludedDeletes = listRaw.Where(r => 
+        {
+            if (r.StatusInfo == null) return true;
+            return !(r.StatusInfo.RootElement.TryGetProperty("status", out var s) && s.GetString() == "deleted");
+        }).ToList();
+        
+        var total = excludedDeletes.Count;
+        
+        var list = excludedDeletes
+            .Skip((q.Page - 1) * q.PageSize)
+            .Take(q.PageSize)
+            .ToList();
+            
+        return new PagedResult<ProductReviewResponse>
+        {
+            Items = list.Select(CreateProductReviewHandler.MapToResponse).ToList(),
+            TotalCount = total,
+            Page = q.Page,
+            PageSize = q.PageSize
+        };
     }
 }
 

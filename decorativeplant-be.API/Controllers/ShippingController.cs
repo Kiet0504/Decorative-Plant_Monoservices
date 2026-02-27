@@ -38,10 +38,10 @@ public class ShippingController : BaseController
 public class ShippingZonesController : BaseController
 {
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? branchId)
+    public async Task<IActionResult> GetAll([FromQuery] Guid? branchId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await Mediator.Send(new GetShippingZonesQuery { BranchId = branchId });
-        return Ok(ApiResponse<List<ShippingZoneResponse>>.SuccessResponse(result));
+        var result = await Mediator.Send(new GetShippingZonesQuery { BranchId = branchId, Page = page, PageSize = pageSize });
+        return Ok(ApiResponse<PagedResult<ShippingZoneResponse>>.SuccessResponse(result));
     }
 
     [HttpGet("{id:guid}")]

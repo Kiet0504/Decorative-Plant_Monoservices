@@ -5,11 +5,13 @@ using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Features.Commerce.ShoppingCart.Commands;
 using decorativeplant_be.Application.Features.Commerce.ShoppingCart.Queries;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace decorativeplant_be.API.Controllers;
 
 [Route("api/v{version:apiVersion}/cart")]
 [Authorize]
+[EnableRateLimiting("CartAndOrderPolicy")]
 public class ShoppingCartController : BaseController
 {
     private Guid GetUserId() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? throw new UnauthorizedAccessException());

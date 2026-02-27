@@ -18,6 +18,9 @@ public class AddToCartHandler : IRequestHandler<AddToCartCommand, ShoppingCartRe
 
     public async Task<ShoppingCartResponse> Handle(AddToCartCommand cmd, CancellationToken ct)
     {
+        var listing = await _context.ProductListings.FindAsync(new object[] { cmd.Request.ListingId }, ct)
+            ?? throw new NotFoundException($"Listing {cmd.Request.ListingId} not found.");
+
         var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == cmd.UserId, ct);
         var items = new List<CartItemDto>();
 

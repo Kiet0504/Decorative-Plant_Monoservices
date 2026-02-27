@@ -11,10 +11,10 @@ namespace decorativeplant_be.API.Controllers;
 public class VouchersController : BaseController
 {
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? branchId, [FromQuery] bool? activeOnly)
+    public async Task<IActionResult> GetAll([FromQuery] Guid? branchId, [FromQuery] bool? activeOnly, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await Mediator.Send(new GetVouchersQuery { BranchId = branchId, ActiveOnly = activeOnly });
-        return Ok(ApiResponse<List<VoucherResponse>>.SuccessResponse(result));
+        var result = await Mediator.Send(new GetVouchersQuery { BranchId = branchId, ActiveOnly = activeOnly, Page = page, PageSize = pageSize });
+        return Ok(ApiResponse<PagedResult<VoucherResponse>>.SuccessResponse(result));
     }
 
     [HttpGet("{id:guid}")]
