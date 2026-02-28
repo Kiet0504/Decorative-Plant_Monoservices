@@ -11,6 +11,7 @@ public class IotDevice
     public Guid Id { get; set; }
     public Guid? BranchId { get; set; }
     public Guid? LocationId { get; set; }
+    public string SecretKey { get; set; } = string.Empty;
     public JsonDocument? DeviceInfo { get; set; }
     public string? Status { get; set; }
     public JsonDocument? ActivityLog { get; set; }
