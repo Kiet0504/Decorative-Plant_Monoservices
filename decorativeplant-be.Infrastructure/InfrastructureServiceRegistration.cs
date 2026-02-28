@@ -92,6 +92,12 @@ public static class InfrastructureServiceRegistration
             return new RedisRefreshTokenService(cache, logger, connection);
         });
 
+        // PayOS Payment Service
+        services.AddSingleton<IPayOSService, decorativeplant_be.Infrastructure.Services.PayOSService>();
+
+        // Register IApplicationDbContext
+        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IApplicationDbContext>(sp =>
+            sp.GetRequiredService<ApplicationDbContext>());
         // AI Diagnosis (OpenAI)
         services.Configure<AiDiagnosisSettings>(configuration.GetSection(AiDiagnosisSettings.SectionName));
         services.AddHttpClient();

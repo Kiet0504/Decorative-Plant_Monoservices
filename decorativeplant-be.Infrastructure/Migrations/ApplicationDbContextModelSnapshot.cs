@@ -486,7 +486,7 @@ namespace decorativeplant_be.Infrastructure.Migrations
 
                     b.HasIndex("DeviceId");
 
-                    b.ToTable("IotAlerts");
+                    b.ToTable("IotAlerts", (string)null);
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.IotDevice", b =>
@@ -765,7 +765,7 @@ namespace decorativeplant_be.Infrastructure.Migrations
 
                     b.HasIndex("ParentId");
 
-                    b.ToTable("PlantCategories");
+                    b.ToTable("PlantCategories", (string)null);
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.PlantDiagnosis", b =>

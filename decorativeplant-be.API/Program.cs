@@ -10,6 +10,8 @@ using decorativeplant_be.Infrastructure;
 using decorativeplant_be.Infrastructure.Data;
 using decorativeplant_be.API.Extensions;
 using decorativeplant_be.API.Middleware;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Threading.RateLimiting;
 
 // Load environment variables from .env file (if it exists)
 // This should be done before any configuration is read
@@ -67,6 +69,19 @@ try
     // Add Health Checks
     builder.Services.AddHealthChecks()
         .AddDbContextCheck<ApplicationDbContext>("database");
+        
+    // Add Rate Limiting
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.AddFixedWindowLimiter("CartAndOrderPolicy", opt =>
+        {
+            opt.PermitLimit = 30; // 30 requests per minute
+            opt.Window = TimeSpan.FromMinutes(1);
+            opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+            opt.QueueLimit = 0;
+        });
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    });
 
     var app = builder.Build();
 
@@ -111,6 +126,8 @@ try
     }
 
     app.UseHttpsRedirection();
+
+    app.UseRateLimiter(); // Must be after routing/cors, before auth ideally
 
     app.UseAuthentication();
     app.UseAuthorization();
