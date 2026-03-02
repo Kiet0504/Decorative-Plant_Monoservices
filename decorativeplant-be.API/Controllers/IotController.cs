@@ -1,4 +1,10 @@
+using decorativeplant_be.Application.DTOs.IoT;
+using decorativeplant_be.Application.Features.IoT.Commands.CreateIotDevice;
+using decorativeplant_be.Application.Features.IoT.Commands.DeleteIotDevice;
 using decorativeplant_be.Application.Features.IoT.Commands.IngestSensorData;
+using decorativeplant_be.Application.Features.IoT.Commands.UpdateIotDevice;
+using decorativeplant_be.Application.Features.IoT.Queries.GetIotDeviceById;
+using decorativeplant_be.Application.Features.IoT.Queries.GetIotDevices;
 using Microsoft.AspNetCore.Mvc;
 
 namespace decorativeplant_be.API.Controllers;
@@ -24,6 +30,44 @@ public class IotController : BaseController
 
         var result = await Mediator.Send(command);
         return Ok(new { success = result });
+    }
+
+    [HttpGet("devices")]
+    public async Task<ActionResult<IEnumerable<IotDeviceDto>>> GetDevices()
+    {
+        var devices = await Mediator.Send(new GetIotDevicesQuery());
+        return Ok(devices);
+    }
+
+    [HttpGet("devices/{id}")]
+    public async Task<ActionResult<IotDeviceDto>> GetDeviceById(Guid id)
+    {
+        var device = await Mediator.Send(new GetIotDeviceByIdQuery(id));
+        if (device == null) return NotFound();
+        return Ok(device);
+    }
+
+    [HttpPost("devices")]
+    public async Task<ActionResult<IotDeviceDto>> CreateDevice([FromBody] CreateIotDeviceDto dto)
+    {
+        var result = await Mediator.Send(new CreateIotDeviceCommand { Device = dto });
+        return CreatedAtAction(nameof(GetDeviceById), new { id = result.Id }, result);
+    }
+
+    [HttpPut("devices/{id}")]
+    public async Task<ActionResult> UpdateDevice(Guid id, [FromBody] UpdateIotDeviceDto dto)
+    {
+        var result = await Mediator.Send(new UpdateIotDeviceCommand { Id = id, Device = dto });
+        if (!result) return NotFound();
+        return NoContent();
+    }
+
+    [HttpDelete("devices/{id}")]
+    public async Task<ActionResult> DeleteDevice(Guid id)
+    {
+        var result = await Mediator.Send(new DeleteIotDeviceCommand(id));
+        if (!result) return NotFound();
+        return NoContent();
     }
 }
 
