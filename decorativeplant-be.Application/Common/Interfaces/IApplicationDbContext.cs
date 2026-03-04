@@ -24,6 +24,10 @@ public interface IApplicationDbContext
 
     // Module 4: Inventory
     DbSet<BatchStock> BatchStocks { get; }
+    DbSet<InventoryLocation> InventoryLocations { get; }
+    
+    // Admin / Core
+    DbSet<Branch> Branches { get; }
 
     Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
     
