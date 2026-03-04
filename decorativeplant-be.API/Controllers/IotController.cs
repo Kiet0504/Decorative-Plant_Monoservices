@@ -69,6 +69,25 @@ public class IotController : BaseController
         if (!result) return NotFound();
         return NoContent();
     }
+
+    [HttpGet("sensors/metrics")]
+    public async Task<ActionResult<IEnumerable<SensorReadingDto>>> GetSensorMetrics(
+        [FromQuery] Guid deviceId,
+        [FromQuery] string? componentKey,
+        [FromQuery] DateTime? startTime,
+        [FromQuery] DateTime? endTime)
+    {
+        var query = new decorativeplant_be.Application.Features.IoT.Queries.GetSensorMetricsQuery
+        {
+            DeviceId = deviceId,
+            ComponentKey = componentKey,
+            StartTime = startTime,
+            EndTime = endTime
+        };
+        
+        var metrics = await Mediator.Send(query);
+        return Ok(metrics);
+    }
 }
 
 public class IngestSensorDataRequest
