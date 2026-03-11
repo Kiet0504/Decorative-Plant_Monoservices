@@ -17,6 +17,9 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     // Module 1: Identity & Access
     public DbSet<UserAccount> UserAccounts { get; set; } = null!;
     public DbSet<Notification> Notifications { get; set; } = null!;
+    public DbSet<UserSubscription> UserSubscriptions { get; set; } = null!;
+    public DbSet<FeatureUsageQuota> FeatureUsageQuotas { get; set; } = null!;
+    public DbSet<PremiumFeature> PremiumFeatures { get; set; } = null!;
 
     // Module 2: Company & Branch
     public DbSet<Company> Companies { get; set; } = null!;
