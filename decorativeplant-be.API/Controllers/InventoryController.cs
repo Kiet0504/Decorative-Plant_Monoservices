@@ -4,6 +4,7 @@ using decorativeplant_be.Application.Features.Inventory.Commands;
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Application.Features.PlantLibrary.DTOs; // For SupplierDto if needed later, but standard DTOs ok
+using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -14,16 +15,6 @@ namespace decorativeplant_be.API.Controllers;
 [Authorize] // Require staff/admin
 public class InventoryController : BaseController
 {
-    /// <summary>
-    /// Create a new inventory location (Warehouse, Zone, Shelf).
-    /// </summary>
-    [HttpPost("locations")]
-    public async Task<ActionResult<ApiResponse<InventoryLocationDto>>> CreateLocation([FromBody] CreateInventoryLocationCommand command)
-    {
-        var result = await Mediator.Send(command);
-        return StatusCode(201, ApiResponse<InventoryLocationDto>.SuccessResponse(result, "Location created.", 201));
-    }
-
     /// <summary>
     /// Adjust stock quantity (Import, Export, Audit, Loss).
     /// </summary>
