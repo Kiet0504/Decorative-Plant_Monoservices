@@ -3,6 +3,7 @@ using System;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using decorativeplant_be.Infrastructure.Data;
@@ -12,9 +13,11 @@ using decorativeplant_be.Infrastructure.Data;
 namespace decorativeplant_be.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260311080210_AddUserSubscriptionAndFeatureTables")]
+    partial class AddUserSubscriptionAndFeatureTables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -371,12 +374,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
-
-                    b.Property<DateTime>("PeriodEndDate")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime>("PeriodStartDate")
-                        .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("QuotaLimit")
                         .HasColumnType("integer");
