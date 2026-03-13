@@ -8,6 +8,9 @@ namespace decorativeplant_be.Application.Common.Interfaces;
 /// </summary>
 public interface IApplicationDbContext
 {
+    // Module 1: Identity & Access
+    DbSet<UserAccount> UserAccounts { get; }
+
     // Module 5: Commerce
     DbSet<ProductListing> ProductListings { get; }
     DbSet<ShippingZone> ShippingZones { get; }
