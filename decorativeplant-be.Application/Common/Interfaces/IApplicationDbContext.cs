@@ -11,6 +11,11 @@ public interface IApplicationDbContext
     // Module 1: Identity & Access
     DbSet<UserAccount> UserAccounts { get; }
 
+    // Module 1: Identity & Access
+    DbSet<UserSubscription> UserSubscriptions { get; }
+    DbSet<FeatureUsageQuota> FeatureUsageQuotas { get; }
+    DbSet<PremiumFeature> PremiumFeatures { get; }
+
     // Module 5: Commerce
     DbSet<ProductListing> ProductListings { get; }
     DbSet<ShippingZone> ShippingZones { get; }

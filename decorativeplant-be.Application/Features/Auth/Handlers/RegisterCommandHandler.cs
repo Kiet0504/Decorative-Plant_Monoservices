@@ -17,6 +17,8 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
     private readonly IOtpService _otpService;
     private readonly ILogger<RegisterCommandHandler> _logger;
     private readonly IEmailTemplateService _emailTemplateService;
+    private readonly ISubscriptionService _subscriptionService;
+    private readonly IQuotaService _quotaService;
 
     public RegisterCommandHandler(
         IUserAccountService userAccountService,
@@ -25,6 +27,8 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
         IRefreshTokenService refreshTokenService,
         IOtpService otpService,
         IEmailTemplateService emailTemplateService,
+        ISubscriptionService subscriptionService,
+        IQuotaService quotaService,
         ILogger<RegisterCommandHandler> logger)
     {
         _userAccountService = userAccountService;
@@ -33,6 +37,8 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
         _refreshTokenService = refreshTokenService;
         _otpService = otpService;
         _emailTemplateService = emailTemplateService;
+        _subscriptionService = subscriptionService;
+        _quotaService = quotaService;
         _logger = logger;
     }
 
@@ -77,6 +83,11 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             emailVerified: emailVerified,
             cancellationToken: cancellationToken);
 
+        // Auto-create Free subscription for new users
+        await _subscriptionService.CreateFreeSubscriptionAsync(userAccount.Id, cancellationToken);
+
+        // Seed default Free quotas for new users
+        await _quotaService.SeedDefaultQuotaForUserAsync(userAccount.Id, "Free", cancellationToken);
 
         if (!emailVerified)
         {

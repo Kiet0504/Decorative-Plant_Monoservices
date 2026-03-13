@@ -53,6 +53,18 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<IPasswordService, PasswordService>();
         services.AddScoped<IUserAccountService, UserAccountService>();
 
+        // Register Subscription Service
+        services.AddScoped<ISubscriptionService, SubscriptionService>();
+
+        // Register Quota Service
+        services.AddScoped<IQuotaService, QuotaService>();
+
+        // Register Analytics Service
+        services.AddScoped<IAnalyticsService, AnalyticsService>();
+
+        // Register Monthly Quota Reset Background Job
+        services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.MonthlyQuotaResetJob>();
+
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();
         if (jwtSettings == null)
