@@ -3,7 +3,7 @@ using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
-using MediatR;
+using BranchEntity = decorativeplant_be.Domain.Entities.Branch;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
@@ -30,7 +30,7 @@ public class GetLowStockQueryHandler : IRequestHandler<GetLowStockQuery, List<Lo
         // Map to DTO
         var dtos = new List<LowStockItemDto>();
         var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
-        var branchRepo = _repositoryFactory.CreateRepository<Branch>();
+        var branchRepo = _repositoryFactory.CreateRepository<BranchEntity>();
 
         foreach (var batch in batches)
         {
