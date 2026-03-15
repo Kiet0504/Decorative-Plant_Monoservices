@@ -4,7 +4,9 @@ using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Features.Auth.Commands;
 using decorativeplant_be.Application.Services;
+using decorativeplant_be.Application.Common.Interfaces;
 using System.Security.Claims;
+using Microsoft.EntityFrameworkCore;
 
 namespace decorativeplant_be.Application.Features.Auth.Handlers;
 
@@ -13,17 +15,20 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
     private readonly IUserAccountService _userAccountService;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
+    private readonly IApplicationDbContext _context;
     private readonly ILogger<LoginCommandHandler> _logger;
 
     public LoginCommandHandler(
         IUserAccountService userAccountService,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
+        IApplicationDbContext context,
         ILogger<LoginCommandHandler> logger)
     {
         _userAccountService = userAccountService;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
+        _context = context;
         _logger = logger;
     }
 
@@ -54,6 +59,19 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
         if (!string.IsNullOrWhiteSpace(user.DisplayName))
         {
             claims.Add(new Claim(ClaimTypes.Name, user.DisplayName));
+        }
+
+        // Add branch_id claim for staff roles (branchManager and staff)
+        if (user.Role != "admin" && user.Role != "customer")
+        {
+            var primaryAssignment = await _context.StaffAssignments
+                .Where(sa => sa.StaffId == user.Id && sa.IsPrimary)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (primaryAssignment != null)
+            {
+                claims.Add(new Claim("branch_id", primaryAssignment.BranchId.ToString()));
+            }
         }
 
         var accessToken = _jwtService.GenerateAccessToken(claims);

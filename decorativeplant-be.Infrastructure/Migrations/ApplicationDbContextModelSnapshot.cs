@@ -178,6 +178,9 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(true);
 
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -283,6 +286,9 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Property<string>("Info")
                         .HasColumnType("jsonb");
 
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -342,6 +348,65 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.HasIndex("PerformedBy");
 
                     b.ToTable("cultivation_log", (string)null);
+                });
+
+            modelBuilder.Entity("decorativeplant_be.Domain.Entities.FeatureUsageQuota", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("FeatureKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime>("PeriodEndDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("PeriodStartDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("QuotaLimit")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("QuotaPeriod")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<int>("QuotaUsed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FeatureKey");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("UserId", "FeatureKey")
+                        .IsUnique();
+
+                    b.ToTable("feature_usage_quota", (string)null);
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.GardenPlant", b =>
@@ -486,7 +551,7 @@ namespace decorativeplant_be.Infrastructure.Migrations
 
                     b.HasIndex("DeviceId");
 
-                    b.ToTable("IotAlerts", (string)null);
+                    b.ToTable("IotAlerts");
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.IotDevice", b =>
@@ -546,6 +611,9 @@ namespace decorativeplant_be.Infrastructure.Migrations
 
                     b.Property<string>("Data")
                         .HasColumnType("jsonb");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
 
                     b.Property<bool>("IsRead")
                         .ValueGeneratedOnAdd()
@@ -765,7 +833,7 @@ namespace decorativeplant_be.Infrastructure.Migrations
 
                     b.HasIndex("ParentId");
 
-                    b.ToTable("PlantCategories", (string)null);
+                    b.ToTable("PlantCategories");
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.PlantDiagnosis", b =>
@@ -830,6 +898,9 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("ScientificName")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -849,6 +920,60 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("plant_taxonomy", (string)null);
+                });
+
+            modelBuilder.Entity("decorativeplant_be.Domain.Entities.PremiumFeature", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("AvailableInPlans")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("FeatureKey")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("FeatureName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FeatureKey")
+                        .IsUnique();
+
+                    b.HasIndex("IsActive");
+
+                    b.ToTable("premium_feature", (string)null);
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.ProductListing", b =>
@@ -1330,6 +1455,9 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(true);
 
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
                     b.Property<DateTime?>("LastLoginAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1361,6 +1489,79 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .IsUnique();
 
                     b.ToTable("user_account", (string)null);
+                });
+
+            modelBuilder.Entity("decorativeplant_be.Domain.Entities.UserSubscription", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()");
+
+                    b.Property<string>("AmountPaid")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<bool>("AutoRenew")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("BillingCycle")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("CancellationReason")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("CancelledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTime?>("EndAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("PaymentMethod")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<string>("PlanType")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime>("StartAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("UserId", "Status");
+
+                    b.ToTable("user_subscription", (string)null);
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.Voucher", b =>
@@ -1500,6 +1701,17 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Navigation("Location");
 
                     b.Navigation("PerformedByUser");
+                });
+
+            modelBuilder.Entity("decorativeplant_be.Domain.Entities.FeatureUsageQuota", b =>
+                {
+                    b.HasOne("decorativeplant_be.Domain.Entities.UserAccount", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.GardenPlant", b =>
@@ -1889,6 +2101,17 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Navigation("ToBranch");
 
                     b.Navigation("ToLocation");
+                });
+
+            modelBuilder.Entity("decorativeplant_be.Domain.Entities.UserSubscription", b =>
+                {
+                    b.HasOne("decorativeplant_be.Domain.Entities.UserAccount", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.Voucher", b =>

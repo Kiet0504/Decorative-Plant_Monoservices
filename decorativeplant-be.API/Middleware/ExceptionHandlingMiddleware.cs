@@ -42,6 +42,11 @@ public class ExceptionHandlingMiddleware
                 validationException.Errors,
                 (int)HttpStatusCode.BadRequest),
 
+            BadRequestException => ApiResponse<object>.ErrorResponse(
+                exception.Message,
+                null,
+                (int)HttpStatusCode.BadRequest),
+
             NotFoundException => ApiResponse<object>.ErrorResponse(
                 exception.Message,
                 null,
