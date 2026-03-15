@@ -3,7 +3,6 @@ namespace decorativeplant_be.Application.Common.DTOs.Commerce;
 // ── Request DTOs ──
 public class CreateOrderRequest
 {
-    public Guid BranchId { get; set; }
     public string OrderType { get; set; } = "online"; // online|offline
     public string FulfillmentMethod { get; set; } = "delivery"; // delivery|pickup
     public string? CustomerNote { get; set; }
@@ -39,6 +38,7 @@ public class OrderResponse
     public string? OrderCode { get; set; }
     public Guid? UserId { get; set; }
     public Guid? BranchId { get; set; }
+    public string? BranchName { get; set; }
     public string? OrderType { get; set; }
     public string? FulfillmentMethod { get; set; }
     public string Status { get; set; } = string.Empty;

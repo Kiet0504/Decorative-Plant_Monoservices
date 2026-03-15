@@ -3,7 +3,7 @@ using decorativeplant_be.Application.Common.DTOs.Commerce;
 
 namespace decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 
-public class CreateOrderCommand : IRequest<OrderResponse>
+public class CreateOrderCommand : IRequest<List<OrderResponse>>
 {
     public Guid UserId { get; set; }
     public CreateOrderRequest Request { get; set; } = null!;

@@ -90,9 +90,19 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly IApplicationDbContext _context;
     private readonly IPayOSService _payOS;
     private readonly ILogger<HandlePayOSWebhookHandler> _logger;
+    private readonly IEmailTemplateService _emailTemplateService;
 
-    public HandlePayOSWebhookHandler(IApplicationDbContext context, IPayOSService payOS, ILogger<HandlePayOSWebhookHandler> logger)
-    { _context = context; _payOS = payOS; _logger = logger; }
+    public HandlePayOSWebhookHandler(
+        IApplicationDbContext context, 
+        IPayOSService payOS, 
+        ILogger<HandlePayOSWebhookHandler> logger, 
+        IEmailTemplateService emailTemplateService)
+    { 
+        _context = context; 
+        _payOS = payOS; 
+        _logger = logger; 
+        _emailTemplateService = emailTemplateService;
+    }
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
     {
@@ -107,9 +117,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         }
 
         var orderCode = cmd.Webhook.Data.OrderCode;
-        var orderCodeStr = orderCode.ToString();
         
-        // Optimization: Lazily load matching payment instead of buffering all into memory
+        // Optimization: Lazily load matching payment
         var payment = _context.PaymentTransactions.AsEnumerable().FirstOrDefault(p =>
         {
             if (p.Details == null) return false;
@@ -123,14 +132,57 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         if (payment.Details != null)
             foreach (var prop in payment.Details.RootElement.EnumerateObject())
                 details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+        
         var isSuccess = cmd.Webhook.Code == "00";
         details["status"] = isSuccess ? "paid" : "failed";
         payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
 
         if (isSuccess && payment.OrderId.HasValue)
         {
-            var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId.Value }, ct);
-            if (order != null && order.Status == "pending") { order.Status = "confirmed"; order.ConfirmedAt = DateTime.UtcNow; }
+            var order = await _context.OrderHeaders
+                .Include(o => o.Branch)
+                .Include(o => o.User)
+                .FirstOrDefaultAsync(o => o.Id == payment.OrderId.Value, ct);
+
+            if (order != null && order.Status == "pending") 
+            { 
+                order.Status = "confirmed"; 
+                order.ConfirmedAt = DateTime.UtcNow; 
+
+                // Send Email Notification
+                try
+                {
+                    if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
+                    {
+                        var total = "0";
+                        if (order.Financials != null)
+                        {
+                            total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
+                        }
+
+                        var model = new Dictionary<string, string>
+                        {
+                            { "CustomerName", order.User.DisplayName ?? "Customer" },
+                            { "OrderCode", order.OrderCode ?? "N/A" },
+                            { "BranchName", order.Branch?.Name ?? "Decorative Plant Store" },
+                            { "Total", total }
+                        };
+
+                        await _emailTemplateService.SendTemplateAsync(
+                            "OrderConfirmed",
+                            model,
+                            order.User.Email,
+                            $"Order Confirmed - {order.OrderCode}",
+                            order.User.DisplayName,
+                            ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
+                    // Don't fail the whole transaction if email fails
+                }
+            }
         }
         await _context.SaveChangesAsync(ct);
         return true;

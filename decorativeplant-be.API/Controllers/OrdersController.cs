@@ -37,7 +37,7 @@ public class OrdersController : BaseController
     public async Task<IActionResult> Create([FromBody] CreateOrderRequest request)
     {
         var result = await Mediator.Send(new CreateOrderCommand { UserId = GetUserId(), Request = request });
-        return CreatedAtAction(nameof(GetById), new { id = result.Id }, ApiResponse<OrderResponse>.SuccessResponse(result, "Order created", 201));
+        return Ok(ApiResponse<List<OrderResponse>>.SuccessResponse(result, "Orders created", 201));
     }
 
     [HttpPatch("{id:guid}/status")]

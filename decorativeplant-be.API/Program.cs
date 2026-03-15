@@ -66,6 +66,18 @@ try
     // Add Infrastructure services (DbContext, Identity, JWT, Repositories, etc.)
     builder.Services.AddInfrastructureServices(builder.Configuration);
 
+    // Add CORS
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AllowAllOrigins",
+            policy =>
+            {
+                policy.AllowAnyOrigin()
+                      .AllowAnyHeader()
+                      .AllowAnyMethod();
+            });
+    });
+
     // Add Health Checks
     builder.Services.AddHealthChecks()
         .AddDbContextCheck<ApplicationDbContext>("database");
@@ -126,6 +138,8 @@ try
     }
 
     app.UseHttpsRedirection();
+
+    app.UseCors("AllowAllOrigins");
 
     app.UseRateLimiter(); // Must be after routing/cors, before auth ideally
 

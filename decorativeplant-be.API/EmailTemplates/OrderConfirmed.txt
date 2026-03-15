@@ -1,0 +1,16 @@
+Order Confirmed!
+-----------------
+Hi {{CustomerName}},
+
+Thank you for your purchase at Decorative Plant! 
+Your payment has been successfully processed.
+
+Order Details:
+- Order Code: {{OrderCode}}
+- Store: {{BranchName}}
+- Total Paid: {{Total}} VND
+
+Our staff will process your order soon. You can track your order status in the "Order History" section of your profile.
+
+Best regards,
+Decorative Plant Team

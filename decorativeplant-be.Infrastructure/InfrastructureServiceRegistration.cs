@@ -87,7 +87,11 @@ public static class InfrastructureServiceRegistration
             });
             // Register Redis connection for key scan/revoke-all (e.g. on password reset)
             services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
-                StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
+            {
+                var options = StackExchange.Redis.ConfigurationOptions.Parse(redisConnectionString);
+                options.AbortOnConnectFail = false;
+                return StackExchange.Redis.ConnectionMultiplexer.Connect(options);
+            });
         }
         else
         {

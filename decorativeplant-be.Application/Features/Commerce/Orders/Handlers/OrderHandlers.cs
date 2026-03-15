@@ -12,7 +12,7 @@ using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Features.Commerce.Orders.Handlers;
 
-public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderResponse>
+public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<OrderResponse>>
 {
     private readonly IApplicationDbContext _context;
     private readonly ILogger<CreateOrderHandler> _logger;
@@ -23,119 +23,154 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
         _logger = logger;
     }
 
-    public async Task<OrderResponse> Handle(CreateOrderCommand cmd, CancellationToken ct)
+    public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
-        var orderItems = new List<OrderItem>();
-        decimal subtotal = 0;
 
         using var transaction = await _context.Database.BeginTransactionAsync(ct);
         try
         {
+            // 1. Fetch all listings and build enriched item list
+            var enrichedItems = new List<(CreateOrderItemRequest reqItem, ProductListing listing, string unitPrice, string? title, string? image)>();
             foreach (var item in req.Items)
-        {
-            var listing = await _context.ProductListings.FindAsync(new object[] { item.ListingId }, ct)
-                ?? throw new NotFoundException($"Listing {item.ListingId} not found.");
-
-            string unitPrice = "0";
-            string? titleSnapshot = null;
-            string? imageSnapshot = null;
-            if (listing.ProductInfo != null)
             {
-                var root = listing.ProductInfo.RootElement;
-                unitPrice = root.TryGetProperty("price", out var p) ? p.GetString() ?? "0" : "0";
-                titleSnapshot = root.TryGetProperty("title", out var t) ? t.GetString() : null;
-            }
-            if (listing.Images?.RootElement.ValueKind == JsonValueKind.Array)
-            {
-                var first = listing.Images.RootElement.EnumerateArray().FirstOrDefault();
-                imageSnapshot = first.TryGetProperty("url", out var u) ? u.GetString() : null;
-            }
+                var listing = await _context.ProductListings.FindAsync(new object[] { item.ListingId }, ct)
+                    ?? throw new NotFoundException($"Listing {item.ListingId} not found.");
 
-            var itemSubtotal = decimal.Parse(unitPrice) * item.Quantity;
-            subtotal += itemSubtotal;
-
-            orderItems.Add(new OrderItem
-            {
-                Id = Guid.NewGuid(),
-                ListingId = item.ListingId,
-                BatchId = listing.BatchId,
-                Quantity = item.Quantity,
-                Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = unitPrice, subtotal = itemSubtotal.ToString("0") })),
-                Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = titleSnapshot, image_snapshot = imageSnapshot }))
-            });
-        }
-
-        decimal discount = 0;
-        if (!string.IsNullOrEmpty(req.VoucherCode))
-        {
-            var voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
-            if (voucher != null)
-            {
-                int usageLimit = int.MaxValue;
-                int usedCount = 0;
-                decimal minOrder = 0;
-
-                if (voucher.Rules != null)
+                string unitPrice = "0";
+                string? titleSnapshot = null;
+                string? imageSnapshot = null;
+                if (listing.ProductInfo != null)
                 {
-                    var rulesRoot = voucher.Rules.RootElement;
-                    usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
-                    usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
-                    minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
+                    var root = listing.ProductInfo.RootElement;
+                    unitPrice = root.TryGetProperty("price", out var p) ? p.GetString() ?? "0" : "0";
+                    titleSnapshot = root.TryGetProperty("title", out var t) ? t.GetString() : null;
+                }
+                if (listing.Images?.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    var first = listing.Images.RootElement.EnumerateArray().FirstOrDefault();
+                    imageSnapshot = first.TryGetProperty("url", out var u) ? u.GetString() : null;
                 }
 
-                if (usedCount < usageLimit && subtotal >= minOrder)
-                {
-                    if (voucher.Info != null)
-                    {
-                        var infoRoot = voucher.Info.RootElement;
-                        var type = infoRoot.TryGetProperty("discount_type", out var dt) ? dt.GetString() : null;
-                        var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
-                        var val = decimal.Parse(valStr);
+                enrichedItems.Add((item, listing, unitPrice, titleSnapshot, imageSnapshot));
+            }
 
-                        if (type == "percentage") discount = subtotal * (val / 100);
-                        else if (type == "fixed") discount = val;
-                    }
+            // 2. Group items by BranchId
+            var groupedByBranch = enrichedItems.GroupBy(e => e.listing.BranchId);
+
+            // 3. Resolve voucher once (applied proportionally to each sub-order)
+            decimal cartTotal = enrichedItems.Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity);
+            decimal totalDiscount = 0;
+            Voucher? voucher = null;
+
+            if (!string.IsNullOrEmpty(req.VoucherCode))
+            {
+                voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
+                if (voucher != null)
+                {
+                    int usageLimit = int.MaxValue;
+                    int usedCount = 0;
+                    decimal minOrder = 0;
 
                     if (voucher.Rules != null)
                     {
-                        var rules = new Dictionary<string, object?>();
-                        foreach (var p in voucher.Rules.RootElement.EnumerateObject())
-                            rules[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : 
-                                (p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : p.Value.GetRawText());
-                        rules["used_count"] = usedCount + 1;
-                        voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
+                        var rulesRoot = voucher.Rules.RootElement;
+                        usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
+                        usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
+                        minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
+                    }
+
+                    if (usedCount < usageLimit && cartTotal >= minOrder)
+                    {
+                        if (voucher.Info != null)
+                        {
+                            var infoRoot = voucher.Info.RootElement;
+                            var type = infoRoot.TryGetProperty("discount_type", out var dt) ? dt.GetString() : null;
+                            var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
+                            var val = decimal.Parse(valStr);
+
+                            if (type == "percentage") totalDiscount = cartTotal * (val / 100);
+                            else if (type == "fixed") totalDiscount = val;
+                        }
+
+                        if (voucher.Rules != null)
+                        {
+                            var rules = new Dictionary<string, object?>();
+                            foreach (var p in voucher.Rules.RootElement.EnumerateObject())
+                                rules[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() :
+                                    (p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : p.Value.GetRawText());
+                            rules["used_count"] = usedCount + 1;
+                            voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
+                        }
+                    }
+                    else
+                    {
+                        totalDiscount = 0;
                     }
                 }
             }
-        }
 
-        decimal total = subtotal - discount;
-        if (total < 0) total = 0;
+            // 4. Create one OrderHeader per branch
+            var createdOrders = new List<OrderHeader>();
 
-        var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+            foreach (var branchGroup in groupedByBranch)
+            {
+                var branchId = branchGroup.Key;
+                var orderItems = new List<OrderItem>();
+                decimal branchSubtotal = 0;
 
-        var order = new OrderHeader
-        {
-            Id = Guid.NewGuid(),
-            OrderCode = orderCode,
-            UserId = cmd.UserId,
-            BranchId = req.BranchId,
-            TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
-            Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = subtotal.ToString("0"), shipping = "0", discount = discount.ToString("0"), tax = "0", total = total.ToString("0") })),
-            Status = "pending",
-            Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
-            DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City })) : null,
-            CreatedAt = DateTime.UtcNow,
-            OrderItems = orderItems
-        };
+                foreach (var e in branchGroup)
+                {
+                    var itemSubtotal = decimal.Parse(e.unitPrice) * e.reqItem.Quantity;
+                    branchSubtotal += itemSubtotal;
 
-            _context.OrderHeaders.Add(order);
+                    orderItems.Add(new OrderItem
+                    {
+                        Id = Guid.NewGuid(),
+                        ListingId = e.reqItem.ListingId,
+                        BatchId = e.listing.BatchId,
+                        Quantity = e.reqItem.Quantity,
+                        Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0") })),
+                        Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = e.title, image_snapshot = e.image }))
+                    });
+                }
+
+                // Proportional discount: this branch's share of the total discount
+                decimal branchDiscount = cartTotal > 0 ? totalDiscount * (branchSubtotal / cartTotal) : 0;
+                branchDiscount = Math.Round(branchDiscount, 0);
+                decimal branchTotal = branchSubtotal - branchDiscount;
+                if (branchTotal < 0) branchTotal = 0;
+
+                var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+
+                var order = new OrderHeader
+                {
+                    Id = Guid.NewGuid(),
+                    OrderCode = orderCode,
+                    UserId = cmd.UserId,
+                    BranchId = branchId,
+                    TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
+                    Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = branchSubtotal.ToString("0"), shipping = "0", discount = branchDiscount.ToString("0"), tax = "0", total = branchTotal.ToString("0") })),
+                    Status = "pending",
+                    Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
+                    DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City })) : null,
+                    CreatedAt = DateTime.UtcNow,
+                    OrderItems = orderItems
+                };
+
+                _context.OrderHeaders.Add(order);
+                createdOrders.Add(order);
+                _logger.LogInformation("Created Order {OrderCode} for Branch {BranchId}", orderCode, branchId);
+            }
+
             await _context.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
-            _logger.LogInformation("Created Order {OrderCode}", orderCode);
-            return MapToResponse(order);
+            // 5. Load branch names for response
+            var branchIds = createdOrders.Where(o => o.BranchId.HasValue).Select(o => o.BranchId!.Value).Distinct().ToList();
+            var branches = await _context.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name, ct);
+
+            return createdOrders.Select(o => MapToResponse(o, branches)).ToList();
         }
         catch
         {
@@ -144,13 +179,16 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
         }
     }
 
-    internal static OrderResponse MapToResponse(OrderHeader o)
+    internal static OrderResponse MapToResponse(OrderHeader o, Dictionary<Guid, string>? branchNames = null)
     {
         var response = new OrderResponse
         {
             Id = o.Id, OrderCode = o.OrderCode, UserId = o.UserId, BranchId = o.BranchId,
             Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt
         };
+
+        if (o.BranchId.HasValue && branchNames != null && branchNames.TryGetValue(o.BranchId.Value, out var name))
+            response.BranchName = name;
 
         if (o.TypeInfo != null)
         {
@@ -303,7 +341,7 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
 
     public async Task<PagedResult<OrderResponse>> Handle(GetOrdersQuery query, CancellationToken ct)
     {
-        var q = _context.OrderHeaders.Include(o => o.OrderItems).AsQueryable();
+        var q = _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.Branch).AsQueryable();
         if (query.UserId.HasValue) q = q.Where(o => o.UserId == query.UserId);
         if (query.BranchId.HasValue) q = q.Where(o => o.BranchId == query.BranchId);
         if (!string.IsNullOrEmpty(query.Status)) q = q.Where(o => o.Status == query.Status);
@@ -314,10 +352,12 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
             .ToListAsync(ct);
+
+        var branchNames = orders.Where(o => o.Branch != null).Select(o => o.Branch!).DistinctBy(b => b.Id).ToDictionary(b => b.Id, b => b.Name);
             
         return new PagedResult<OrderResponse>
         {
-            Items = orders.Select(CreateOrderHandler.MapToResponse).ToList(),
+            Items = orders.Select(o => CreateOrderHandler.MapToResponse(o, branchNames)).ToList(),
             TotalCount = total,
             Page = query.Page,
             PageSize = query.PageSize
@@ -332,7 +372,9 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
 
     public async Task<OrderResponse?> Handle(GetOrderByIdQuery query, CancellationToken ct)
     {
-        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
-        return order == null ? null : CreateOrderHandler.MapToResponse(order);
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.Branch).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
+        if (order == null) return null;
+        var branchNames = order.Branch != null ? new Dictionary<Guid, string> { { order.Branch.Id, order.Branch.Name } } : null;
+        return CreateOrderHandler.MapToResponse(order, branchNames);
     }
 }
