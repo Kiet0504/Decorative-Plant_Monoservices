@@ -4,7 +4,9 @@ using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Features.Auth.Commands;
 using decorativeplant_be.Application.Services;
+using decorativeplant_be.Application.Common.Interfaces;
 using System.Security.Claims;
+using Microsoft.EntityFrameworkCore;
 
 namespace decorativeplant_be.Application.Features.Auth.Handlers;
 
@@ -13,17 +15,20 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
     private readonly IUserAccountService _userAccountService;
     private readonly IJwtService _jwtService;
     private readonly IRefreshTokenService _refreshTokenService;
+    private readonly IApplicationDbContext _context;
     private readonly ILogger<RefreshTokenCommandHandler> _logger;
 
     public RefreshTokenCommandHandler(
         IUserAccountService userAccountService,
         IJwtService jwtService,
         IRefreshTokenService refreshTokenService,
+        IApplicationDbContext context,
         ILogger<RefreshTokenCommandHandler> logger)
     {
         _userAccountService = userAccountService;
         _jwtService = jwtService;
         _refreshTokenService = refreshTokenService;
+        _context = context;
         _logger = logger;
     }
 
@@ -66,6 +71,19 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
         if (!string.IsNullOrWhiteSpace(userAccount.DisplayName))
         {
             claims.Add(new Claim(ClaimTypes.Name, userAccount.DisplayName));
+        }
+
+        // Add branch_id claim for staff roles (branchManager and staff)
+        if (userAccount.Role != "admin" && userAccount.Role != "customer")
+        {
+            var primaryAssignment = await _context.StaffAssignments
+                .Where(sa => sa.StaffId == userAccount.Id && sa.IsPrimary)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (primaryAssignment != null)
+            {
+                claims.Add(new Claim("branch_id", primaryAssignment.BranchId.ToString()));
+            }
         }
 
         var accessToken = _jwtService.GenerateAccessToken(claims);

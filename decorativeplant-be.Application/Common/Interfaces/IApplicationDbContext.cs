@@ -12,6 +12,7 @@ public interface IApplicationDbContext
     DbSet<UserAccount> UserAccounts { get; }
 
     // Module 1: Identity & Access
+    DbSet<UserAccount> UserAccounts { get; }
     DbSet<UserSubscription> UserSubscriptions { get; }
     DbSet<FeatureUsageQuota> FeatureUsageQuotas { get; }
     DbSet<PremiumFeature> PremiumFeatures { get; }
@@ -35,7 +36,9 @@ public interface IApplicationDbContext
     DbSet<InventoryLocation> InventoryLocations { get; }
     
     // Admin / Core
+    DbSet<Company> Companies { get; }
     DbSet<Branch> Branches { get; }
+    DbSet<StaffAssignment> StaffAssignments { get; }
 
     Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
     
