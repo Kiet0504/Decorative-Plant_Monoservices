@@ -10,6 +10,9 @@ public interface IApplicationDbContext
 {
     // Module 1: Identity & Access
     DbSet<UserAccount> UserAccounts { get; }
+
+    // Module 1: Identity & Access
+    DbSet<UserAccount> UserAccounts { get; }
     DbSet<UserSubscription> UserSubscriptions { get; }
     DbSet<FeatureUsageQuota> FeatureUsageQuotas { get; }
     DbSet<PremiumFeature> PremiumFeatures { get; }
