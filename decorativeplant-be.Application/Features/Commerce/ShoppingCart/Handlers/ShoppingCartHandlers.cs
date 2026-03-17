@@ -179,6 +179,41 @@ public class GetCartHandler : IRequestHandler<GetCartQuery, ShoppingCartResponse
             return new ShoppingCartResponse { UserId = query.UserId };
 
         var items = cart.Items != null ? AddToCartHandler.DeserializeItems(cart.Items) : new();
+        
+        // Enrich item data with ProductListings and Branches
+        var listingIds = items.Select(i => i.ListingId).ToList();
+        var listings = await _context.ProductListings
+            .Include(l => l.Branch)
+            .Include(l => l.Images)
+            .Where(l => listingIds.Contains(l.Id))
+            .ToDictionaryAsync(l => l.Id, ct);
+            
+        foreach(var item in items)
+        {
+            if (listings.TryGetValue(item.ListingId, out var listing))
+            {
+                if (listing.ProductInfo != null)
+                {
+                    var root = listing.ProductInfo.RootElement;
+                    item.Name = root.TryGetProperty("title", out var t) ? t.GetString() : null;
+                    if (decimal.TryParse(root.TryGetProperty("price", out var p) ? p.GetString() : "0", out var parsedPrice))
+                    {
+                        item.Price = parsedPrice;
+                    }
+                }
+                
+                if (listing.Images?.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    var firstIdx = listing.Images.RootElement.EnumerateArray().FirstOrDefault();
+                    if (firstIdx.ValueKind == JsonValueKind.Object)
+                    {
+                        item.Image = firstIdx.TryGetProperty("url", out var u) ? u.GetString() : null;
+                    }
+                }
+                item.SellerName = listing.Branch?.Name ?? "Store";
+            }
+        }
+
         return AddToCartHandler.MapToResponse(cart, items);
     }
 }
