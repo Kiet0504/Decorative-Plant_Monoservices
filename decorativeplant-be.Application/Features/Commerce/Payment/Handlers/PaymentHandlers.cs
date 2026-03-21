@@ -63,13 +63,10 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         // Generate a unified order code for PayOS
         var firstOrder = orders.First();
         var mainOrderCode = firstOrder.OrderCode ?? firstOrder.Id.ToString();
-        var numOrderCodeString = Math.Abs(string.Join("", cmd.Request.OrderIds).GetHashCode()).ToString();
-        
-        long payosOrderCode;
-        if (!long.TryParse(numOrderCodeString.Length > 9 ? numOrderCodeString[..9] : numOrderCodeString, out payosOrderCode))
-        {
-           payosOrderCode = DateTime.UtcNow.Ticks % 1_000_000_000L;
-        }
+        // FIX #4: Use timestamp + random suffix instead of GetHashCode to prevent collision
+        // GetHashCode() is non-deterministic across processes and can collide for different inputs
+        var random = new Random();
+        long payosOrderCode = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 1_000_000_000L) * 10 + random.Next(0, 10);
 
         var desc = $"TT cho {orders.Count} don hang";
         if (desc.Length > 25) desc = desc[..25]; // PayOS max length is 25

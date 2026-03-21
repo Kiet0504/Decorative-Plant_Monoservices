@@ -36,7 +36,9 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             var enrichedItems = new List<(CreateOrderItemRequest reqItem, ProductListing listing, string unitPrice, string? title, string? image)>();
             foreach (var item in req.Items)
             {
-                var listing = await _context.ProductListings.FindAsync(new object[] { item.ListingId }, ct)
+                var listing = await _context.ProductListings
+                    .Include(l => l.Branch)
+                    .FirstOrDefaultAsync(l => l.Id == item.ListingId, ct)
                     ?? throw new NotFoundException($"Listing {item.ListingId} not found.");
 
                 string unitPrice = "0";
@@ -61,13 +63,36 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             var groupedByBranch = enrichedItems.GroupBy(e => e.listing.BranchId);
 
             // 3. Resolve voucher once (applied proportionally to each sub-order)
+            //    FIX #1: Validate voucher BranchId — if voucher belongs to a specific branch,
+            //    only items from that branch are eligible for discount.
             decimal cartTotal = enrichedItems.Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity);
             decimal totalDiscount = 0;
             Voucher? voucher = null;
+            var voucherBranchIds = new HashSet<Guid?>(); // branches eligible for this voucher
 
             if (!string.IsNullOrEmpty(req.VoucherCode))
             {
                 voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
+                if (voucher != null)
+                {
+                    // Determine which branches this voucher applies to
+                    if (voucher.BranchId.HasValue)
+                    {
+                        // Branch-specific voucher: only items from that branch get discount
+                        var branchIdsInCart = enrichedItems.Select(e => e.listing.BranchId).Distinct().ToList();
+                        if (!branchIdsInCart.Contains(voucher.BranchId))
+                        {
+                            _logger.LogWarning("Voucher {Code} belongs to branch {BranchId} but cart has no items from that branch.", req.VoucherCode, voucher.BranchId);
+                            voucher = null; // Voucher not applicable
+                        }
+                        else
+                        {
+                            voucherBranchIds.Add(voucher.BranchId);
+                        }
+                    }
+                    // else: null BranchId = global voucher, applies to all branches
+                }
+
                 if (voucher != null)
                 {
                     int usageLimit = int.MaxValue;
@@ -82,7 +107,12 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                         minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
                     }
 
-                    if (usedCount < usageLimit && cartTotal >= minOrder)
+                    // Calculate eligible subtotal (only items from eligible branches)
+                    decimal eligibleTotal = voucher.BranchId.HasValue
+                        ? enrichedItems.Where(e => e.listing.BranchId == voucher.BranchId).Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity)
+                        : cartTotal;
+
+                    if (usedCount < usageLimit && eligibleTotal >= minOrder)
                     {
                         if (voucher.Info != null)
                         {
@@ -91,9 +121,12 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                             var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
                             var val = decimal.Parse(valStr);
 
-                            if (type == "percentage") totalDiscount = cartTotal * (val / 100);
+                            if (type == "percentage") totalDiscount = eligibleTotal * (val / 100);
                             else if (type == "fixed") totalDiscount = val;
                         }
+
+                        // Cap discount at eligible total
+                        if (totalDiscount > eligibleTotal) totalDiscount = eligibleTotal;
 
                         if (voucher.Rules != null)
                         {
@@ -126,6 +159,37 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     var itemSubtotal = decimal.Parse(e.unitPrice) * e.reqItem.Quantity;
                     branchSubtotal += itemSubtotal;
 
+                    // FIX #3: Reserve stock when creating order
+                    if (e.listing.BatchId.HasValue)
+                    {
+                        var stock = await _context.BatchStocks
+                            .FirstOrDefaultAsync(s => s.BatchId == e.listing.BatchId, ct);
+                        if (stock?.Quantities != null)
+                        {
+                            var root = stock.Quantities.RootElement;
+                            var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
+                            var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
+                            var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
+
+                            if (available < e.reqItem.Quantity)
+                            {
+                                var productName = e.title ?? e.reqItem.ListingId.ToString();
+                                throw new BadRequestException($"Insufficient stock for '{productName}'. Available: {available}, requested: {e.reqItem.Quantity}.");
+                            }
+
+                            reserved += e.reqItem.Quantity;
+                            available -= e.reqItem.Quantity;
+
+                            stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                            {
+                                quantity = total,
+                                reserved_quantity = reserved,
+                                available_quantity = available
+                            }));
+                            stock.UpdatedAt = DateTime.UtcNow;
+                        }
+                    }
+
                     orderItems.Add(new OrderItem
                     {
                         Id = Guid.NewGuid(),
@@ -137,13 +201,62 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     });
                 }
 
-                // Shipping & Discount
-                decimal branchShipping = req.ShippingFee > 0 ? req.ShippingFee / groupedByBranch.Count() : 30000;
-                decimal branchDiscount = cartTotal > 0 ? totalDiscount * (branchSubtotal / cartTotal) : 0;
-                
+                // FIX #2: Per-branch shipping via GHTK fee estimate
+                decimal branchShipping = 30000; // sensible default
+                if (req.DeliveryAddress != null && branchId.HasValue)
+                {
+                    try
+                    {
+                        var branchEntity = branchGroup.FirstOrDefault().listing.Branch;
+                        var pickProvince = "Hồ Chí Minh";
+                        var pickDistrict = "Thủ Đức";
+                        if (branchEntity?.ContactInfo != null)
+                        {
+                            var ci = branchEntity.ContactInfo.RootElement;
+                            pickProvince = ci.TryGetProperty("province", out var pp) ? pp.GetString() ?? pickProvince : pickProvince;
+                            pickDistrict = ci.TryGetProperty("district", out var pd) ? pd.GetString() ?? pickDistrict : pickDistrict;
+                        }
+
+                        var feeResult = await _ghtkService.CalculateFeeAsync(new GhtkFeeRequest
+                        {
+                            PickProvince = pickProvince,
+                            PickDistrict = pickDistrict,
+                            Province = req.DeliveryAddress.City ?? "Hồ Chí Minh",
+                            District = req.DeliveryAddress.City ?? "Hồ Chí Minh",
+                            Address = req.DeliveryAddress.AddressLine1 ?? "Unknown",
+                            Weight = orderItems.Sum(oi => oi.Quantity) * 1000, // weight in grams
+                            Value = (int)branchSubtotal
+                        });
+                        if (feeResult.Fee != null && feeResult.Fee.Fee > 0) branchShipping = feeResult.Fee.Fee;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "GHTK fee calc failed for branch {BranchId}, using default 30000", branchId);
+                    }
+                }
+                else if (req.ShippingFee > 0)
+                {
+                    // Fallback: use FE-provided fee split evenly
+                    branchShipping = req.ShippingFee / groupedByBranch.Count();
+                }
+
+                // FIX #1 continued: Only apply discount to eligible branches
+                decimal branchDiscount = 0;
+                if (totalDiscount > 0)
+                {
+                    bool isEligible = !voucher!.BranchId.HasValue || voucher.BranchId == branchId;
+                    if (isEligible)
+                    {
+                        decimal eligibleTotal = voucher.BranchId.HasValue
+                            ? branchSubtotal
+                            : cartTotal;
+                        branchDiscount = eligibleTotal > 0 ? totalDiscount * (branchSubtotal / eligibleTotal) : 0;
+                    }
+                }
+
                 branchShipping = Math.Round(branchShipping, 0);
                 branchDiscount = Math.Round(branchDiscount, 0);
-                
+
                 decimal branchTotal = branchSubtotal + branchShipping - branchDiscount;
                 if (branchTotal < 0) branchTotal = 0;
 
