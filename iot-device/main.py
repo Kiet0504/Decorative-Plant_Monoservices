@@ -10,6 +10,7 @@ import ujson
 import dht
 
 import config
+import automation
 
 # =============================================
 #  CAU HINH - dang doc cac gia tri tu file .env
@@ -23,6 +24,11 @@ DEVICE_SECRET = config.env.get("DEVICE_SECRET", "")
 
 # Thoi gian giua 2 lan doc cam bien (giay)
 SEND_INTERVAL = 30
+
+# Thoi gian giua 2 lan tai automation rules tu Server (giay)
+RULE_FETCH_INTERVAL = 120
+last_rule_fetch = 0
+active_rules = []
 
 # =============================================
 #  CHAN KET NOI (theo HARDWARE_CONNECTIONS.md)
@@ -97,7 +103,19 @@ print("  Decorative Plant IoT Sensor")
 print("========================================")
 
 while True:
+    current_time = time.time()
+    
+    # Kiem tra neu can fetch rule: LAN DAU hoac SAU KHI het thoi gian thiet lap
+    if last_rule_fetch == 0 or (current_time - last_rule_fetch) > RULE_FETCH_INTERVAL:
+        loaded_rules = automation.fetch_rules()
+        if loaded_rules is not None:
+            active_rules = loaded_rules
+        last_rule_fetch = current_time
+
     print("\n[" + str(time.ticks_ms() // 1000) + "s] Dang doc cam bien...")
+    
+    # Dictionary de luu tam du lieu cung cap cho engine Automation
+    sensor_data = {}
 
     # 1. Doc DHT22 (Nhiet do & Do am Khong khi)
     try:
@@ -108,6 +126,9 @@ while True:
         send_sensor_data("temp_sensor", temp)
         time.sleep_ms(500)
         send_sensor_data("humidity_sensor", humidity)
+        
+        sensor_data["temp_sensor"] = temp
+        sensor_data["humidity_sensor"] = humidity
     except Exception as e:
         print("  [DHT22] Loi doc:", e)
 
@@ -118,6 +139,7 @@ while True:
     if soil is not None:
         print("  Soil   -> Do am dat: " + str(soil) + "%")
         send_sensor_data("soil_moisture", soil)
+        sensor_data["soil_moisture"] = soil
 
     time.sleep_ms(500)
 
@@ -126,6 +148,11 @@ while True:
     if lux is not None:
         print("  BH1750 -> Anh sang: " + str(lux) + " lux")
         send_sensor_data("light_sensor", lux)
+        sensor_data["light_sensor"] = lux
+
+    # 4. Kiem tra cac tin hieu tu Automation
+    if active_rules and sensor_data:
+        automation.evaluate_and_run(sensor_data, active_rules)
 
     print("  -> Cho " + str(SEND_INTERVAL) + "s roi doc lai...")
     time.sleep(SEND_INTERVAL)

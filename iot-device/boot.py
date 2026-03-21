@@ -30,6 +30,16 @@ def connect_wifi():
         ip, mask, gateway, dns = wlan.ifconfig()
         print("[WiFi] Ket noi thanh cong!")
         print("       IP: " + ip + " | Gateway: " + gateway)
+        
+        # Đong bo thoi gian thuc tu Internet (NTP)
+        try:
+            import ntptime
+            ntptime.host = "pool.ntp.org"
+            ntptime.settime()  # settime() cai dat gio UTC
+            print("[NTP] Dong bo gio Internet thanh cong (UTC)")
+        except Exception as e:
+            print("[NTP] Loi dong bo gio:", e)
+            
         return True
     else:
         print("[WiFi] Ket noi that bai. Kiem tra lai SSID/Password.")

@@ -88,6 +88,28 @@ public class IotController : BaseController
         var metrics = await Mediator.Send(query);
         return Ok(metrics);
     }
+
+    [HttpGet("sensors/rules")]
+    public async Task<IActionResult> GetDeviceRules()
+    {
+        if (!Request.Headers.TryGetValue("x-device-secret", out var secretKey))
+            return Unauthorized(new { message = "Missing x-device-secret header" });
+
+        var query = new decorativeplant_be.Application.Features.IoT.Queries.GetDeviceRulesQuery { DeviceSecret = secretKey.ToString() };
+        var rules = await Mediator.Send(query);
+        return Ok(rules);
+    }
+
+    [HttpPost("sensors/logs")]
+    public async Task<IActionResult> CreateExecutionLog([FromBody] decorativeplant_be.Application.Features.IoT.Commands.CreateExecutionLogCommand request)
+    {
+        if (!Request.Headers.TryGetValue("x-device-secret", out var secretKey))
+            return Unauthorized(new { message = "Missing x-device-secret header" });
+
+        request.DeviceSecret = secretKey.ToString();
+        var result = await Mediator.Send(request);
+        return Ok(new { success = result });
+    }
 }
 
 public class IngestSensorDataRequest

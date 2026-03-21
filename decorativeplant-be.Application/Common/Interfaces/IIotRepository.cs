@@ -32,4 +32,5 @@ public interface IIotRepository
     // Read-only for AutomationExecutionLog
     Task<IEnumerable<AutomationExecutionLog>> GetExecutionLogsAsync(Guid? ruleId, DateTime? from, DateTime? to, CancellationToken cancellationToken);
     Task<AutomationExecutionLog?> GetExecutionLogByIdAsync(Guid id, CancellationToken cancellationToken);
+    Task AddExecutionLogAsync(AutomationExecutionLog log, CancellationToken cancellationToken);
 }
