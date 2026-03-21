@@ -13,8 +13,6 @@ namespace decorativeplant_be.API.Controllers;
 [EnableRateLimiting("CartAndOrderPolicy")]
 public class OrdersController : BaseController
 {
-    private Guid GetUserId() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? throw new UnauthorizedAccessException());
-
     [HttpGet]
     [Authorize]
     public async Task<IActionResult> GetOrders([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
@@ -30,6 +28,21 @@ public class OrdersController : BaseController
         var result = await Mediator.Send(new GetOrderByIdQuery { Id = id });
         if (result == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
+    }
+
+    [HttpGet("shipping-fee")]
+    [Authorize]
+    public async Task<IActionResult> GetShippingFee(
+        [FromQuery] string pickProvince,
+        [FromQuery] string pickDistrict,
+        [FromQuery] string province,
+        [FromQuery] string district,
+        [FromQuery] string address = "",
+        [FromQuery] int weight = 1000,
+        [FromQuery] int value = 500000)
+    {
+        var result = await Mediator.Send(new GetShippingFeeQuery(pickProvince, pickDistrict, province, district, address, weight, value));
+        return Ok(ApiResponse<GhtkFeeResponse>.SuccessResponse(result));
     }
 
     [HttpPost]

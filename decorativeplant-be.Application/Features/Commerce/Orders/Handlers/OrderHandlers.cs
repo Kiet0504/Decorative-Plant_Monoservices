@@ -16,11 +16,13 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 {
     private readonly IApplicationDbContext _context;
     private readonly ILogger<CreateOrderHandler> _logger;
+    private readonly IGhtkService _ghtkService;
 
-    public CreateOrderHandler(IApplicationDbContext context, ILogger<CreateOrderHandler> logger)
+    public CreateOrderHandler(IApplicationDbContext context, ILogger<CreateOrderHandler> logger, IGhtkService ghtkService)
     {
         _context = context;
         _logger = logger;
+        _ghtkService = ghtkService;
     }
 
     public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
@@ -135,10 +137,14 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     });
                 }
 
-                // Proportional discount: this branch's share of the total discount
+                // Shipping & Discount
+                decimal branchShipping = req.ShippingFee > 0 ? req.ShippingFee / groupedByBranch.Count() : 30000;
                 decimal branchDiscount = cartTotal > 0 ? totalDiscount * (branchSubtotal / cartTotal) : 0;
+                
+                branchShipping = Math.Round(branchShipping, 0);
                 branchDiscount = Math.Round(branchDiscount, 0);
-                decimal branchTotal = branchSubtotal - branchDiscount;
+                
+                decimal branchTotal = branchSubtotal + branchShipping - branchDiscount;
                 if (branchTotal < 0) branchTotal = 0;
 
                 var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
@@ -150,13 +156,64 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     UserId = cmd.UserId,
                     BranchId = branchId,
                     TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
-                    Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = branchSubtotal.ToString("0"), shipping = "0", discount = branchDiscount.ToString("0"), tax = "0", total = branchTotal.ToString("0") })),
+                    Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = branchSubtotal.ToString("0"), shipping = branchShipping.ToString("0"), discount = branchDiscount.ToString("0"), tax = "0", total = branchTotal.ToString("0") })),
                     Status = "pending",
                     Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
                     DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City })) : null,
                     CreatedAt = DateTime.UtcNow,
                     OrderItems = orderItems
                 };
+
+                // Call GHTK to create order and get tracking code
+                if (req.DeliveryAddress != null)
+                {
+                    try
+                    {
+                        var branchAddress = branchGroup.FirstOrDefault().listing.Branch?.ContactInfo?.RootElement.TryGetProperty("address", out var ba) == true ? ba.GetString() : "Hồ Chí Minh, Thành Phố Thủ Đức";
+                        
+                        var ghtkProducts = orderItems.Select(oi => new GhtkProduct {
+                            Name = "Cây cảnh",
+                            Quantity = oi.Quantity,
+                            Weight = 1.0 // 1kg default
+                        }).ToList();
+
+                        var ghtkOrderObj = new GhtkOrderInfo
+                        {
+                            Id = orderCode,
+                            PickName = "Cửa hàng Decorative Plant",
+                            PickAddress = branchAddress ?? "Hồ Chí Minh",
+                            PickProvince = "Hồ Chí Minh",
+                            PickDistrict = "Thủ Đức",
+                            PickTel = "0900000000",
+                            Name = req.DeliveryAddress.RecipientName,
+                            Tel = req.DeliveryAddress.Phone,
+                            Address = req.DeliveryAddress.AddressLine1,
+                            Province = req.DeliveryAddress.City,
+                            District = req.DeliveryAddress.City, // temporary
+                            IsFreeship = 1,
+                            Value = (int)branchTotal,
+                            Transport = "road"
+                        };
+
+                        var ghtkRes = await _ghtkService.CreateOrderAsync(new GhtkOrderRequest { Products = ghtkProducts, Order = ghtkOrderObj });
+
+                        if (ghtkRes.Success && ghtkRes.Order != null)
+                        {
+                            var notesObj = new Dictionary<string, string>
+                            {
+                                { "tracking_code", ghtkRes.Order.Label },
+                                { "carrier_name", "GHTK" }
+                            };
+                            if (!string.IsNullOrEmpty(req.CustomerNote)) notesObj.Add("customer_note", req.CustomerNote);
+                            
+                            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to call GHTK CreateOrder for {OrderCode}", orderCode);
+                    }
+                }
 
                 _context.OrderHeaders.Add(order);
                 createdOrders.Add(order);
@@ -221,7 +278,10 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         }
         if (o.Notes != null)
         {
-            response.CustomerNote = o.Notes.RootElement.TryGetProperty("customer_note", out var cn) ? cn.GetString() : null;
+            var root = o.Notes.RootElement;
+            response.CustomerNote = root.TryGetProperty("customer_note", out var cn) ? cn.GetString() : null;
+            response.TrackingCode = root.TryGetProperty("tracking_code", out var tc) ? tc.GetString() : null;
+            response.CarrierName = root.TryGetProperty("carrier_name", out var cn2) ? cn2.GetString() : null;
         }
         if (o.OrderItems != null)
         {
@@ -260,16 +320,19 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
         order.Status = cmd.Request.Status;
         if (cmd.Request.Status == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
 
-        if (!string.IsNullOrEmpty(cmd.Request.InternalNote) || !string.IsNullOrEmpty(cmd.Request.RejectionReason))
+        var notesDict = new Dictionary<string, object?>();
+        if (order.Notes != null)
         {
-            var notes = new Dictionary<string, object?>();
-            if (order.Notes != null)
-                foreach (var p in order.Notes.RootElement.EnumerateObject())
-                    notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
-            if (!string.IsNullOrEmpty(cmd.Request.InternalNote)) notes["internal_note"] = cmd.Request.InternalNote;
-            if (!string.IsNullOrEmpty(cmd.Request.RejectionReason)) notes["rejection_reason"] = cmd.Request.RejectionReason;
-            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+            foreach (var p in order.Notes.RootElement.EnumerateObject())
+                notesDict[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
         }
+
+        if (!string.IsNullOrEmpty(cmd.Request.InternalNote)) notesDict["internal_note"] = cmd.Request.InternalNote;
+        if (!string.IsNullOrEmpty(cmd.Request.RejectionReason)) notesDict["rejection_reason"] = cmd.Request.RejectionReason;
+        if (!string.IsNullOrEmpty(cmd.Request.TrackingCode)) notesDict["tracking_code"] = cmd.Request.TrackingCode;
+        if (!string.IsNullOrEmpty(cmd.Request.CarrierName)) notesDict["carrier_name"] = cmd.Request.CarrierName;
+
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
 
         await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);

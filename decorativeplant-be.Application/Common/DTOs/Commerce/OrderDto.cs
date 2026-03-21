@@ -7,6 +7,7 @@ public class CreateOrderRequest
     public string FulfillmentMethod { get; set; } = "delivery"; // delivery|pickup
     public string? CustomerNote { get; set; }
     public string? VoucherCode { get; set; }
+    public decimal ShippingFee { get; set; } // Total shipping fee from frontend
     // Delivery address (required if delivery)
     public DeliveryAddressDto? DeliveryAddress { get; set; }
     // Order items
@@ -24,6 +25,8 @@ public class UpdateOrderStatusRequest
     public string Status { get; set; } = string.Empty;
     public string? InternalNote { get; set; }
     public string? RejectionReason { get; set; }
+    public string? TrackingCode { get; set; }
+    public string? CarrierName { get; set; }
 }
 
 public class CancelOrderRequest
@@ -42,6 +45,8 @@ public class OrderResponse
     public string? OrderType { get; set; }
     public string? FulfillmentMethod { get; set; }
     public string Status { get; set; } = string.Empty;
+    public string? TrackingCode { get; set; }
+    public string? CarrierName { get; set; }
     public OrderFinancialsDto? Financials { get; set; }
     public DeliveryAddressDto? DeliveryAddress { get; set; }
     public string? CustomerNote { get; set; }
