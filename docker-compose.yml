@@ -3,6 +3,7 @@ services:
   postgres:
     image: postgres:16
     container_name: decorativeplant-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -25,6 +26,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: decorativeplant-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -41,6 +43,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: decorativeplant-pgadmin
+    restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@decorativeplant.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
@@ -62,6 +65,7 @@ services:
       context: .
       dockerfile: decorativeplant-be.API/Dockerfile
     container_name: decorativeplant-api
+    restart: unless-stopped
     env_file:
       - .env
     environment:
