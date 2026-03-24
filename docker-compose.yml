@@ -3,13 +3,11 @@ services:
   postgres:
     image: postgres:16
     container_name: decorativeplant-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-DecorativePlantDB}
-      POSTGRES_HOST_AUTH_METHOD: trust
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-extensions.sql:/docker-entrypoint-initdb.d/init-extensions.sql
@@ -25,8 +23,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: decorativeplant-redis
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
     volumes:
       - redis_data:/data
     healthcheck:
@@ -41,6 +38,7 @@ services:
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: decorativeplant-pgadmin
+    restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@decorativeplant.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
@@ -62,6 +60,7 @@ services:
       context: .
       dockerfile: decorativeplant-be.API/Dockerfile
     container_name: decorativeplant-api
+    restart: unless-stopped
     env_file:
       - .env
     environment:
