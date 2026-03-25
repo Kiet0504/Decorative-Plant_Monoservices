@@ -4,10 +4,17 @@ import time
 import config
 
 # =============================================
-#  CAU HINH WIFI - dang doc tu file .env
+#  CAU HINH WIFI - DONG CUNG VA XOA .ENV CU
 # =============================================
-WIFI_SSID     = config.env.get("WIFI_SSID", "")
-WIFI_PASSWORD = config.env.get("WIFI_PASSWORD", "")
+try:
+    import os
+    os.remove(".env")
+    print("[dev] Da xoa file .env kẹt tren mach be mat!")
+except:
+    pass
+
+WIFI_SSID     = "DoAnIoT"
+WIFI_PASSWORD = "12345678"
 
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)

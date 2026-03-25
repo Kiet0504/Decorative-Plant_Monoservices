@@ -62,6 +62,11 @@ public static class InfrastructureServiceRegistration
         // Register Analytics Service
         services.AddScoped<IAnalyticsService, AnalyticsService>();
 
+        // Register MQTT Service
+        services.AddSingleton<MqttService>();
+        services.AddHostedService<MqttService>(provider => provider.GetRequiredService<MqttService>());
+        services.AddSingleton<IMqttService>(provider => provider.GetRequiredService<MqttService>());
+
         // Register Monthly Quota Reset Background Job
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.MonthlyQuotaResetJob>();
 

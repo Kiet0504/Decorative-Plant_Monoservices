@@ -11,24 +11,66 @@ import dht
 
 import config
 import automation
+from umqtt.simple import MQTTClient
 
 # =============================================
 #  CAU HINH - dang doc cac gia tri tu file .env
 # =============================================
 
-# URL API Backend
-API_URL       = config.env.get("API_URL", "")
-
-# Secret Key cua thiet bi
-DEVICE_SECRET = config.env.get("DEVICE_SECRET", "")
+# URL# API Endpoint de gui du lieu
+API_URL = "http://192.168.137.1:8080/api/iot/sensors/ingest"
+DEVICE_SECRET = config.env.get("DEVICE_SECRET", "d816a3c6-9cc3-4a00-b6fa-4ed3a96860db")
 
 # Thoi gian giua 2 lan doc cam bien (giay)
 SEND_INTERVAL = 30
 
-# Thoi gian giua 2 lan tai automation rules tu Server (giay)
-RULE_FETCH_INTERVAL = 120
-last_rule_fetch = 0
 active_rules = []
+
+# =============================================
+#  CAU HINH MQTT (Real-time Automation)
+# =============================================
+MQTT_BROKER = config.env.get("MQTT_BROKER", "0a9920b213a841478a7b3913ec583d22.s1.eu.hivemq.cloud")
+MQTT_PORT = int(config.env.get("MQTT_PORT", "8883"))
+MQTT_USERNAME = config.env.get("MQTT_USERNAME", "your_username_here")
+MQTT_PASSWORD = config.env.get("MQTT_PASSWORD", "your_password_here")
+
+MQTT_CLIENT_ID = "esp32_" + DEVICE_SECRET[:8]
+MQTT_TOPIC_RULES = "decorativeplant/device/{}/rules".format(DEVICE_SECRET).encode('utf-8')
+
+mqtt_client = None
+
+def mqtt_callback(topic, msg):
+    global active_rules
+    print("\n[MQTT] ======== CO LENH MOI TU SERVER ========")
+    try:
+        new_rules = ujson.loads(msg.decode('utf-8'))
+        active_rules = new_rules
+        print("[MQTT] Da cap nhat {} rules thanh cong!".format(len(active_rules)))
+    except Exception as e:
+        print("[MQTT] Loi parse JSON:", e)
+
+def connect_mqtt():
+    global mqtt_client
+    try:
+        use_ssl = (MQTT_PORT == 8883)
+        client = MQTTClient(
+            client_id=MQTT_CLIENT_ID, 
+            server=MQTT_BROKER, 
+            port=MQTT_PORT,
+            user=MQTT_USERNAME if len(MQTT_USERNAME) > 0 else None,
+            password=MQTT_PASSWORD if len(MQTT_PASSWORD) > 0 else None,
+            keepalive=60,
+            ssl=use_ssl,
+            ssl_params={"server_hostname": MQTT_BROKER} if use_ssl else {}
+        )
+        client.set_callback(mqtt_callback)
+        client.connect()
+        client.subscribe(MQTT_TOPIC_RULES)
+        print("[MQTT] Da ket noi den {} va subscribe topic: {}".format(MQTT_BROKER, MQTT_TOPIC_RULES.decode()))
+        mqtt_client = client
+    except Exception as e:
+        print("[MQTT] Loi ket noi:", e)
+        mqtt_client = None
 
 # =============================================
 #  CHAN KET NOI (theo HARDWARE_CONNECTIONS.md)
@@ -102,16 +144,16 @@ print("========================================")
 print("  Decorative Plant IoT Sensor")
 print("========================================")
 
+connect_mqtt()
+
+# Khi vua khoi dong, load rules lan dau (fallback)
+fallback_rules = automation.fetch_rules()
+if fallback_rules:
+    active_rules = fallback_rules
+
 while True:
     current_time = time.time()
     
-    # Kiem tra neu can fetch rule: LAN DAU hoac SAU KHI het thoi gian thiet lap
-    if last_rule_fetch == 0 or (current_time - last_rule_fetch) > RULE_FETCH_INTERVAL:
-        loaded_rules = automation.fetch_rules()
-        if loaded_rules is not None:
-            active_rules = loaded_rules
-        last_rule_fetch = current_time
-
     print("\n[" + str(time.ticks_ms() // 1000) + "s] Dang doc cam bien...")
     
     # Dictionary de luu tam du lieu cung cap cho engine Automation
@@ -154,5 +196,19 @@ while True:
     if active_rules and sensor_data:
         automation.evaluate_and_run(sensor_data, active_rules)
 
-    print("  -> Cho " + str(SEND_INTERVAL) + "s roi doc lai...")
-    time.sleep(SEND_INTERVAL)
+    print("  -> Dang cho vuot {}s (MQTT san sang nhan lenh realtime)...".format(SEND_INTERVAL))
+    
+    # Cho doi bang vong lap nho de giu ban tin MQTT (Real-time) va khong block
+    for _ in range(SEND_INTERVAL * 5):
+        if mqtt_client:
+            try:
+                # Periodic log to show MQTT is alive
+                if _ % 50 == 0:
+                    print("[MQTT] Dang cho lenh ({}s)...".format(time.ticks_ms() // 1000))
+                mqtt_client.check_msg()
+            except OSError as e:
+                print("[MQTT] Mat ket noi ({}). Dang thu lai...".format(e))
+                connect_mqtt()
+            except Exception as e:
+                pass
+        time.sleep(0.2)
