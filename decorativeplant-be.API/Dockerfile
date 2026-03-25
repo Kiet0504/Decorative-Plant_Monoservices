@@ -31,7 +31,7 @@ RUN dotnet publish "./decorativeplant-be.API.csproj" -c $BUILD_CONFIGURATION -o 
 FROM base AS final
 # Install gosu to fix Data Protection volume permissions (run chown as root, then exec as app user)
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+RUN apt-get update && apt-get install -y --no-install-recommends gosu libgssapi-krb5-2 \
     && rm -rf /var/lib/apt/lists/*
 COPY decorativeplant-be.API/entrypoint.sh /entrypoint.sh
 # Fix potential Windows CRLF issues
