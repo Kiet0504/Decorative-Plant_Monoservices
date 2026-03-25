@@ -38,6 +38,35 @@ public class GardenController : BaseController
         return StatusCode(201, ApiResponse<GardenPlantDto>.SuccessResponse(result, "Plant created successfully.", 201));
     }
 
+    /// <summary>
+    /// Import garden plants from purchased order items.
+    /// </summary>
+    [HttpPost("plants/from-purchase")]
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<GardenPlantDto>>>> ImportFromPurchase([FromBody] ImportFromPurchaseRequest request)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<IReadOnlyList<GardenPlantDto>>.ErrorResponse("User ID is required."));
+        }
+
+        var command = new ImportGardenPlantsFromPurchaseCommand
+        {
+            UserId = userId.Value,
+            OrderItemIds = request.OrderItemIds ?? new List<Guid>(),
+            CreateMode = request.CreateMode,
+            Nickname = request.Nickname,
+            Location = request.Location,
+            AdoptedDate = request.AdoptedDate,
+            ImageUrl = request.ImageUrl,
+            Health = request.Health,
+            Size = request.Size
+        };
+
+        var result = await Mediator.Send(command);
+        return StatusCode(201, ApiResponse<IReadOnlyList<GardenPlantDto>>.SuccessResponse(result, "Plants imported successfully.", 201));
+    }
+
     /// <summary>List garden plants for the current user.</summary>
     [HttpGet("plants")]
     public async Task<ActionResult<ApiResponse<PagedResultDto<GardenPlantDto>>>> ListPlants(
@@ -78,6 +107,80 @@ public class GardenController : BaseController
         var query = new GetGardenPlantQuery { UserId = userId.Value, Id = id };
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<GardenPlantDto>.SuccessResponse(result));
+    }
+
+    /// <summary>Get plant profile (plant + taxonomy + recent logs + schedules).</summary>
+    [HttpGet("plants/{id:guid}/profile")]
+    public async Task<ActionResult<ApiResponse<PlantProfileDto>>> GetPlantProfile(
+        Guid id,
+        [FromQuery] int recentLogsLimit = 5,
+        [FromQuery] bool includeArchivedSchedules = false)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<PlantProfileDto>.ErrorResponse("User ID is required."));
+        }
+
+        var query = new GetGardenPlantProfileQuery
+        {
+            UserId = userId.Value,
+            PlantId = id,
+            RecentLogsLimit = recentLogsLimit,
+            IncludeArchivedSchedules = includeArchivedSchedules
+        };
+
+        var result = await Mediator.Send(query);
+        return Ok(ApiResponse<PlantProfileDto>.SuccessResponse(result));
+    }
+
+    /// <summary>Get growth gallery (photo diary) for a plant.</summary>
+    [HttpGet("plants/{id:guid}/gallery")]
+    public async Task<ActionResult<ApiResponse<GrowthTimelineDto>>> GetGrowthGallery(
+        Guid id,
+        [FromQuery] DateTime? before = null,
+        [FromQuery] int limit = 20)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<GrowthTimelineDto>.ErrorResponse("User ID is required."));
+        }
+
+        var query = new GetGrowthGalleryQuery
+        {
+            UserId = userId.Value,
+            PlantId = id,
+            Before = before,
+            Limit = limit
+        };
+
+        var result = await Mediator.Send(query);
+        return Ok(ApiResponse<GrowthTimelineDto>.SuccessResponse(result));
+    }
+
+    /// <summary>Add a growth photo entry (stored as care log with images).</summary>
+    [HttpPost("plants/{id:guid}/gallery")]
+    public async Task<ActionResult<ApiResponse<GrowthPhotoEntryDto>>> AddGrowthPhoto(Guid id, [FromBody] AddGrowthPhotoRequest request)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<GrowthPhotoEntryDto>.ErrorResponse("User ID is required."));
+        }
+
+        var command = new AddGrowthPhotoCommand
+        {
+            UserId = userId.Value,
+            PlantId = id,
+            ImageUrl = request.ImageUrl,
+            Caption = request.Caption,
+            SetAsAvatar = request.SetAsAvatar,
+            PerformedAt = request.PerformedAt
+        };
+
+        var result = await Mediator.Send(command);
+        return StatusCode(201, ApiResponse<GrowthPhotoEntryDto>.SuccessResponse(result, "Photo added.", 201));
     }
 
     /// <summary>Update a garden plant.</summary>
@@ -307,4 +410,34 @@ public class AddCareLogRequest
     public string? Mood { get; set; }
     public DateTime? PerformedAt { get; set; }
     public List<CareLogImageDto>? Images { get; set; }
+}
+
+public class ImportFromPurchaseRequest
+{
+    public List<Guid>? OrderItemIds { get; set; }
+
+    public PurchaseImportCreateMode CreateMode { get; set; } = PurchaseImportCreateMode.OnePerItem;
+
+    public string? Nickname { get; set; }
+
+    public string? Location { get; set; }
+
+    public string? AdoptedDate { get; set; }
+
+    public string? ImageUrl { get; set; }
+
+    public string? Health { get; set; }
+
+    public string? Size { get; set; }
+}
+
+public class AddGrowthPhotoRequest
+{
+    public string ImageUrl { get; set; } = string.Empty;
+
+    public string? Caption { get; set; }
+
+    public bool SetAsAvatar { get; set; } = false;
+
+    public DateTime? PerformedAt { get; set; }
 }
