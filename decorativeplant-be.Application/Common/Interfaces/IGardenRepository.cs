@@ -28,9 +28,25 @@ public interface IGardenRepository
         Guid gardenPlantId,
         CancellationToken cancellationToken = default);
 
+    Task<IEnumerable<CareLog>> GetRecentCareLogsByPlantIdAsync(
+        Guid gardenPlantId,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    Task<(IEnumerable<CareLog> Items, int TotalCount)> GetPhotoCareLogsByPlantIdAsync(
+        Guid gardenPlantId,
+        DateTime? before,
+        int limit,
+        CancellationToken cancellationToken = default);
+
     Task<CareLog?> GetCareLogByIdAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<CareLog> AddCareLogAsync(CareLog careLog, CancellationToken cancellationToken = default);
+
+    Task<IEnumerable<CareSchedule>> GetSchedulesByPlantIdAsync(
+        Guid gardenPlantId,
+        bool includeInactive = false,
+        CancellationToken cancellationToken = default);
 
     Task<IEnumerable<PlantDiagnosis>> GetPlantDiagnosesByPlantIdAsync(
         Guid gardenPlantId,

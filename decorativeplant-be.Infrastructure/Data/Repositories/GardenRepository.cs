@@ -94,6 +94,63 @@ public class GardenRepository : IGardenRepository
             .ToListAsync(cancellationToken);
     }
 
+    public async Task<IEnumerable<CareLog>> GetRecentCareLogsByPlantIdAsync(
+        Guid gardenPlantId,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (limit <= 0) return Array.Empty<CareLog>();
+
+        return await _context.CareLogs
+            .Where(c => c.GardenPlantId == gardenPlantId)
+            .OrderByDescending(c => c.PerformedAt)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<(IEnumerable<CareLog> Items, int TotalCount)> GetPhotoCareLogsByPlantIdAsync(
+        Guid gardenPlantId,
+        DateTime? before,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        if (limit <= 0) return (Array.Empty<CareLog>(), 0);
+
+        var query = _context.CareLogs
+            .Where(c => c.GardenPlantId == gardenPlantId && c.Images != null);
+
+        if (before.HasValue)
+        {
+            query = query.Where(c => c.PerformedAt != null && c.PerformedAt < before.Value);
+        }
+
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        // Fetch newest first for pagination, caller can sort as needed.
+        var items = await query
+            .OrderByDescending(c => c.PerformedAt)
+            .ThenByDescending(c => c.Id)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+
+        // Ensure non-empty images array (filter in-memory; JSONB array length isn't easily filterable here)
+        var filtered = items.Where(c =>
+        {
+            try
+            {
+                return c.Images != null
+                    && c.Images.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                    && c.Images.RootElement.GetArrayLength() > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }).ToList();
+
+        return (filtered, totalCount);
+    }
+
     public async Task<CareLog?> GetCareLogByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         return await _context.CareLogs
@@ -105,6 +162,19 @@ public class GardenRepository : IGardenRepository
     {
         await _context.CareLogs.AddAsync(careLog, cancellationToken);
         return careLog;
+    }
+
+    public async Task<IEnumerable<CareSchedule>> GetSchedulesByPlantIdAsync(
+        Guid gardenPlantId,
+        bool includeInactive = false,
+        CancellationToken cancellationToken = default)
+    {
+        var query = _context.CareSchedules.Where(s => s.GardenPlantId == gardenPlantId);
+        if (!includeInactive)
+        {
+            query = query.Where(s => s.IsActive);
+        }
+        return await query.ToListAsync(cancellationToken);
     }
 
     public async Task<IEnumerable<PlantDiagnosis>> GetPlantDiagnosesByPlantIdAsync(
