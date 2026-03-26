@@ -8,7 +8,6 @@ services:
       - ASPNETCORE_ENVIRONMENT=Development
       - SWAGGER_ENABLED=true
       - ConnectionStrings__Redis=redis:6379
-    volumes:
-      # Mount source code for hot reload (optional, for development)
-      - ./decorativeplant-be.API:/app
-      - ./logs:/app/logs
+    # Do not mount ./decorativeplant-be.API:/app over /app — the image publishes DLLs there;
+    # that mount would hide them and crash the API. Use docker compose build api after edits.
+    # Base compose already mounts ./logs for API logs.

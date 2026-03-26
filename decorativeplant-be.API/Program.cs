@@ -85,23 +85,22 @@ try
 
     var app = builder.Build();
 
-    // Auto-migrate database in Development environment
-    if (app.Environment.IsDevelopment())
+    var applyMigrations = app.Environment.IsDevelopment()
+        || app.Configuration.GetValue("Database:ApplyMigrationsOnStartup", false);
+    if (applyMigrations)
     {
-        using (var scope = app.Services.CreateScope())
+        using var scope = app.Services.CreateScope();
+        var services = scope.ServiceProvider;
+        try
         {
-            var services = scope.ServiceProvider;
-            try
-            {
-                var context = services.GetRequiredService<ApplicationDbContext>();
-                context.Database.Migrate();
-                Log.Information("Database migrations applied successfully");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "An error occurred while migrating the database");
-                throw;
-            }
+            var context = services.GetRequiredService<ApplicationDbContext>();
+            context.Database.Migrate();
+            Log.Information("Database migrations applied successfully");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "An error occurred while migrating the database");
+            throw;
         }
     }
 

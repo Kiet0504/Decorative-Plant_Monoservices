@@ -72,7 +72,8 @@ public static class GardenPlantMapper
         string? adoptedDate,
         string? health,
         string? size,
-        List<GrowthMilestoneDto>? milestones = null)
+        List<GrowthMilestoneDto>? milestones = null,
+        Dictionary<string, object?>? extras = null)
     {
         var dict = new Dictionary<string, object?>();
         if (!string.IsNullOrEmpty(nickname)) dict["nickname"] = nickname;
@@ -91,6 +92,17 @@ public static class GardenPlantMapper
                 ["notes"] = m.Notes,
                 ["image_url"] = m.ImageUrl
             }).ToList();
+        }
+
+        if (extras != null && extras.Count > 0)
+        {
+            foreach (var kv in extras)
+            {
+                if (kv.Value != null)
+                {
+                    dict[kv.Key] = kv.Value;
+                }
+            }
         }
 
         if (dict.Count == 0) return null;

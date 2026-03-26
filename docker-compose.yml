@@ -23,7 +23,6 @@ services:
   redis:
     image: redis:7-alpine
     container_name: decorativeplant-redis
-    restart: unless-stopped
     volumes:
       - redis_data:/data
     healthcheck:
@@ -42,8 +41,10 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@decorativeplant.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
-      PGADMIN_CONFIG_SERVER_MODE: 'False'
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+      # Server mode + master password required (see https://www.pgadmin.org/docs/pgadmin4/latest/container_deployment.html )
+      PGADMIN_CONFIG_SERVER_MODE: 'True'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'True'
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: 'True'
     ports:
       - "${PGADMIN_PORT:-5050}:80"
     volumes:
@@ -60,9 +61,6 @@ services:
       context: .
       dockerfile: decorativeplant-be.API/Dockerfile
     container_name: decorativeplant-api
-    restart: unless-stopped
-    env_file:
-      - .env
     environment:
       - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
       - SWAGGER_ENABLED=${SWAGGER_ENABLED:-false}
@@ -70,6 +68,29 @@ services:
       - APP_GID=${APP_GID:-1654}
       - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=${POSTGRES_DB:-DecorativePlantDB};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       - ConnectionStrings__Redis=${ConnectionStrings__Redis:-redis:6379}
+      - Database__ApplyMigrationsOnStartup=${Database__ApplyMigrationsOnStartup:-false}
+      - JwtSettings__SecretKey=${JwtSettings__SecretKey:-}
+      - JwtSettings__Issuer=${JwtSettings__Issuer:-DecorativePlantAPI}
+      - JwtSettings__Audience=${JwtSettings__Audience:-DecorativePlantClient}
+      - JwtSettings__AccessTokenExpirationMinutes=${JwtSettings__AccessTokenExpirationMinutes:-30}
+      - JwtSettings__RefreshTokenExpirationDays=${JwtSettings__RefreshTokenExpirationDays:-7}
+      - EmailSettings__SmtpHost=${EmailSettings__SmtpHost:-smtp.gmail.com}
+      - EmailSettings__SmtpPort=${EmailSettings__SmtpPort:-587}
+      - EmailSettings__UseSsl=${EmailSettings__UseSsl:-true}
+      - EmailSettings__SmtpUser=${EmailSettings__SmtpUser:-}
+      - EmailSettings__SmtpPassword=${EmailSettings__SmtpPassword:-}
+      - EmailSettings__FromAddress=${EmailSettings__FromAddress:-noreply@decorativeplant.com}
+      - EmailSettings__FromName=${EmailSettings__FromName:-Decorative Plant}
+      - EmailSettings__DisableSending=${EmailSettings__DisableSending:-true}
+      - OtpSettings__Secret=${OtpSettings__Secret:-}
+      - OtpSettings__RegistrationExpiresMinutes=${OtpSettings__RegistrationExpiresMinutes:-10}
+      - OtpSettings__PasswordResetExpiresMinutes=${OtpSettings__PasswordResetExpiresMinutes:-15}
+      - PayOS__ClientId=${PayOS__ClientId:-}
+      - PayOS__ApiKey=${PayOS__ApiKey:-}
+      - PayOS__ChecksumKey=${PayOS__ChecksumKey:-}
+      - AiDiagnosis__ApiKey=${AiDiagnosis__ApiKey:-}
+      - AiDiagnosis__Model=${AiDiagnosis__Model:-gpt-4o}
+      - AiDiagnosis__MaxTokens=${AiDiagnosis__MaxTokens:-1024}
     ports:
       - "8080:8080"
       - "8081:8081"
