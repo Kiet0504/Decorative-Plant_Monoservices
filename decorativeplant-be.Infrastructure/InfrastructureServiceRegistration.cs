@@ -5,8 +5,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
-using Amazon.S3;
-using Amazon.Runtime;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Infrastructure.Data;
@@ -50,25 +48,6 @@ public static class InfrastructureServiceRegistration
 
         // Register IoT Repository
         services.AddScoped<IIotRepository, IotRepository>();
-
-        // ── AWS S3 Storage ──────────────────────────────────────────────────
-        var awsAccessKey = configuration["AwsS3:AccessKey"];
-        var awsSecretKey = configuration["AwsS3:SecretKey"];
-        var awsRegion    = configuration["AwsS3:Region"] ?? "ap-southeast-1";
-        if (!string.IsNullOrEmpty(awsAccessKey) && !string.IsNullOrEmpty(awsSecretKey))
-        {
-            var credentials = new BasicAWSCredentials(awsAccessKey, awsSecretKey);
-            var s3Config    = new AmazonS3Config { RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(awsRegion) };
-            services.AddSingleton<IAmazonS3>(_ => new AmazonS3Client(credentials, s3Config));
-        }
-        else
-        {
-            // Fallback: use instance profile / environment credentials (e.g., EC2/ECS)
-            services.AddSingleton<IAmazonS3>(_ =>
-                new AmazonS3Client(Amazon.RegionEndpoint.GetBySystemName(awsRegion)));
-        }
-        services.AddScoped<IStorageService, S3StorageService>();
-        // ────────────────────────────────────────────────────────────────────
 
         // Register Custom Authentication Services
         services.AddScoped<IPasswordService, PasswordService>();
