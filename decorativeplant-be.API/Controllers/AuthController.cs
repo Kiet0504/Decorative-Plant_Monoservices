@@ -89,4 +89,24 @@ public class AuthController : BaseController
         var result = await Mediator.Send(command);
         return Ok(ApiResponse<TokenResponse>.SuccessResponse(result, "Email verified successfully. You are now logged in."));
     }
+
+    /// <summary>
+    /// Step 2 of registration: save onboarding profile for AI plant consultation.
+    /// Requires Authorization header with JWT from verify-email step.
+    /// Frontend should call this immediately after email verification.
+    /// </summary>
+    [HttpPost("complete-profile")]
+    [Microsoft.AspNetCore.Authorization.Authorize]
+    public async Task<ActionResult<ApiResponse<bool>>> CompleteProfile(
+        [FromBody] CompleteProfileCommand command)
+    {
+        var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
+        command.UserId = userId;  // override — never trust body for this
+
+        var result = await Mediator.Send(command);
+        return Ok(ApiResponse<bool>.SuccessResponse(result, "Profile completed successfully."));
+    }
 }
