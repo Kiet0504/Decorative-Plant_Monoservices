@@ -27,5 +27,13 @@ public class RegisterCommandValidator : AbstractValidator<RegisterCommand>
         RuleFor(x => x.LastName)
             .NotEmpty().WithMessage("Last name is required.")
             .MaximumLength(50).WithMessage("Last name must not exceed 50 characters.");
+
+        RuleFor(x => x.PhoneNumber)
+            .NotEmpty().WithMessage("Phone number is required.")
+            .MinimumLength(10).WithMessage("Phone number must be at least 10 characters.")
+            .MaximumLength(15).WithMessage("Phone number must not exceed 15 characters.")
+            .Matches(@"^\+?[0-9\s\-\(\)]+$").WithMessage("Phone number can only contain digits, spaces, dashes, parentheses, and an optional + prefix.")
+            .Must(phone => phone.Replace(" ", "").Replace("-", "").Replace("(", "").Replace(")", "").Length >= 10)
+            .WithMessage("Phone number must contain at least 10 digits.");
     }
 }
