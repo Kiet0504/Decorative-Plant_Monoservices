@@ -49,6 +49,18 @@ try
     // Add services to the container
     builder.Services.AddControllers();
 
+    // Add CORS
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AllowAll",
+            builder =>
+            {
+                builder.AllowAnyOrigin()
+                       .AllowAnyMethod()
+                       .AllowAnyHeader();
+            });
+    });
+
     // Add API Versioning
     builder.Services.AddApiVersioning(options =>
     {
@@ -128,6 +140,8 @@ try
 
     app.UseRateLimiter(); // Must be after routing/cors, before auth ideally
 
+    app.UseRouting();
+    app.UseCors("AllowAll");
     app.UseAuthentication();
     app.UseMiddleware<BranchScopedAccessMiddleware>(); // Branch-scoped access control - after UseAuthentication, before UseAuthorization
     app.UseMiddleware<SoftPaywallMiddleware>();

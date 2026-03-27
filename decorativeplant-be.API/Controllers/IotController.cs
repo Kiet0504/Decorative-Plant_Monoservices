@@ -7,9 +7,12 @@ using decorativeplant_be.Application.Features.IoT.Queries.GetIotDeviceById;
 using decorativeplant_be.Application.Features.IoT.Queries.GetIotDevices;
 using Microsoft.AspNetCore.Mvc;
 
+using decorativeplant_be.Application.Common.DTOs.Common;
+
 namespace decorativeplant_be.API.Controllers;
 
-[Route("api/[controller]")]
+[ApiVersion("1.0")]
+[Route("api/v{version:apiVersion}/Iot")]
 [ApiController]
 public class IotController : BaseController
 {
@@ -36,15 +39,15 @@ public class IotController : BaseController
     public async Task<ActionResult<IEnumerable<IotDeviceDto>>> GetDevices()
     {
         var devices = await Mediator.Send(new GetIotDevicesQuery());
-        return Ok(devices);
+        return Ok(ApiResponse<IEnumerable<IotDeviceDto>>.SuccessResponse(devices));
     }
 
     [HttpGet("devices/{id}")]
     public async Task<ActionResult<IotDeviceDto>> GetDeviceById(Guid id)
     {
         var device = await Mediator.Send(new GetIotDeviceByIdQuery(id));
-        if (device == null) return NotFound();
-        return Ok(device);
+        if (device == null) return NotFound(ApiResponse<object>.ErrorResponse("Device not found", statusCode: 404));
+        return Ok(ApiResponse<IotDeviceDto>.SuccessResponse(device));
     }
 
     [HttpPost("devices")]
@@ -86,7 +89,7 @@ public class IotController : BaseController
         };
         
         var metrics = await Mediator.Send(query);
-        return Ok(metrics);
+        return Ok(ApiResponse<IEnumerable<SensorReadingDto>>.SuccessResponse(metrics));
     }
 
     [HttpGet("sensors/rules")]
