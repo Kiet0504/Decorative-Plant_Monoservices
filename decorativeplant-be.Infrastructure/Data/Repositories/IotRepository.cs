@@ -147,4 +147,9 @@ public class IotRepository : IIotRepository
     {
         return await _context.Set<AutomationExecutionLog>().FirstOrDefaultAsync(l => l.Id == id, cancellationToken);
     }
+
+    public async Task AddExecutionLogAsync(AutomationExecutionLog log, CancellationToken cancellationToken)
+    {
+        await _context.Set<AutomationExecutionLog>().AddAsync(log, cancellationToken);
+    }
 }

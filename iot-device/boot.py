@@ -4,10 +4,17 @@ import time
 import config
 
 # =============================================
-#  CAU HINH WIFI - dang doc tu file .env
+#  CAU HINH WIFI - DONG CUNG VA XOA .ENV CU
 # =============================================
-WIFI_SSID     = config.env.get("WIFI_SSID", "")
-WIFI_PASSWORD = config.env.get("WIFI_PASSWORD", "")
+try:
+    import os
+    os.remove(".env")
+    print("[dev] Da xoa file .env kẹt tren mach be mat!")
+except:
+    pass
+
+WIFI_SSID     = "DoAnIoT"
+WIFI_PASSWORD = "12345678"
 
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
@@ -30,6 +37,16 @@ def connect_wifi():
         ip, mask, gateway, dns = wlan.ifconfig()
         print("[WiFi] Ket noi thanh cong!")
         print("       IP: " + ip + " | Gateway: " + gateway)
+        
+        # Đong bo thoi gian thuc tu Internet (NTP)
+        try:
+            import ntptime
+            ntptime.host = "pool.ntp.org"
+            ntptime.settime()  # settime() cai dat gio UTC
+            print("[NTP] Dong bo gio Internet thanh cong (UTC)")
+        except Exception as e:
+            print("[NTP] Loi dong bo gio:", e)
+            
         return True
     else:
         print("[WiFi] Ket noi that bai. Kiem tra lai SSID/Password.")

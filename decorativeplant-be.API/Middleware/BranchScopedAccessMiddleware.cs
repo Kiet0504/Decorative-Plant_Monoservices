@@ -110,14 +110,20 @@ public class BranchScopedAccessMiddleware
 
     private static Guid? TryGetBranchIdFromRoute(HttpContext context)
     {
-        // Check route values "branchId" first, then "id"
-        foreach (var key in new[] { "branchId", "id" })
+        // 1. Always trust "branchId" parameter
+        if (context.Request.RouteValues.TryGetValue("branchId", out var bVal) &&
+            Guid.TryParse(bVal?.ToString(), out var bId))
         {
-            if (context.Request.RouteValues.TryGetValue(key, out var val) &&
-                Guid.TryParse(val?.ToString(), out var id))
-            {
-                return id;
-            }
+            return bId;
+        }
+
+        // 2. Only treat "id" as a branch ID if the path refers to a branch resource
+        // This prevents false-positives on routes like /api/iot/automation-rules/{id}
+        if (context.Request.Path.StartsWithSegments("/api/branches") &&
+            context.Request.RouteValues.TryGetValue("id", out var idVal) &&
+            Guid.TryParse(idVal?.ToString(), out var id))
+        {
+            return id;
         }
 
         return null;
