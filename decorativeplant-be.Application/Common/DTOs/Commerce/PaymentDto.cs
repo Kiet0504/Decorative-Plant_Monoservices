@@ -2,7 +2,7 @@ namespace decorativeplant_be.Application.Common.DTOs.Commerce;
 
 public class CreatePaymentRequest
 {
-    public Guid OrderId { get; set; }
+    public List<Guid> OrderIds { get; set; } = new();
     public string ReturnUrl { get; set; } = string.Empty;
     public string CancelUrl { get; set; } = string.Empty;
 }

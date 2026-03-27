@@ -12,130 +12,335 @@ using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Features.Commerce.Orders.Handlers;
 
-public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderResponse>
+public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<OrderResponse>>
 {
     private readonly IApplicationDbContext _context;
     private readonly ILogger<CreateOrderHandler> _logger;
+    private readonly IGhtkService _ghtkService;
 
-    public CreateOrderHandler(IApplicationDbContext context, ILogger<CreateOrderHandler> logger)
+    public CreateOrderHandler(IApplicationDbContext context, ILogger<CreateOrderHandler> logger, IGhtkService ghtkService)
     {
         _context = context;
         _logger = logger;
+        _ghtkService = ghtkService;
     }
 
-    public async Task<OrderResponse> Handle(CreateOrderCommand cmd, CancellationToken ct)
+    public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
-        var orderItems = new List<OrderItem>();
-        decimal subtotal = 0;
 
         using var transaction = await _context.Database.BeginTransactionAsync(ct);
         try
         {
+            // 1. Fetch all listings and build enriched item list
+            var enrichedItems = new List<(CreateOrderItemRequest reqItem, ProductListing listing, string unitPrice, string? title, string? image)>();
             foreach (var item in req.Items)
-        {
-            var listing = await _context.ProductListings.FindAsync(new object[] { item.ListingId }, ct)
-                ?? throw new NotFoundException($"Listing {item.ListingId} not found.");
-
-            string unitPrice = "0";
-            string? titleSnapshot = null;
-            string? imageSnapshot = null;
-            if (listing.ProductInfo != null)
             {
-                var root = listing.ProductInfo.RootElement;
-                unitPrice = root.TryGetProperty("price", out var p) ? p.GetString() ?? "0" : "0";
-                titleSnapshot = root.TryGetProperty("title", out var t) ? t.GetString() : null;
-            }
-            if (listing.Images?.RootElement.ValueKind == JsonValueKind.Array)
-            {
-                var first = listing.Images.RootElement.EnumerateArray().FirstOrDefault();
-                imageSnapshot = first.TryGetProperty("url", out var u) ? u.GetString() : null;
-            }
+                var listing = await _context.ProductListings
+                    .Include(l => l.Branch)
+                    .FirstOrDefaultAsync(l => l.Id == item.ListingId, ct)
+                    ?? throw new NotFoundException($"Listing {item.ListingId} not found.");
 
-            var itemSubtotal = decimal.Parse(unitPrice) * item.Quantity;
-            subtotal += itemSubtotal;
-
-            orderItems.Add(new OrderItem
-            {
-                Id = Guid.NewGuid(),
-                ListingId = item.ListingId,
-                BatchId = listing.BatchId,
-                Quantity = item.Quantity,
-                Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = unitPrice, subtotal = itemSubtotal.ToString("0") })),
-                Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = titleSnapshot, image_snapshot = imageSnapshot }))
-            });
-        }
-
-        decimal discount = 0;
-        if (!string.IsNullOrEmpty(req.VoucherCode))
-        {
-            var voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
-            if (voucher != null)
-            {
-                int usageLimit = int.MaxValue;
-                int usedCount = 0;
-                decimal minOrder = 0;
-
-                if (voucher.Rules != null)
+                string unitPrice = "0";
+                string? titleSnapshot = null;
+                string? imageSnapshot = null;
+                if (listing.ProductInfo != null)
                 {
-                    var rulesRoot = voucher.Rules.RootElement;
-                    usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
-                    usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
-                    minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
+                    var root = listing.ProductInfo.RootElement;
+                    unitPrice = root.TryGetProperty("price", out var p) ? p.GetString() ?? "0" : "0";
+                    titleSnapshot = root.TryGetProperty("title", out var t) ? t.GetString() : null;
+                }
+                if (listing.Images?.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    var first = listing.Images.RootElement.EnumerateArray().FirstOrDefault();
+                    imageSnapshot = first.TryGetProperty("url", out var u) ? u.GetString() : null;
                 }
 
-                if (usedCount < usageLimit && subtotal >= minOrder)
-                {
-                    if (voucher.Info != null)
-                    {
-                        var infoRoot = voucher.Info.RootElement;
-                        var type = infoRoot.TryGetProperty("discount_type", out var dt) ? dt.GetString() : null;
-                        var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
-                        var val = decimal.Parse(valStr);
+                enrichedItems.Add((item, listing, unitPrice, titleSnapshot, imageSnapshot));
+            }
 
-                        if (type == "percentage") discount = subtotal * (val / 100);
-                        else if (type == "fixed") discount = val;
+            // 2. Group items by BranchId
+            var groupedByBranch = enrichedItems.GroupBy(e => e.listing.BranchId);
+
+            // 3. Resolve voucher once (applied proportionally to each sub-order)
+            //    FIX #1: Validate voucher BranchId — if voucher belongs to a specific branch,
+            //    only items from that branch are eligible for discount.
+            decimal cartTotal = enrichedItems.Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity);
+            decimal totalDiscount = 0;
+            Voucher? voucher = null;
+            var voucherBranchIds = new HashSet<Guid?>(); // branches eligible for this voucher
+
+            if (!string.IsNullOrEmpty(req.VoucherCode))
+            {
+                voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
+                if (voucher != null)
+                {
+                    // Determine which branches this voucher applies to
+                    if (voucher.BranchId.HasValue)
+                    {
+                        // Branch-specific voucher: only items from that branch get discount
+                        var branchIdsInCart = enrichedItems.Select(e => e.listing.BranchId).Distinct().ToList();
+                        if (!branchIdsInCart.Contains(voucher.BranchId))
+                        {
+                            _logger.LogWarning("Voucher {Code} belongs to branch {BranchId} but cart has no items from that branch.", req.VoucherCode, voucher.BranchId);
+                            voucher = null; // Voucher not applicable
+                        }
+                        else
+                        {
+                            voucherBranchIds.Add(voucher.BranchId);
+                        }
                     }
+                    // else: null BranchId = global voucher, applies to all branches
+                }
+
+                if (voucher != null)
+                {
+                    int usageLimit = int.MaxValue;
+                    int usedCount = 0;
+                    decimal minOrder = 0;
 
                     if (voucher.Rules != null)
                     {
-                        var rules = new Dictionary<string, object?>();
-                        foreach (var p in voucher.Rules.RootElement.EnumerateObject())
-                            rules[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : 
-                                (p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : p.Value.GetRawText());
-                        rules["used_count"] = usedCount + 1;
-                        voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
+                        var rulesRoot = voucher.Rules.RootElement;
+                        usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
+                        usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
+                        minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
+                    }
+
+                    // Calculate eligible subtotal (only items from eligible branches)
+                    decimal eligibleTotal = voucher.BranchId.HasValue
+                        ? enrichedItems.Where(e => e.listing.BranchId == voucher.BranchId).Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity)
+                        : cartTotal;
+
+                    if (usedCount < usageLimit && eligibleTotal >= minOrder)
+                    {
+                        if (voucher.Info != null)
+                        {
+                            var infoRoot = voucher.Info.RootElement;
+                            var type = infoRoot.TryGetProperty("discount_type", out var dt) ? dt.GetString() : null;
+                            var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
+                            var val = decimal.Parse(valStr);
+
+                            if (type == "percentage") totalDiscount = eligibleTotal * (val / 100);
+                            else if (type == "fixed") totalDiscount = val;
+                        }
+
+                        // Cap discount at eligible total
+                        if (totalDiscount > eligibleTotal) totalDiscount = eligibleTotal;
+
+                        if (voucher.Rules != null)
+                        {
+                            var rules = new Dictionary<string, object?>();
+                            foreach (var p in voucher.Rules.RootElement.EnumerateObject())
+                                rules[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() :
+                                    (p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : p.Value.GetRawText());
+                            rules["used_count"] = usedCount + 1;
+                            voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
+                        }
+                    }
+                    else
+                    {
+                        totalDiscount = 0;
                     }
                 }
             }
-        }
 
-        decimal total = subtotal - discount;
-        if (total < 0) total = 0;
+            // 4. Create one OrderHeader per branch
+            var createdOrders = new List<OrderHeader>();
 
-        var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+            foreach (var branchGroup in groupedByBranch)
+            {
+                var branchId = branchGroup.Key;
+                var orderItems = new List<OrderItem>();
+                decimal branchSubtotal = 0;
 
-        var order = new OrderHeader
-        {
-            Id = Guid.NewGuid(),
-            OrderCode = orderCode,
-            UserId = cmd.UserId,
-            BranchId = req.BranchId,
-            TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
-            Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = subtotal.ToString("0"), shipping = "0", discount = discount.ToString("0"), tax = "0", total = total.ToString("0") })),
-            Status = "pending",
-            Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
-            DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City })) : null,
-            CreatedAt = DateTime.UtcNow,
-            OrderItems = orderItems
-        };
+                foreach (var e in branchGroup)
+                {
+                    var itemSubtotal = decimal.Parse(e.unitPrice) * e.reqItem.Quantity;
+                    branchSubtotal += itemSubtotal;
 
-            _context.OrderHeaders.Add(order);
+                    // FIX #3: Reserve stock when creating order
+                    if (e.listing.BatchId.HasValue)
+                    {
+                        var stock = await _context.BatchStocks
+                            .FirstOrDefaultAsync(s => s.BatchId == e.listing.BatchId, ct);
+                        if (stock?.Quantities != null)
+                        {
+                            var root = stock.Quantities.RootElement;
+                            var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
+                            var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
+                            var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
+
+                            if (available < e.reqItem.Quantity)
+                            {
+                                var productName = e.title ?? e.reqItem.ListingId.ToString();
+                                throw new BadRequestException($"Insufficient stock for '{productName}'. Available: {available}, requested: {e.reqItem.Quantity}.");
+                            }
+
+                            reserved += e.reqItem.Quantity;
+                            available -= e.reqItem.Quantity;
+
+                            stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                            {
+                                quantity = total,
+                                reserved_quantity = reserved,
+                                available_quantity = available
+                            }));
+                            stock.UpdatedAt = DateTime.UtcNow;
+                        }
+                    }
+
+                    orderItems.Add(new OrderItem
+                    {
+                        Id = Guid.NewGuid(),
+                        ListingId = e.reqItem.ListingId,
+                        BatchId = e.listing.BatchId,
+                        Quantity = e.reqItem.Quantity,
+                        Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0") })),
+                        Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = e.title, image_snapshot = e.image }))
+                    });
+                }
+
+                // FIX #2: Per-branch shipping via GHTK fee estimate
+                decimal branchShipping = 30000; // sensible default
+                if (req.DeliveryAddress != null && branchId.HasValue)
+                {
+                    try
+                    {
+                        var branchEntity = branchGroup.FirstOrDefault().listing.Branch;
+                        var pickProvince = "Hồ Chí Minh";
+                        var pickDistrict = "Thủ Đức";
+                        if (branchEntity?.ContactInfo != null)
+                        {
+                            var ci = branchEntity.ContactInfo.RootElement;
+                            pickProvince = ci.TryGetProperty("province", out var pp) ? pp.GetString() ?? pickProvince : pickProvince;
+                            pickDistrict = ci.TryGetProperty("district", out var pd) ? pd.GetString() ?? pickDistrict : pickDistrict;
+                        }
+
+                        var feeResult = await _ghtkService.CalculateFeeAsync(new GhtkFeeRequest
+                        {
+                            PickProvince = pickProvince,
+                            PickDistrict = pickDistrict,
+                            Province = req.DeliveryAddress.City ?? "Hồ Chí Minh",
+                            District = req.DeliveryAddress.City ?? "Hồ Chí Minh",
+                            Address = req.DeliveryAddress.AddressLine1 ?? "Unknown",
+                            Weight = orderItems.Sum(oi => oi.Quantity) * 1000, // weight in grams
+                            Value = (int)branchSubtotal
+                        });
+                        if (feeResult.Fee != null && feeResult.Fee.Fee > 0) branchShipping = feeResult.Fee.Fee;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "GHTK fee calc failed for branch {BranchId}, using default 30000", branchId);
+                    }
+                }
+                else if (req.ShippingFee > 0)
+                {
+                    // Fallback: use FE-provided fee split evenly
+                    branchShipping = req.ShippingFee / groupedByBranch.Count();
+                }
+
+                // FIX #1 continued: Only apply discount to eligible branches
+                decimal branchDiscount = 0;
+                if (totalDiscount > 0)
+                {
+                    bool isEligible = !voucher!.BranchId.HasValue || voucher.BranchId == branchId;
+                    if (isEligible)
+                    {
+                        decimal eligibleTotal = voucher.BranchId.HasValue
+                            ? branchSubtotal
+                            : cartTotal;
+                        branchDiscount = eligibleTotal > 0 ? totalDiscount * (branchSubtotal / eligibleTotal) : 0;
+                    }
+                }
+
+                branchShipping = Math.Round(branchShipping, 0);
+                branchDiscount = Math.Round(branchDiscount, 0);
+
+                decimal branchTotal = branchSubtotal + branchShipping - branchDiscount;
+                if (branchTotal < 0) branchTotal = 0;
+
+                var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+
+                var order = new OrderHeader
+                {
+                    Id = Guid.NewGuid(),
+                    OrderCode = orderCode,
+                    UserId = cmd.UserId,
+                    BranchId = branchId,
+                    TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
+                    Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = branchSubtotal.ToString("0"), shipping = branchShipping.ToString("0"), discount = branchDiscount.ToString("0"), tax = "0", total = branchTotal.ToString("0") })),
+                    Status = "pending",
+                    Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
+                    DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City })) : null,
+                    CreatedAt = DateTime.UtcNow,
+                    OrderItems = orderItems
+                };
+
+                // Call GHTK to create order and get tracking code
+                if (req.DeliveryAddress != null)
+                {
+                    try
+                    {
+                        var branchAddress = branchGroup.FirstOrDefault().listing.Branch?.ContactInfo?.RootElement.TryGetProperty("address", out var ba) == true ? ba.GetString() : "Hồ Chí Minh, Thành Phố Thủ Đức";
+                        
+                        var ghtkProducts = orderItems.Select(oi => new GhtkProduct {
+                            Name = "Cây cảnh",
+                            Quantity = oi.Quantity,
+                            Weight = 1.0 // 1kg default
+                        }).ToList();
+
+                        var ghtkOrderObj = new GhtkOrderInfo
+                        {
+                            Id = orderCode,
+                            PickName = "Cửa hàng Decorative Plant",
+                            PickAddress = branchAddress ?? "Hồ Chí Minh",
+                            PickProvince = "Hồ Chí Minh",
+                            PickDistrict = "Thủ Đức",
+                            PickTel = "0900000000",
+                            Name = req.DeliveryAddress.RecipientName,
+                            Tel = req.DeliveryAddress.Phone,
+                            Address = req.DeliveryAddress.AddressLine1,
+                            Province = req.DeliveryAddress.City,
+                            District = req.DeliveryAddress.City, // temporary
+                            IsFreeship = 1,
+                            Value = (int)branchTotal,
+                            Transport = "road"
+                        };
+
+                        var ghtkRes = await _ghtkService.CreateOrderAsync(new GhtkOrderRequest { Products = ghtkProducts, Order = ghtkOrderObj });
+
+                        if (ghtkRes.Success && ghtkRes.Order != null)
+                        {
+                            var notesObj = new Dictionary<string, string>
+                            {
+                                { "tracking_code", ghtkRes.Order.Label },
+                                { "carrier_name", "GHTK" }
+                            };
+                            if (!string.IsNullOrEmpty(req.CustomerNote)) notesObj.Add("customer_note", req.CustomerNote);
+                            
+                            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to call GHTK CreateOrder for {OrderCode}", orderCode);
+                    }
+                }
+
+                _context.OrderHeaders.Add(order);
+                createdOrders.Add(order);
+                _logger.LogInformation("Created Order {OrderCode} for Branch {BranchId}", orderCode, branchId);
+            }
+
             await _context.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
-            _logger.LogInformation("Created Order {OrderCode}", orderCode);
-            return MapToResponse(order);
+            // 5. Load branch names for response
+            var branchIds = createdOrders.Where(o => o.BranchId.HasValue).Select(o => o.BranchId!.Value).Distinct().ToList();
+            var branches = await _context.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name, ct);
+
+            return createdOrders.Select(o => MapToResponse(o, branches)).ToList();
         }
         catch
         {
@@ -144,13 +349,16 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
         }
     }
 
-    internal static OrderResponse MapToResponse(OrderHeader o)
+    internal static OrderResponse MapToResponse(OrderHeader o, Dictionary<Guid, string>? branchNames = null)
     {
         var response = new OrderResponse
         {
             Id = o.Id, OrderCode = o.OrderCode, UserId = o.UserId, BranchId = o.BranchId,
             Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt
         };
+
+        if (o.BranchId.HasValue && branchNames != null && branchNames.TryGetValue(o.BranchId.Value, out var name))
+            response.BranchName = name;
 
         if (o.TypeInfo != null)
         {
@@ -183,7 +391,10 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, OrderRespo
         }
         if (o.Notes != null)
         {
-            response.CustomerNote = o.Notes.RootElement.TryGetProperty("customer_note", out var cn) ? cn.GetString() : null;
+            var root = o.Notes.RootElement;
+            response.CustomerNote = root.TryGetProperty("customer_note", out var cn) ? cn.GetString() : null;
+            response.TrackingCode = root.TryGetProperty("tracking_code", out var tc) ? tc.GetString() : null;
+            response.CarrierName = root.TryGetProperty("carrier_name", out var cn2) ? cn2.GetString() : null;
         }
         if (o.OrderItems != null)
         {
@@ -222,16 +433,19 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
         order.Status = cmd.Request.Status;
         if (cmd.Request.Status == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
 
-        if (!string.IsNullOrEmpty(cmd.Request.InternalNote) || !string.IsNullOrEmpty(cmd.Request.RejectionReason))
+        var notesDict = new Dictionary<string, object?>();
+        if (order.Notes != null)
         {
-            var notes = new Dictionary<string, object?>();
-            if (order.Notes != null)
-                foreach (var p in order.Notes.RootElement.EnumerateObject())
-                    notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
-            if (!string.IsNullOrEmpty(cmd.Request.InternalNote)) notes["internal_note"] = cmd.Request.InternalNote;
-            if (!string.IsNullOrEmpty(cmd.Request.RejectionReason)) notes["rejection_reason"] = cmd.Request.RejectionReason;
-            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+            foreach (var p in order.Notes.RootElement.EnumerateObject())
+                notesDict[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
         }
+
+        if (!string.IsNullOrEmpty(cmd.Request.InternalNote)) notesDict["internal_note"] = cmd.Request.InternalNote;
+        if (!string.IsNullOrEmpty(cmd.Request.RejectionReason)) notesDict["rejection_reason"] = cmd.Request.RejectionReason;
+        if (!string.IsNullOrEmpty(cmd.Request.TrackingCode)) notesDict["tracking_code"] = cmd.Request.TrackingCode;
+        if (!string.IsNullOrEmpty(cmd.Request.CarrierName)) notesDict["carrier_name"] = cmd.Request.CarrierName;
+
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
 
         await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);
@@ -303,7 +517,7 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
 
     public async Task<PagedResult<OrderResponse>> Handle(GetOrdersQuery query, CancellationToken ct)
     {
-        var q = _context.OrderHeaders.Include(o => o.OrderItems).AsQueryable();
+        var q = _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.Branch).AsQueryable();
         if (query.UserId.HasValue) q = q.Where(o => o.UserId == query.UserId);
         if (query.BranchId.HasValue) q = q.Where(o => o.BranchId == query.BranchId);
         if (!string.IsNullOrEmpty(query.Status)) q = q.Where(o => o.Status == query.Status);
@@ -314,10 +528,12 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
             .ToListAsync(ct);
+
+        var branchNames = orders.Where(o => o.Branch != null).Select(o => o.Branch!).DistinctBy(b => b.Id).ToDictionary(b => b.Id, b => b.Name);
             
         return new PagedResult<OrderResponse>
         {
-            Items = orders.Select(CreateOrderHandler.MapToResponse).ToList(),
+            Items = orders.Select(o => CreateOrderHandler.MapToResponse(o, branchNames)).ToList(),
             TotalCount = total,
             Page = query.Page,
             PageSize = query.PageSize
@@ -332,7 +548,9 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
 
     public async Task<OrderResponse?> Handle(GetOrderByIdQuery query, CancellationToken ct)
     {
-        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
-        return order == null ? null : CreateOrderHandler.MapToResponse(order);
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.Branch).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
+        if (order == null) return null;
+        var branchNames = order.Branch != null ? new Dictionary<Guid, string> { { order.Branch.Id, order.Branch.Name } } : null;
+        return CreateOrderHandler.MapToResponse(order, branchNames);
     }
 }

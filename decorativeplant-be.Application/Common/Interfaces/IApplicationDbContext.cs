@@ -8,6 +8,7 @@ namespace decorativeplant_be.Application.Common.Interfaces;
 /// </summary>
 public interface IApplicationDbContext
 {
+   
     // Module 1: Identity & Access
     DbSet<UserAccount> UserAccounts { get; }
     DbSet<UserSubscription> UserSubscriptions { get; }

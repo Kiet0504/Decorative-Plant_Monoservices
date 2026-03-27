@@ -8,7 +8,7 @@ public class CreatePaymentCommandValidator : AbstractValidator<CreatePaymentComm
     public CreatePaymentCommandValidator()
     {
         RuleFor(x => x.UserId).NotEmpty();
-        RuleFor(x => x.Request.OrderId).NotEmpty();
+        RuleFor(x => x.Request.OrderIds).NotEmpty().WithMessage("At least one OrderId must be provided.");
         RuleFor(x => x.Request.ReturnUrl).NotEmpty();
         RuleFor(x => x.Request.CancelUrl).NotEmpty();
     }

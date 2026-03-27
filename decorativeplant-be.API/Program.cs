@@ -49,16 +49,20 @@ try
     // Add services to the container
     builder.Services.AddControllers();
 
-    // Add CORS
+    // Add CORS policy for React frontend
     builder.Services.AddCors(options =>
     {
-        options.AddPolicy("AllowAll",
-            builder =>
-            {
-                builder.AllowAnyOrigin()
-                       .AllowAnyMethod()
-                       .AllowAnyHeader();
-            });
+        options.AddPolicy("AllowFrontend", policy =>
+        {
+            policy.WithOrigins(
+                    "http://localhost:5173",  // Vite dev server
+                    "http://localhost:3000",  // Fallback dev port
+                    "http://localhost:4173"   // Vite preview
+                )
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials();
+        });
     });
 
     // Add API Versioning
@@ -77,6 +81,18 @@ try
 
     // Add Infrastructure services (DbContext, Identity, JWT, Repositories, etc.)
     builder.Services.AddInfrastructureServices(builder.Configuration);
+
+    // Add CORS
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("AllowAllOrigins",
+            policy =>
+            {
+                policy.AllowAnyOrigin()
+                      .AllowAnyHeader()
+                      .AllowAnyMethod();
+            });
+    });
 
     // Add Health Checks
     builder.Services.AddHealthChecks()
@@ -137,6 +153,8 @@ try
     }
 
     app.UseHttpsRedirection();
+
+    app.UseCors("AllowFrontend");
 
     app.UseRateLimiter(); // Must be after routing/cors, before auth ideally
 

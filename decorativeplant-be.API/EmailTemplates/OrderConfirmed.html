@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Order Confirmed</title>
+</head>
+<body style="margin:0; font-family: system-ui, -apple-system, sans-serif; background:#f5f5f5; padding: 24px;">
+  <div style="max-width: 550px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+    <div style="text-align: center; margin-bottom: 24px;">
+        <div style="background: #e0f2df; width: 64px; height: 64px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 16px;">
+            <span style="font-size: 32px;">🌿</span>
+        </div>
+        <h1 style="margin:0; font-size: 24px; color: #1a1a1a;">Order Confirmed!</h1>
+        <p style="color: #666; margin: 8px 0 0;">Thank you for your purchase at Decorative Plant.</p>
+    </div>
+
+    <div style="border-top: 1px solid #eee; border-bottom: 1px solid #eee; padding: 20px 0; margin-bottom: 24px;">
+        <p style="margin: 0 0 12px; font-size: 14px; text-transform: uppercase; color: #888; letter-spacing: 1px;">Order Details</p>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="color: #444;">Customer:</span>
+            <span style="font-weight: 600; color: #1a1a1a;">{{CustomerName}}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="color: #444;">Order Code:</span>
+            <span style="font-weight: 600; color: #1a1a1a;">{{OrderCode}}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+            <span style="color: #444;">Store:</span>
+            <span style="font-weight: 600; color: #1a1a1a;">{{BranchName}}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 16px; font-size: 18px;">
+            <span style="color: #1a1a1a; font-weight: bold;">Total Paid:</span>
+            <span style="font-weight: bold; color: #28a745;">{{Total}} VND</span>
+        </div>
+    </div>
+
+    <div style="background: #fff9f2; border-radius: 6px; padding: 16px; margin-bottom: 24px;">
+        <p style="margin: 0; font-size: 14px; color: #856404; line-height: 1.5;">
+            Our staff will process your order soon. You can track your order status in the "Order History" section of your profile.
+        </p>
+    </div>
+
+    <div style="text-align: center;">
+        <p style="margin:0; font-size: 14px; color: #888;">&copy; 2026 Decorative Plant System. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>
