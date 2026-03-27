@@ -144,23 +144,6 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<IEmailTemplateService, EmailTemplateService>();
         services.AddScoped<IOtpService, OtpService>();
 
-        // S3 media storage
-        services.Configure<S3Settings>(configuration.GetSection(S3Settings.SectionName));
-        services.AddSingleton<IAmazonS3>(sp =>
-        {
-            var s3 = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<S3Settings>>().Value;
-            if (string.IsNullOrWhiteSpace(s3.Region))
-            {
-                throw new InvalidOperationException("S3 region is not configured.");
-            }
-            if (string.IsNullOrWhiteSpace(s3.AccessKeyId) || string.IsNullOrWhiteSpace(s3.SecretAccessKey))
-            {
-                throw new InvalidOperationException("S3 credentials are not configured.");
-            }
-            var creds = new BasicAWSCredentials(s3.AccessKeyId, s3.SecretAccessKey);
-            return new AmazonS3Client(creds, RegionEndpoint.GetBySystemName(s3.Region));
-        });
-        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IMediaStorageService, S3MediaStorageService>();
 
         // Configure JWT Authentication
         services.AddAuthentication(options =>

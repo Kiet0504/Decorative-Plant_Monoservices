@@ -158,6 +158,8 @@ try
 
     app.UseRateLimiter(); // Must be after routing/cors, before auth ideally
 
+    app.UseRouting();
+    app.UseCors("AllowAll");
     app.UseAuthentication();
     app.UseMiddleware<BranchScopedAccessMiddleware>(); // Branch-scoped access control - after UseAuthentication, before UseAuthorization
     app.UseMiddleware<SoftPaywallMiddleware>();
