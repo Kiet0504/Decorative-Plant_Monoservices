@@ -23,42 +23,69 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
 
     public async Task<PaymentResponse> Handle(CreatePaymentCommand cmd, CancellationToken ct)
     {
-        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Request.OrderId, ct)
-            ?? throw new NotFoundException($"Order {cmd.Request.OrderId} not found.");
+        if (cmd.Request.OrderIds == null || !cmd.Request.OrderIds.Any())
+            throw new BadRequestException("At least one OrderId is required.");
 
-        int amount = 0;
-        if (order.Financials != null)
-        {
-            var totalStr = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
-            amount = (int)decimal.Parse(totalStr);
-        }
+        var orders = await _context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .Where(o => cmd.Request.OrderIds.Contains(o.Id))
+            .ToListAsync(ct);
 
+        if (orders.Count == 0)
+            throw new NotFoundException($"None of the requested orders were found.");
+
+        int totalAmount = 0;
         var payOSItems = new List<PayOSItem>();
-        if (order.OrderItems != null)
-            foreach (var oi in order.OrderItems)
+        
+        // Sum financials and collect items
+        foreach (var order in orders)
+        {
+            if (order.Financials != null)
             {
-                string name = "Product"; int price = 0;
-                if (oi.Snapshots != null) name = oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts) ? ts.GetString() ?? "Product" : "Product";
-                if (oi.Pricing != null) price = (int)decimal.Parse(oi.Pricing.RootElement.TryGetProperty("unit_price", out var up) ? up.GetString() ?? "0" : "0");
-                payOSItems.Add(new PayOSItem { Name = name, Quantity = oi.Quantity, Price = price });
+                var totalStr = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
+                totalAmount += (int)decimal.Parse(totalStr);
             }
 
-        var orderCode = Math.Abs(order.OrderCode?.GetHashCode() ?? order.Id.GetHashCode()) % 1_000_000_000L;
-        var desc = $"TT {order.OrderCode}";
-        if (desc.Length > 9) desc = desc[..9];
+            if (order.OrderItems != null)
+            {
+                foreach (var oi in order.OrderItems)
+                {
+                    string name = "Product"; int price = 0;
+                    if (oi.Snapshots != null) name = oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts) ? ts.GetString() ?? "Product" : "Product";
+                    if (oi.Pricing != null) price = (int)decimal.Parse(oi.Pricing.RootElement.TryGetProperty("unit_price", out var up) ? up.GetString() ?? "0" : "0");
+                    
+                    // PayOS API limits items array size, compress if necessary
+                    payOSItems.Add(new PayOSItem { Name = name.Length > 200 ? name[..200] : name, Quantity = oi.Quantity, Price = price });
+                }
+            }
+        }
 
-        var result = await _payOS.CreatePaymentLinkAsync(orderCode, amount, desc, payOSItems, cmd.Request.ReturnUrl, cmd.Request.CancelUrl, ct);
+        // Generate a unified order code for PayOS
+        var firstOrder = orders.First();
+        var mainOrderCode = firstOrder.OrderCode ?? firstOrder.Id.ToString();
+        // FIX #4: Use timestamp + random suffix instead of GetHashCode to prevent collision
+        // GetHashCode() is non-deterministic across processes and can collide for different inputs
+        var random = new Random();
+        long payosOrderCode = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 1_000_000_000L) * 10 + random.Next(0, 10);
 
+        var desc = $"TT cho {orders.Count} don hang";
+        if (desc.Length > 25) desc = desc[..25]; // PayOS max length is 25
+
+        var result = await _payOS.CreatePaymentLinkAsync(payosOrderCode, totalAmount, desc, payOSItems, cmd.Request.ReturnUrl, cmd.Request.CancelUrl, ct);
+
+        // We arbitrarily attach the PaymentTransaction to the first order for foreign key purposes,
+        // but store ALL order ids in the Details JSON.
         var entity = new PaymentTransaction
         {
-            Id = Guid.NewGuid(), OrderId = order.Id,
+            Id = Guid.NewGuid(), OrderId = firstOrder.Id,
             TransactionCode = $"PAY-{Guid.NewGuid().ToString()[..8].ToUpper()}",
             Details = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
                 provider = "payos", method = "bank_transfer", type = "payment",
-                amount = amount.ToString(), status = "pending",
+                amount = totalAmount.ToString(), status = "pending",
                 external_id = result.PaymentLinkId, checkout_url = result.CheckoutUrl,
-                qr_code = result.QrCode, payos_order_code = orderCode
+                qr_code = result.QrCode, payos_order_code = payosOrderCode,
+                order_ids = cmd.Request.OrderIds // Crucial: store list of all order ids
             })),
             CreatedAt = DateTime.UtcNow
         };
@@ -90,9 +117,19 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly IApplicationDbContext _context;
     private readonly IPayOSService _payOS;
     private readonly ILogger<HandlePayOSWebhookHandler> _logger;
+    private readonly IEmailTemplateService _emailTemplateService;
 
-    public HandlePayOSWebhookHandler(IApplicationDbContext context, IPayOSService payOS, ILogger<HandlePayOSWebhookHandler> logger)
-    { _context = context; _payOS = payOS; _logger = logger; }
+    public HandlePayOSWebhookHandler(
+        IApplicationDbContext context, 
+        IPayOSService payOS, 
+        ILogger<HandlePayOSWebhookHandler> logger, 
+        IEmailTemplateService emailTemplateService)
+    { 
+        _context = context; 
+        _payOS = payOS; 
+        _logger = logger; 
+        _emailTemplateService = emailTemplateService;
+    }
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
     {
@@ -107,9 +144,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         }
 
         var orderCode = cmd.Webhook.Data.OrderCode;
-        var orderCodeStr = orderCode.ToString();
         
-        // Optimization: Lazily load matching payment instead of buffering all into memory
+        // Optimization: Lazily load matching payment
         var payment = _context.PaymentTransactions.AsEnumerable().FirstOrDefault(p =>
         {
             if (p.Details == null) return false;
@@ -123,14 +159,66 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         if (payment.Details != null)
             foreach (var prop in payment.Details.RootElement.EnumerateObject())
                 details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+        
         var isSuccess = cmd.Webhook.Code == "00";
         details["status"] = isSuccess ? "paid" : "failed";
         payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
 
-        if (isSuccess && payment.OrderId.HasValue)
+        if (isSuccess)
         {
-            var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId.Value }, ct);
-            if (order != null && order.Status == "pending") { order.Status = "confirmed"; order.ConfirmedAt = DateTime.UtcNow; }
+            var orderIdsJson = payment.Details?.RootElement.GetProperty("order_ids");
+            if (orderIdsJson.HasValue && orderIdsJson.Value.ValueKind == JsonValueKind.Array)
+            {
+                var orderIds = orderIdsJson.Value.EnumerateArray().Select(e => e.GetGuid()).ToList();
+                var orders = await _context.OrderHeaders
+                    .Include(o => o.Branch)
+                    .Include(o => o.User)
+                    .Where(o => orderIds.Contains(o.Id))
+                    .ToListAsync(ct);
+
+                foreach (var order in orders)
+                {
+                    if (order.Status == "pending") 
+                    { 
+                        order.Status = "confirmed"; 
+                        order.ConfirmedAt = DateTime.UtcNow; 
+
+                        // Send Email Notification
+                        try
+                        {
+                            if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
+                            {
+                                var total = "0";
+                                if (order.Financials != null)
+                                {
+                                    total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
+                                }
+
+                                var model = new Dictionary<string, string>
+                                {
+                                    { "CustomerName", order.User.DisplayName ?? "Customer" },
+                                    { "OrderCode", order.OrderCode ?? "N/A" },
+                                    { "BranchName", order.Branch?.Name ?? "Decorative Plant Store" },
+                                    { "Total", total }
+                                };
+
+                                await _emailTemplateService.SendTemplateAsync(
+                                    "OrderConfirmed",
+                                    model,
+                                    order.User.Email,
+                                    $"Order Confirmed - {order.OrderCode}",
+                                    order.User.DisplayName,
+                                    ct);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
+                            // Don't fail the whole transaction if email fails
+                        }
+                    }
+                }
+            }
         }
         await _context.SaveChangesAsync(ct);
         return true;

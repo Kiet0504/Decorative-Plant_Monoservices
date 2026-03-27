@@ -9,7 +9,6 @@ public class CreateOrderCommandValidator : AbstractValidator<CreateOrderCommand>
     public CreateOrderCommandValidator()
     {
         RuleFor(x => x.UserId).NotEmpty();
-        RuleFor(x => x.Request.BranchId).NotEmpty();
         
         RuleFor(x => x.Request.OrderType)
             .NotEmpty()

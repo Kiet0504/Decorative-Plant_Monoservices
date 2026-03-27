@@ -13,8 +13,6 @@ namespace decorativeplant_be.API.Controllers;
 [EnableRateLimiting("CartAndOrderPolicy")]
 public class OrdersController : BaseController
 {
-    private Guid GetUserId() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? throw new UnauthorizedAccessException());
-
     [HttpGet]
     [Authorize]
     public async Task<IActionResult> GetOrders([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
@@ -32,12 +30,27 @@ public class OrdersController : BaseController
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
 
+    [HttpGet("shipping-fee")]
+    [Authorize]
+    public async Task<IActionResult> GetShippingFee(
+        [FromQuery] string pickProvince,
+        [FromQuery] string pickDistrict,
+        [FromQuery] string province,
+        [FromQuery] string district,
+        [FromQuery] string address = "",
+        [FromQuery] int weight = 1000,
+        [FromQuery] int value = 500000)
+    {
+        var result = await Mediator.Send(new GetShippingFeeQuery(pickProvince, pickDistrict, province, district, address, weight, value));
+        return Ok(ApiResponse<GhtkFeeResponse>.SuccessResponse(result));
+    }
+
     [HttpPost]
     [Authorize]
     public async Task<IActionResult> Create([FromBody] CreateOrderRequest request)
     {
         var result = await Mediator.Send(new CreateOrderCommand { UserId = GetUserId(), Request = request });
-        return CreatedAtAction(nameof(GetById), new { id = result.Id }, ApiResponse<OrderResponse>.SuccessResponse(result, "Order created", 201));
+        return Ok(ApiResponse<List<OrderResponse>>.SuccessResponse(result, "Orders created", 201));
     }
 
     [HttpPatch("{id:guid}/status")]

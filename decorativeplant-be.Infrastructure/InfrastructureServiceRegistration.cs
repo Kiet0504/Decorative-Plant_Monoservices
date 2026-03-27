@@ -14,6 +14,7 @@ using decorativeplant_be.Infrastructure.Jwt;
 using decorativeplant_be.Infrastructure.Cache;
 using decorativeplant_be.Infrastructure.Email;
 using decorativeplant_be.Infrastructure.Services;
+using decorativeplant_be.Infrastructure.Ghtk;
 using decorativeplant_be.Infrastructure.Storage.S3;
 using Amazon.S3;
 using Amazon.Runtime;
@@ -66,6 +67,15 @@ public static class InfrastructureServiceRegistration
         // Register Analytics Service
         services.AddScoped<IAnalyticsService, AnalyticsService>();
 
+        // Configure GHTK Settings
+        var ghtkSettings = configuration.GetSection("GhtkSettings").Get<GhtkSettings>();
+        if (ghtkSettings == null)
+        {
+            throw new InvalidOperationException("GhtkSettings not found in configuration.");
+        }
+        services.Configure<GhtkSettings>(configuration.GetSection("GhtkSettings"));
+
+        services.AddHttpClient<IGhtkService, GhtkService>();
         // Register MQTT Service
         services.AddSingleton<MqttService>();
         services.AddHostedService<MqttService>(provider => provider.GetRequiredService<MqttService>());
@@ -96,7 +106,11 @@ public static class InfrastructureServiceRegistration
             });
             // Register Redis connection for key scan/revoke-all (e.g. on password reset)
             services.AddSingleton<StackExchange.Redis.IConnectionMultiplexer>(_ =>
-                StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString));
+            {
+                var options = StackExchange.Redis.ConfigurationOptions.Parse(redisConnectionString);
+                options.AbortOnConnectFail = false;
+                return StackExchange.Redis.ConnectionMultiplexer.Connect(options);
+            });
         }
         else
         {
