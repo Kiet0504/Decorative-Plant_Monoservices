@@ -24,7 +24,7 @@ public class GetIotDeviceByIdQueryHandler : IRequestHandler<GetIotDeviceByIdQuer
         var readings = await _iotRepository.GetSensorMetricsAsync(device.Id, null, DateTime.UtcNow.AddMinutes(-60), null, cancellationToken);
 
         string? ExtractJsonField(JsonDocument? doc, string fieldName) {
-            if (doc == null) return null;
+            if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object) return null;
             if (doc.RootElement.TryGetProperty(fieldName, out var prop)) return prop.GetString();
             return null;
         }
