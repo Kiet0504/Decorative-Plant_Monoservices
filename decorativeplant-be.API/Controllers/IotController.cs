@@ -54,7 +54,7 @@ public class IotController : BaseController
         return CreatedAtAction(nameof(GetDeviceById), new { id = result.Id }, result);
     }
 
-    [HttpPut("devices/{id}")]
+    [HttpPatch("devices/{id}")]
     public async Task<ActionResult> UpdateDevice(Guid id, [FromBody] UpdateIotDeviceDto dto)
     {
         var result = await Mediator.Send(new UpdateIotDeviceCommand { Id = id, Device = dto });
