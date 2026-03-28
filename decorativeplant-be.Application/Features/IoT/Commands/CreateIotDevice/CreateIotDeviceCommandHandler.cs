@@ -1,3 +1,4 @@
+using System.Text.Json;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.DTOs.IoT;
 using decorativeplant_be.Domain.Entities;
@@ -18,17 +19,28 @@ public class CreateIotDeviceCommandHandler : IRequestHandler<CreateIotDeviceComm
 
     public async Task<IotDeviceDto> Handle(CreateIotDeviceCommand request, CancellationToken cancellationToken)
     {
-        // Generate a random, cryptographically secure string, or just a Guid string for the secret
         var generatedSecret = Guid.NewGuid().ToString("N");
+
+        var deviceInfoDict = new Dictionary<string, object>();
+        if (request.Device.DeviceInfo != null)
+        {
+            try {
+                var existing = JsonSerializer.Deserialize<Dictionary<string, object>>(request.Device.DeviceInfo.RootElement.GetRawText());
+                if (existing != null) deviceInfoDict = existing;
+            } catch { }
+        }
+        
+        if (!string.IsNullOrEmpty(request.Device.Name)) deviceInfoDict["name"] = request.Device.Name;
+        if (!string.IsNullOrEmpty(request.Device.Type)) deviceInfoDict["type"] = request.Device.Type;
 
         var newDevice = new IotDevice
         {
             Id = Guid.NewGuid(),
             BranchId = request.Device.BranchId,
             LocationId = request.Device.LocationId,
-            SecretKey = generatedSecret, // Auto-assigned by backend
-            DeviceInfo = request.Device.DeviceInfo,
-            Status = request.Device.Status ?? "Inactive",
+            SecretKey = generatedSecret,
+            DeviceInfo = deviceInfoDict.Count > 0 ? JsonSerializer.SerializeToDocument(deviceInfoDict) : request.Device.DeviceInfo,
+            Status = request.Device.Status ?? "Active",
             Components = request.Device.Components
         };
 
@@ -42,6 +54,8 @@ public class CreateIotDeviceCommandHandler : IRequestHandler<CreateIotDeviceComm
             LocationId = newDevice.LocationId,
             SecretKey = newDevice.SecretKey,
             DeviceInfo = newDevice.DeviceInfo,
+            Name = request.Device.Name,
+            Type = request.Device.Type,
             Status = newDevice.Status,
             Components = newDevice.Components
         };

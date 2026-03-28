@@ -1,3 +1,4 @@
+using System.Text.Json;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.DTOs.IoT;
 using MediatR;
@@ -20,6 +21,14 @@ public class GetIotDeviceByIdQueryHandler : IRequestHandler<GetIotDeviceByIdQuer
         if (device == null)
             return null;
 
+        var readings = await _iotRepository.GetSensorMetricsAsync(device.Id, null, DateTime.UtcNow.AddMinutes(-60), null, cancellationToken);
+
+        string? ExtractJsonField(JsonDocument? doc, string fieldName) {
+            if (doc == null) return null;
+            if (doc.RootElement.TryGetProperty(fieldName, out var prop)) return prop.GetString();
+            return null;
+        }
+
         return new IotDeviceDto
         {
             Id = device.Id,
@@ -27,9 +36,20 @@ public class GetIotDeviceByIdQueryHandler : IRequestHandler<GetIotDeviceByIdQuer
             LocationId = device.LocationId,
             SecretKey = device.SecretKey,
             DeviceInfo = device.DeviceInfo,
+            Name = ExtractJsonField(device.DeviceInfo, "name"),
+            Type = ExtractJsonField(device.DeviceInfo, "type"),
+            LocationName = device.Location?.Name,
             Status = device.Status,
             ActivityLog = device.ActivityLog,
-            Components = device.Components
+            Components = device.Components,
+            LatestReadings = readings.Select(r => new SensorReadingDto
+            {
+                Id = r.Id,
+                DeviceId = r.DeviceId,
+                ComponentKey = r.ComponentKey ?? "unknown",
+                Value = r.Value,
+                Timestamp = r.RecordedAt ?? DateTime.UtcNow
+            })
         };
     }
 }
