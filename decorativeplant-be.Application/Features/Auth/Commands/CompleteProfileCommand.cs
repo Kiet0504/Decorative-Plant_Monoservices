@@ -4,7 +4,6 @@ namespace decorativeplant_be.Application.Features.Auth.Commands;
 
 public class CompleteProfileCommand : IRequest<bool>
 {
-    // Set by controller from JWT claims — do NOT bind from request body
     public Guid UserId { get; set; }
 
     public string? SunlightExposure { get; set; }

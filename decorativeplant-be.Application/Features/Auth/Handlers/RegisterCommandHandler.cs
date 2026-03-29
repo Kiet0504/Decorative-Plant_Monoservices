@@ -77,7 +77,7 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
         var userAccount = await _userAccountService.CreateUserAccountAsync(
             email: request.Email,
             passwordHash: passwordHash,
-            phone: null,
+            phone: request.PhoneNumber,
             role: "customer",
             displayName: displayName,
             emailVerified: emailVerified,

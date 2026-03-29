@@ -1,7 +1,9 @@
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.DTOs.Common;
+using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Auth.Commands;
 
 namespace decorativeplant_be.API.Controllers;
@@ -10,8 +12,11 @@ namespace decorativeplant_be.API.Controllers;
 [Route("api/[controller]")]
 public class AuthController : BaseController
 {
-    public AuthController()
+    private readonly IApplicationDbContext _context;
+
+    public AuthController(IApplicationDbContext context)
     {
+        _context = context;
     }
 
     [HttpPost("register")]
@@ -108,5 +113,58 @@ public class AuthController : BaseController
 
         var result = await Mediator.Send(command);
         return Ok(ApiResponse<bool>.SuccessResponse(result, "Profile completed successfully."));
+    }
+
+    /// <summary>
+    /// Get the current authenticated user's profile information.
+    /// Returns all user data including onboarding profile fields.
+    /// Requires Authorization header with valid JWT token.
+    /// </summary>
+    [HttpGet("me")]
+    [Microsoft.AspNetCore.Authorization.Authorize]
+    public async Task<ActionResult<ApiResponse<object>>> GetCurrentUser()
+    {
+        var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(userIdClaim, out var userId))
+            return Unauthorized(ApiResponse<object>.ErrorResponse("Invalid or missing user ID in token.", statusCode: 401));
+
+        var u = await _context.UserAccounts.AsNoTracking().FirstOrDefaultAsync(x => x.Id == userId);
+        if (u == null)
+            return NotFound(ApiResponse<object>.ErrorResponse("User not found.", statusCode: 404));
+
+        var userData = new
+        {
+            // ===== BASIC USER INFO =====
+            id = u.Id,
+            fullName = u.DisplayName ?? "Anonymous",
+            email = u.Email,
+            role = u.Role,
+            phone = u.Phone ?? "",
+            biography = u.Bio ?? "",
+            avatar = u.AvatarUrl ?? "https://ui-avatars.com/api/?name=" + (u.DisplayName ?? u.Email),
+            joinDate = u.CreatedAt.ToString("MMM dd, yyyy"),
+            lastLogin = u.LastLoginAt.HasValue ? u.LastLoginAt.Value.ToString("g") : "Never",
+            isActive = u.IsActive,
+            emailVerified = u.EmailVerified,
+
+            // ===== ONBOARDING PROFILE FIELDS =====
+            isProfileCompleted = u.IsProfileCompleted,
+            experienceLevel = u.ExperienceLevel,
+            sunlightExposure = u.SunlightExposure,
+            roomTemperatureRange = u.RoomTemperatureRange,
+            humidityLevel = u.HumidityLevel,
+            wateringFrequency = u.WateringFrequency,
+            plantPlacement = u.PlacementLocation,
+            spaceSize = u.SpaceSize,
+            hasChildren = u.HasChildrenOrPets,
+            hasPets = u.HasChildrenOrPets,
+            plantGoals = u.PlantGoals != null ? u.PlantGoals.RootElement : (object?)null,
+            stylePreference = u.PreferredStyle,
+            budget = u.BudgetRange,
+            location = u.LocationCity,
+            hardinessZone = u.HardinessZone
+        };
+
+        return Ok(ApiResponse<object>.SuccessResponse(userData, "User profile retrieved successfully."));
     }
 }
