@@ -55,9 +55,9 @@ try
         options.AddPolicy("AllowFrontend", policy =>
         {
             policy.WithOrigins(
-                    "http://localhost:5173",  // Vite dev server
-                    "http://localhost:3000",  // Fallback dev port
-                    "http://localhost:4173"   // Vite preview
+                    "http://localhost:5173",  
+                    "http://localhost:3000", 
+                    "http://localhost:4173"  
                 )
                 .AllowAnyHeader()
                 .AllowAnyMethod()
@@ -81,18 +81,6 @@ try
 
     // Add Infrastructure services (DbContext, Identity, JWT, Repositories, etc.)
     builder.Services.AddInfrastructureServices(builder.Configuration);
-
-    // Add CORS
-    builder.Services.AddCors(options =>
-    {
-        options.AddPolicy("AllowAllOrigins",
-            policy =>
-            {
-                policy.AllowAnyOrigin()
-                      .AllowAnyHeader()
-                      .AllowAnyMethod();
-            });
-    });
 
     // Add Health Checks
     builder.Services.AddHealthChecks()
@@ -159,7 +147,6 @@ try
     app.UseRateLimiter(); // Must be after routing/cors, before auth ideally
 
     app.UseRouting();
-    app.UseCors("AllowAll");
     app.UseAuthentication();
     app.UseMiddleware<BranchScopedAccessMiddleware>(); // Branch-scoped access control - after UseAuthentication, before UseAuthorization
     app.UseMiddleware<SoftPaywallMiddleware>();

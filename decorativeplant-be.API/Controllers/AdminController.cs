@@ -57,6 +57,7 @@ public class AdminController : ControllerBase
 
         return Ok(new
         {
+            // ===== EXISTING FIELDS =====
             id = u.Id,
             fullName = u.DisplayName ?? "Anonymous",
             email = u.Email,
@@ -67,7 +68,23 @@ public class AdminController : ControllerBase
             avatar = u.AvatarUrl ?? "https://ui-avatars.com/api/?name=" + (u.DisplayName ?? u.Email),
             joinDate = u.CreatedAt.ToString("MMM dd, yyyy"),
             twoFactorEnabled = false,
-            lastLogin = u.LastLoginAt.HasValue ? u.LastLoginAt.Value.ToString("g") : "Never"
+            lastLogin = u.LastLoginAt.HasValue ? u.LastLoginAt.Value.ToString("g") : "Never",
+
+            // ===== ONBOARDING PROFILE FIELDS =====
+            isProfileCompleted = u.IsProfileCompleted,
+            experienceLevel = u.ExperienceLevel,
+            sunlightExposure = u.SunlightExposure,
+            roomTemperatureRange = u.RoomTemperatureRange,
+            humidityLevel = u.HumidityLevel,
+            wateringFrequency = u.WateringFrequency,
+            plantPlacement = u.PlacementLocation,
+            spaceSize = u.SpaceSize,
+            hasChildren = u.HasChildrenOrPets,
+            hasPets = u.HasChildrenOrPets,
+            plantGoals = u.PlantGoals != null ? u.PlantGoals.RootElement : (object?)null,
+            stylePreference = u.PreferredStyle,
+            budget = u.BudgetRange,
+            location = u.LocationCity
         });
     }
 
