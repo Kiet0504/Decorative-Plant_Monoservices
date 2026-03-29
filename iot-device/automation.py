@@ -31,15 +31,27 @@ class HardwareActions:
                 duration = params["duration"]
 
             # Mapping logic
-            if action_name == "turn_on_pump" or (action_name == "water_pump" and action_value == "turn_on"):
+            # Support both manual ("command": "turn_on") and web ("action_type": "turn_on", "value": "100")
+            is_on = (action_value == "turn_on" or action_value == "ON" or action_value == "1" or action_value == 1)
+            is_off = (action_value == "turn_off" or action_value == "OFF" or action_value == "0" or action_value == 0)
+            
+            # Special case for "set_value" from web
+            if not is_on and not is_off:
+                # If action_value is just a number string from "set_value"
+                try:
+                    num_val = float(action_value)
+                    if num_val > 0: is_on = True
+                    else: is_off = True
+                except:
+                    pass
+
+            if action_name == "turn_on_pump" or (action_name == "water_pump" and is_on):
                 RELAY_PUMP.value(1)
                 success = True
                 msg = "Pump turned ON"
                 if duration > 0:
                     msg += " for {}s".format(duration)
-                    # Note: Non-blocking duration would be better, but for now we block or just set state
-                    # We will just log it for now
-            elif action_name == "turn_off_pump" or (action_name == "water_pump" and action_value == "turn_off"):
+            elif action_name == "turn_off_pump" or (action_name == "water_pump" and is_off):
                 RELAY_PUMP.value(0)
                 success = True
                 msg = "Pump turned OFF"
@@ -110,7 +122,13 @@ def check_schedule(rule_id, schedule_dict):
     if not schedule_dict:
         return True, False # Khong co lich hen, coi nhu pass ve mat thoi gian
 
-    target_time = schedule_dict.get("time", "")
+    # Try both 'time' (manual) and 'time_schedule.start' (official)
+    target_time = schedule_dict.get("time")
+    if not target_time:
+        ts = schedule_dict.get("time_schedule")
+        if isinstance(ts, dict):
+            target_time = ts.get("start")
+
     if not target_time:
         return True, False
 
@@ -165,15 +183,17 @@ def evaluate_and_run(sensor_data, active_rules):
                 rules_list.append({"component": k, "logic": v})
 
         for r in rules_list:
-            comp = r.get("component")
+            comp = r.get("component") or r.get("component_key")
             current_val = sensor_data.get(comp, None)
             if current_val is None:
                 match = False
                 break
             
-            # Nested logic: {"operator": "<", "value": 40}
+            # Use 'operator' and either 'value' (manual) or 'threshold' (official)
             op = r.get("operator")
             val = r.get("value")
+            if val is None:
+                val = r.get("threshold")
             
             # Fallback for old format
             if not op and "logic" in r:
