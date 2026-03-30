@@ -69,6 +69,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     // Module 8: Analytics & Config
     public DbSet<AiTrainingFeedback> AiTrainingFeedbacks { get; set; } = null!;
     public DbSet<SystemConfig> SystemConfigs { get; set; } = null!;
+    public DbSet<RecommendationLog> RecommendationLogs { get; set; } = null!;
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

@@ -32,11 +32,21 @@ public interface IApplicationDbContext
     // Module 4: Inventory
     DbSet<BatchStock> BatchStocks { get; }
     DbSet<InventoryLocation> InventoryLocations { get; }
+    DbSet<PlantBatch> PlantBatches { get; }
+    DbSet<PlantTaxonomy> PlantTaxonomies { get; }
     
     // Admin / Core
     DbSet<Company> Companies { get; }
     DbSet<Branch> Branches { get; }
     DbSet<StaffAssignment> StaffAssignments { get; }
+
+    // Module 6: My Garden
+    DbSet<GardenPlant> GardenPlants { get; }
+    DbSet<CareLog> CareLogs { get; }
+    DbSet<CareSchedule> CareSchedules { get; }
+
+    // Recommendations
+    DbSet<RecommendationLog> RecommendationLogs { get; }
 
     Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
     
