@@ -12,4 +12,6 @@ public class RegisterCommand : IRequest<TokenResponse>
     public string ConfirmPassword { get; set; } = string.Empty;
     public string FirstName { get; set; } = string.Empty;
     public string LastName { get; set; } = string.Empty;
+    /// <summary>Required. Primary phone number for the user.</summary>
+    public string PhoneNumber { get; set; } = string.Empty;
 }
