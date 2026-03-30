@@ -26,8 +26,9 @@ public class MediaController : ControllerBase
     }
 
     [HttpPost("upload")]
+    [Consumes("multipart/form-data")]
     [RequestSizeLimit(MaxFileSizeBytes)]
-    public async Task<ActionResult<ApiResponse<object>>> Upload([FromForm] IFormFile file, [FromForm] string? folder = null, CancellationToken cancellationToken = default)
+    public async Task<ActionResult<ApiResponse<object>>> Upload(IFormFile file, [FromForm] string? folder = null, CancellationToken cancellationToken = default)
     {
         if (file == null || file.Length == 0)
         {
