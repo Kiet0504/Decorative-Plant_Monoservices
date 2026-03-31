@@ -2,6 +2,7 @@ using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
+using System.Text.Json;
 
 namespace decorativeplant_be.Application.Features.IoT.Commands.IngestSensorData;
 
