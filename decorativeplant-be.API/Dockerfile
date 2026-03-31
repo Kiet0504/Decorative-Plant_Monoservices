@@ -17,6 +17,7 @@ COPY ["decorativeplant-be.API/decorativeplant-be.API.csproj", "decorativeplant-b
 COPY ["decorativeplant-be.Domain/decorativeplant-be.Domain.csproj", "decorativeplant-be.Domain/"]
 COPY ["decorativeplant-be.Application/decorativeplant-be.Application.csproj", "decorativeplant-be.Application/"]
 COPY ["decorativeplant-be.Infrastructure/decorativeplant-be.Infrastructure.csproj", "decorativeplant-be.Infrastructure/"]
+COPY ["decorativeplant-be.Tests/decorativeplant-be.Tests.csproj", "decorativeplant-be.Tests/"]
 RUN dotnet restore "DecorativePlant-BE.sln"
 COPY . .
 WORKDIR "/src/decorativeplant-be.API"
