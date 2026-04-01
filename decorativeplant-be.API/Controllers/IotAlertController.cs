@@ -19,6 +19,14 @@ public class IotAlertController : BaseController
         return Ok(result);
     }
 
+    /// <summary>Create a new IoT alert manually.</summary>
+    [HttpPost]
+    public async Task<ActionResult<IotAlertDto>> CreateAlert([FromBody] CreateIotAlertCommand command)
+    {
+        var result = await Mediator.Send(command);
+        return Ok(result);
+    }
+
     /// <summary>Mark an IoT alert as resolved.</summary>
     [HttpPatch("{id}/resolve")]
     public async Task<ActionResult> Resolve(Guid id, [FromBody] ResolveIotAlertDto dto)
