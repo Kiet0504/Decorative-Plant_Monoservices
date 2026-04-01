@@ -1,6 +1,7 @@
 using decorativeplant_be.Application.DTOs.IoT;
 using decorativeplant_be.Application.Features.IoT.Queries;
 using decorativeplant_be.Application.Features.IoT.Commands;
+using decorativeplant_be.Application.Features.IoT.Commands.CreateIotAlert;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
