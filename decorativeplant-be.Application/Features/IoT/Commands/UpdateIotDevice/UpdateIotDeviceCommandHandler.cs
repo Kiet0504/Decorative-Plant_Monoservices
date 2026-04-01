@@ -1,3 +1,4 @@
+using System.Text.Json;
 using decorativeplant_be.Application.Common.Interfaces;
 using MediatR;
 
@@ -22,9 +23,22 @@ public class UpdateIotDeviceCommandHandler : IRequestHandler<UpdateIotDeviceComm
             return false; // Not Found
         }
 
+        // Pack Name and Type into DeviceInfo
+        var deviceInfoDict = new Dictionary<string, object>();
+        if (device.DeviceInfo != null)
+        {
+            try {
+                var existing = JsonSerializer.Deserialize<Dictionary<string, object>>(device.DeviceInfo.RootElement.GetRawText());
+                if (existing != null) deviceInfoDict = existing;
+            } catch { }
+        }
+
+        if (request.Device.Name != null) deviceInfoDict["name"] = request.Device.Name;
+        if (request.Device.Type != null) deviceInfoDict["type"] = request.Device.Type;
+
         device.BranchId = request.Device.BranchId ?? device.BranchId;
         device.LocationId = request.Device.LocationId ?? device.LocationId;
-        device.DeviceInfo = request.Device.DeviceInfo ?? device.DeviceInfo;
+        device.DeviceInfo = deviceInfoDict.Count > 0 ? JsonSerializer.SerializeToDocument(deviceInfoDict) : device.DeviceInfo;
         device.Status = request.Device.Status ?? device.Status;
         device.Components = request.Device.Components ?? device.Components;
 

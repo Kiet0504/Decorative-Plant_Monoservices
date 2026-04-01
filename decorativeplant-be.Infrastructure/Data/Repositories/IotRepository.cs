@@ -40,12 +40,16 @@ public class IotRepository : IIotRepository
     // --- IotDevice ---
     public async Task<IEnumerable<IotDevice>> GetIotDevicesAsync(CancellationToken cancellationToken)
     {
-        return await _context.Set<IotDevice>().AsNoTracking().ToListAsync(cancellationToken);
+        return await _context.Set<IotDevice>().AsNoTracking()
+            .Include(d => d.Location)
+            .ToListAsync(cancellationToken);
     }
 
     public async Task<IotDevice?> GetIotDeviceByIdAsync(Guid id, CancellationToken cancellationToken)
     {
-        return await _context.Set<IotDevice>().FirstOrDefaultAsync(d => d.Id == id, cancellationToken);
+        return await _context.Set<IotDevice>()
+            .Include(d => d.Location)
+            .FirstOrDefaultAsync(d => d.Id == id, cancellationToken);
     }
 
     public async Task<IotDevice> CreateIotDeviceAsync(IotDevice device, CancellationToken cancellationToken)

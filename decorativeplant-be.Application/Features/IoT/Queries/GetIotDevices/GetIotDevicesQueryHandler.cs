@@ -1,3 +1,4 @@
+using System.Text.Json;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.DTOs.IoT;
 using MediatR;
@@ -24,9 +25,19 @@ public class GetIotDevicesQueryHandler : IRequestHandler<GetIotDevicesQuery, IEn
             LocationId = d.LocationId,
             SecretKey = d.SecretKey,
             DeviceInfo = d.DeviceInfo,
+            Name = ExtractJsonField(d.DeviceInfo, "name"),
+            Type = ExtractJsonField(d.DeviceInfo, "type"),
+            LocationName = d.Location?.Name,
             Status = d.Status,
             ActivityLog = d.ActivityLog,
             Components = d.Components
-        });
+        }).ToList();
+    }
+
+    private string? ExtractJsonField(JsonDocument? doc, string fieldName) {
+        if (doc == null) return null;
+        if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty(fieldName, out var prop)) 
+            return prop.GetString();
+        return null;
     }
 }

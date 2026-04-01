@@ -31,15 +31,27 @@ class HardwareActions:
                 duration = params["duration"]
 
             # Mapping logic
-            if action_name == "turn_on_pump" or (action_name == "water_pump" and action_value == "turn_on"):
+            # Support both manual ("command": "turn_on") and web ("action_type": "turn_on", "value": "100")
+            is_on = (action_value == "turn_on" or action_value == "ON" or action_value == "1" or action_value == 1)
+            is_off = (action_value == "turn_off" or action_value == "OFF" or action_value == "0" or action_value == 0)
+            
+            # Special case for "set_value" from web
+            if not is_on and not is_off:
+                # If action_value is just a number string from "set_value"
+                try:
+                    num_val = float(action_value)
+                    if num_val > 0: is_on = True
+                    else: is_off = True
+                except:
+                    pass
+
+            if action_name == "turn_on_pump" or (action_name == "water_pump" and is_on):
                 RELAY_PUMP.value(1)
                 success = True
                 msg = "Pump turned ON"
                 if duration > 0:
                     msg += " for {}s".format(duration)
-                    # Note: Non-blocking duration would be better, but for now we block or just set state
-                    # We will just log it for now
-            elif action_name == "turn_off_pump" or (action_name == "water_pump" and action_value == "turn_off"):
+            elif action_name == "turn_off_pump" or (action_name == "water_pump" and is_off):
                 RELAY_PUMP.value(0)
                 success = True
                 msg = "Pump turned OFF"
@@ -110,7 +122,17 @@ def check_schedule(rule_id, schedule_dict):
     if not schedule_dict:
         return True, False # Khong co lich hen, coi nhu pass ve mat thoi gian
 
-    target_time = schedule_dict.get("time", "")
+    # Neu loai hinh la 'always', bo qua cac thong so thoi gian
+    if schedule_dict.get("type") == "always":
+        return True, False
+
+    # Try both 'time' (manual) and 'time_schedule.start' (official)
+    target_time = schedule_dict.get("time")
+    if not target_time:
+        ts = schedule_dict.get("time_schedule")
+        if isinstance(ts, dict):
+            target_time = ts.get("start")
+
     if not target_time:
         return True, False
 
@@ -136,69 +158,98 @@ def check_schedule(rule_id, schedule_dict):
                 
     return False, True # Co lich nhung khong phai bay gio
 
+def _check_single_condition(r, sensor_data):
+    comp = r.get("component") or r.get("component_key")
+    current_val = sensor_data.get(comp, None)
+    
+    # Use 'operator' and either 'value' (manual) or 'threshold' (official)
+    op = r.get("operator")
+    val = r.get("value")
+    if val is None:
+        val = r.get("threshold")
+    
+    # Fallback for old format
+    if not op and "logic" in r:
+        logic_dict = r["logic"]
+        if isinstance(logic_dict, dict):
+            op = list(logic_dict.keys())[0]
+            val = logic_dict[op]
+
+    res = False
+    if current_val is not None and val is not None:
+        try:
+            c_val = float(current_val)
+            t_val = float(val)
+            if op == ">": res = c_val > t_val
+            elif op == "<": res = c_val < t_val
+            elif op == "==" or op == "=": res = c_val == t_val
+            elif op == ">=": res = c_val >= t_val
+            elif op == "<=": res = c_val <= t_val
+        except:
+            pass
+
+    print("    [Check] {} (v={}) {} (t={}) -> {}".format(comp, current_val, op, val, res))
+    return res
+
 def evaluate_and_run(sensor_data, active_rules):
     # sensor_data: dict, e.g., {"temp_sensor": 30.5}
+    print("[Engine] Bat dau kiem tra {} rules...".format(len(active_rules)))
     for rule in active_rules:
+        print("[Rule Debug] Content: {}".format(ujson.dumps(rule)))
+        rule_name = rule.get('name', 'Unknown')
         conditions = rule.get("conditions", {}) or {}
         actions = rule.get("actions", {}) or {}
         schedule = rule.get("schedule", {}) or {}
-        
         rule_id = rule.get("id", "0000")
         
-        # 1. Kiem tra gio giac (Neu co set)
+        # 1. Kiem tra gio giac
+        # Fix: use 'schedule' variable defined above
         should_run_time, is_scheduled = check_schedule(rule_id, schedule)
+        print("  -> Schedule Check: should_run_time={}, is_scheduled={}".format(should_run_time, is_scheduled))
         if not should_run_time:
-            continue # Chua den gio hoac da chay roi
+            continue
             
         # 2. Kiem tra dieu kien cam bien
-        match = True
-        
-        # Handle different condition structures
+        logic = "and"
+        if isinstance(conditions, dict):
+            logic = conditions.get("logic", "and").lower()
+            
         rules_list = []
         if isinstance(conditions, list):
             rules_list = conditions
         elif isinstance(conditions, dict) and "rules" in conditions:
             rules_list = conditions["rules"]
-        elif isinstance(conditions, dict):
-            # Legacy flat format: {"temp_sensor": {">": 30}}
-            for k, v in conditions.items():
-                rules_list.append({"component": k, "logic": v})
 
-        for r in rules_list:
-            comp = r.get("component")
-            current_val = sensor_data.get(comp, None)
-            if current_val is None:
+        print("  -> Dang xet Rule: '{}' (Logic={})".format(rule_name, logic))
+        
+        match = (logic == "and")
+        if not rules_list:
+            match = True
+        else:
+            if logic == "or":
                 match = False
-                break
-            
-            # Nested logic: {"operator": "<", "value": 40}
-            op = r.get("operator")
-            val = r.get("value")
-            
-            # Fallback for old format
-            if not op and "logic" in r:
-                logic_dict = r["logic"]
-                if isinstance(logic_dict, dict):
-                    op = list(logic_dict.keys())[0]
-                    val = logic_dict[op]
-
-            if op == ">" and not (current_val > val): match = False
-            elif op == "<" and not (current_val < val): match = False
-            elif (op == "==" or op == "=") and not (current_val == val): match = False
-            elif op == ">=" and not (current_val >= val): match = False
-            elif op == "<=" and not (current_val <= val): match = False
-            
-            if not match:
-                break
+                for r in rules_list:
+                    if _check_single_condition(r, sensor_data):
+                        match = True
+                        break
+            else: # logic == "and"
+                match = True
+                for r in rules_list:
+                    if not _check_single_condition(r, sensor_data):
+                        match = False
+                        break
                 
-        # Rule hop le khi nao? 
-        # - Neu la luat Hen Gio (is_scheduled = True) thi dieu kien Match = True moi chay (hoac ko co dieu kien)
-        # - Neu la luat Cam Bien ko thoi thi dieu kien Match phai = True va phai co it nhat 1 condition
+        print("  => Result: match={}".format(match))
+
         is_valid = False
         if is_scheduled and match:
             is_valid = True
         elif not is_scheduled and conditions and match:
             is_valid = True
+        else:
+            is_valid = False
+            
+        # Kiem tra action co dien ra qua nhanh ko de chong spam (tu tuy chinh)
             
         # Kiem tra action co dien ra qua nhanh ko de chong spam (tu tuy chinh)
         if is_valid and actions:

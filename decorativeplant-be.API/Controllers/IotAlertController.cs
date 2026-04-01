@@ -1,6 +1,7 @@
 using decorativeplant_be.Application.DTOs.IoT;
 using decorativeplant_be.Application.Features.IoT.Queries;
 using decorativeplant_be.Application.Features.IoT.Commands;
+using decorativeplant_be.Application.Features.IoT.Commands.CreateIotAlert;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -16,6 +17,14 @@ public class IotAlertController : BaseController
     public async Task<ActionResult<IEnumerable<IotAlertDto>>> GetAlerts([FromQuery] Guid? deviceId)
     {
         var result = await Mediator.Send(new GetIotAlertsQuery { DeviceId = deviceId });
+        return Ok(result);
+    }
+
+    /// <summary>Create a new IoT alert manually.</summary>
+    [HttpPost]
+    public async Task<ActionResult<IotAlertDto>> CreateAlert([FromBody] CreateIotAlertCommand command)
+    {
+        var result = await Mediator.Send(command);
         return Ok(result);
     }
 
