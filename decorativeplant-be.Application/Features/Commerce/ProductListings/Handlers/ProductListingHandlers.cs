@@ -33,12 +33,15 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             Id = Guid.NewGuid(),
             BranchId = req.BranchId,
             BatchId = req.BatchId,
+            CreatedAt = DateTime.UtcNow,
             ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
                 title = req.Title,
+                scientific_name = req.ScientificName,
                 slug,
                 description = req.Description,
                 price = req.Price,
+                stock_quantity = req.StockQuantity,
                 min_order = req.MinOrder,
                 max_order = req.MaxOrder
             })),
@@ -58,14 +61,32 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
                 meta_keywords = req.MetaKeywords
             })) : null,
             Images = req.Images.Count > 0 ? JsonDocument.Parse(JsonSerializer.Serialize(
-                req.Images.Select(i => new { url = i.Url, alt = i.Alt, is_primary = i.IsPrimary, sort_order = i.SortOrder }))) : null,
-            CreatedAt = DateTime.UtcNow
+                req.Images.Select(i => new { url = i.Url, alt = i.Alt, is_primary = i.IsPrimary, sort_order = i.SortOrder }))) : null
         };
+
+        // Automatic Batch Creation if StockQuantity is provided
+        if (req.StockQuantity > 0)
+        {
+            var batch = new PlantBatch
+            {
+                Id = Guid.NewGuid(),
+                BatchCode = $"AUTO-{entity.Id.ToString().Substring(0, 8).ToUpper()}",
+                BranchId = entity.BranchId,
+                InitialQuantity = req.StockQuantity,
+                CurrentTotalQuantity = req.StockQuantity,
+                CreatedAt = DateTime.UtcNow
+            };
+            _context.PlantBatches.Add(batch);
+            entity.BatchId = batch.Id;
+            entity.Batch = batch;
+            _logger.LogInformation("Automatically created Batch {BatchId} with quantity {Quantity} for new Product {ProductId}", 
+                batch.Id, req.StockQuantity, entity.Id);
+        }
 
         _context.ProductListings.Add(entity);
         await _context.SaveChangesAsync(ct);
 
-        _logger.LogInformation("Created ProductListing {Id}", entity.Id);
+        _logger.LogInformation("Created ProductListing {Id} with Batch {BatchId}", entity.Id, entity.BatchId);
         return MapToResponse(entity);
     }
 
@@ -83,11 +104,19 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         {
             var root = e.ProductInfo.RootElement;
             response.Title = root.TryGetProperty("title", out var t) ? t.GetString() ?? "" : "";
+            response.ScientificName = root.TryGetProperty("scientific_name", out var sn) ? sn.GetString() : null;
             response.Slug = root.TryGetProperty("slug", out var s) ? s.GetString() : null;
             response.Description = root.TryGetProperty("description", out var d) ? d.GetString() : null;
             response.Price = root.TryGetProperty("price", out var p) ? p.GetString() ?? "0" : "0";
             response.MinOrder = root.TryGetProperty("min_order", out var mn) ? mn.GetInt32() : 1;
             response.MaxOrder = root.TryGetProperty("max_order", out var mx) ? mx.GetInt32() : 10;
+            response.StockQuantity = root.TryGetProperty("stock_quantity", out var sq) ? sq.GetInt32() : 0;
+        }
+
+        // Override with real stock from linked batch if available
+        if (e.Batch != null) 
+        {
+            response.StockQuantity = e.Batch.CurrentTotalQuantity ?? 0;
         }
 
         if (e.StatusInfo != null)
@@ -120,15 +149,48 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
 public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingCommand, ProductListingResponse>
 {
     private readonly IApplicationDbContext _context;
+    private readonly ILogger<UpdateProductListingHandler> _logger;
 
-    public UpdateProductListingHandler(IApplicationDbContext context) => _context = context;
+    public UpdateProductListingHandler(IApplicationDbContext context, ILogger<UpdateProductListingHandler> logger)
+    {
+        _context = context;
+        _logger = logger;
+    }
 
     public async Task<ProductListingResponse> Handle(UpdateProductListingCommand cmd, CancellationToken ct)
     {
-        var entity = await _context.ProductListings.FindAsync(new object[] { cmd.Id }, ct)
+        var req = cmd.Request;
+        var entity = await _context.ProductListings
+            .Include(x => x.Batch)
+            .FirstOrDefaultAsync(x => x.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"ProductListing {cmd.Id} not found.");
 
-        var req = cmd.Request;
+        if (req.StockQuantity.HasValue)
+        {
+            if (entity.Batch != null)
+            {
+                entity.Batch.CurrentTotalQuantity = req.StockQuantity.Value;
+                _logger.LogInformation("Updated existing Batch {BatchId} to quantity {Quantity} for Product {ProductId}", 
+                    entity.BatchId, req.StockQuantity.Value, entity.Id);
+            }
+            else
+            {
+                var batch = new PlantBatch
+                {
+                    Id = Guid.NewGuid(),
+                    BatchCode = $"AUTO-{entity.Id.ToString().Substring(0, 8).ToUpper()}",
+                    BranchId = entity.BranchId,
+                    InitialQuantity = req.StockQuantity.Value,
+                    CurrentTotalQuantity = req.StockQuantity.Value,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.PlantBatches.Add(batch);
+                entity.BatchId = batch.Id;
+                entity.Batch = batch;
+                _logger.LogInformation("Created new Batch {BatchId} with quantity {Quantity} for Product {ProductId}", 
+                    batch.Id, req.StockQuantity.Value, entity.Id);
+            }
+        }
 
         // Merge product_info
         var productInfo = new Dictionary<string, object?>();
@@ -137,11 +199,13 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
                 productInfo[prop.Name] = GetJsonValue(prop.Value);
 
         if (req.Title != null) productInfo["title"] = req.Title;
+        if (req.ScientificName != null) productInfo["scientific_name"] = req.ScientificName;
         if (req.Slug != null) productInfo["slug"] = req.Slug;
         if (req.Description != null) productInfo["description"] = req.Description;
         if (req.Price != null) productInfo["price"] = req.Price;
         if (req.MinOrder.HasValue) productInfo["min_order"] = req.MinOrder.Value;
         if (req.MaxOrder.HasValue) productInfo["max_order"] = req.MaxOrder.Value;
+        if (req.StockQuantity.HasValue) productInfo["stock_quantity"] = req.StockQuantity.Value;
         entity.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(productInfo));
 
         // Merge status_info
@@ -200,7 +264,9 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
 
     public async Task<PagedResult<ProductListingResponse>> Handle(GetProductListingsQuery query, CancellationToken ct)
     {
-        var q = _context.ProductListings.AsQueryable();
+        var q = _context.ProductListings
+            .Include(x => x.Batch)
+            .AsQueryable();
         if (query.BranchId.HasValue)
             q = q.Where(x => x.BranchId == query.BranchId.Value);
             
@@ -237,7 +303,9 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
 
     public async Task<ProductListingResponse?> Handle(GetProductListingByIdQuery query, CancellationToken ct)
     {
-        var entity = await _context.ProductListings.FindAsync(new object[] { query.Id }, ct);
+        var entity = await _context.ProductListings
+            .Include(x => x.Batch)
+            .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
         return entity == null ? null : CreateProductListingHandler.MapToResponse(entity);
     }
 }

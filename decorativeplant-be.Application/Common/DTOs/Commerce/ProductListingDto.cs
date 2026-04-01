@@ -3,13 +3,15 @@ namespace decorativeplant_be.Application.Common.DTOs.Commerce;
 // ── Request DTOs ──
 public class CreateProductListingRequest
 {
-    public Guid BranchId { get; set; }
+    public Guid? BranchId { get; set; }
     public Guid? BatchId { get; set; }
     // ProductInfo JSONB
     public string Title { get; set; } = string.Empty;
+    public string? ScientificName { get; set; }
     public string? Slug { get; set; }
     public string? Description { get; set; }
     public string Price { get; set; } = "0";
+    public int StockQuantity { get; set; }
     public int MinOrder { get; set; } = 1;
     public int MaxOrder { get; set; } = 10;
     // StatusInfo JSONB
@@ -28,9 +30,11 @@ public class CreateProductListingRequest
 public class UpdateProductListingRequest
 {
     public string? Title { get; set; }
+    public string? ScientificName { get; set; }
     public string? Slug { get; set; }
     public string? Description { get; set; }
     public string? Price { get; set; }
+    public int? StockQuantity { get; set; }
     public int? MinOrder { get; set; }
     public int? MaxOrder { get; set; }
     public string? Status { get; set; }
@@ -50,9 +54,11 @@ public class ProductListingResponse
     public Guid? BranchId { get; set; }
     public Guid? BatchId { get; set; }
     public string Title { get; set; } = string.Empty;
+    public string? ScientificName { get; set; }
     public string? Slug { get; set; }
     public string? Description { get; set; }
     public string Price { get; set; } = "0";
+    public int StockQuantity { get; set; }
     public int MinOrder { get; set; }
     public int MaxOrder { get; set; }
     public string Status { get; set; } = "draft";
@@ -77,6 +83,7 @@ public class ProductImageDto
 public class ProductInfoJsonb
 {
     public string? Title { get; set; }
+    public string? ScientificName { get; set; }
     public string? Slug { get; set; }
     public string? Description { get; set; }
     public string? Price { get; set; }

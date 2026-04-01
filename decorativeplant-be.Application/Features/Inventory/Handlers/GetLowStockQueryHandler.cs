@@ -1,67 +1,86 @@
+using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
-using BranchEntity = decorativeplant_be.Domain.Entities.Branch;
+using System.Text.Json;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class GetLowStockQueryHandler : IRequestHandler<GetLowStockQuery, List<LowStockItemDto>>
 {
-    private readonly IRepositoryFactory _repositoryFactory;
+    private readonly IApplicationDbContext _context;
 
-    public GetLowStockQueryHandler(IRepositoryFactory repositoryFactory)
+    public GetLowStockQueryHandler(IApplicationDbContext context)
     {
-        _repositoryFactory = repositoryFactory;
+        _context = context;
     }
 
     public async Task<List<LowStockItemDto>> Handle(GetLowStockQuery request, CancellationToken cancellationToken)
     {
-        var repo = _repositoryFactory.CreateRepository<PlantBatch>();
-        
-        // Filter: Quantity < Threshold AND (Branch matches OR Branch is null/global search)
-        // Also ensure we only check active batches (Active status logic might be in JSON or implied by quantity > 0, here we just check raw quantity)
-        var batches = await repo.FindAsync(b => 
-            (b.CurrentTotalQuantity ?? 0) < request.Threshold &&
-            (!request.BranchId.HasValue || b.BranchId == request.BranchId), 
-            cancellationToken);
+        // Query batches that match threshold and branch
+        var batches = await _context.PlantBatches
+            .Include(b => b.Branch)
+            .Include(b => b.Taxonomy)
+            .Include(b => b.ProductListings)
+            .Where(b => (b.CurrentTotalQuantity ?? 0) < request.Threshold &&
+                       (!request.BranchId.HasValue || b.BranchId == request.BranchId))
+            .ToListAsync(cancellationToken);
 
-        // Map to DTO
         var dtos = new List<LowStockItemDto>();
-        var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
-        var branchRepo = _repositoryFactory.CreateRepository<BranchEntity>();
 
         foreach (var batch in batches)
         {
-            // Load relations if missing
-            string speciesName = "Unknown";
-            if (batch.TaxonomyId.HasValue)
-            {
-                if (batch.Taxonomy == null) 
-                    batch.Taxonomy = await taxRepo.GetByIdAsync(batch.TaxonomyId.Value, cancellationToken);
-                speciesName = batch.Taxonomy?.ScientificName ?? "Unknown";
-            }
+            // Find the best associated product for display
+            var product = batch.ProductListings.FirstOrDefault();
+            string productName = "Unknown Product";
+            string productId = batch.Id.ToString(); 
+            string price = "0";
+            string category = "Uncategorized";
 
-            string branchName = "Unknown";
-            if (batch.BranchId.HasValue)
+            if (product != null && product.ProductInfo != null)
             {
-                if (batch.Branch == null)
-                    batch.Branch = await branchRepo.GetByIdAsync(batch.BranchId.Value, cancellationToken);
-                branchName = batch.Branch?.Name ?? "Unknown";
+                productId = product.Id.ToString();
+                var root = product.ProductInfo.RootElement;
+                if (root.TryGetProperty("title", out var titleProp))
+                    productName = GetJsonString(titleProp) ?? productName;
+                
+                if (root.TryGetProperty("price", out var priceProp))
+                    price = GetJsonString(priceProp) ?? "0";
+
+                if (product.StatusInfo != null && product.StatusInfo.RootElement.TryGetProperty("tags", out var tagsProp) && tagsProp.ValueKind == JsonValueKind.Array && tagsProp.GetArrayLength() > 0)
+                    category = GetJsonString(tagsProp[0]) ?? category;
+            }
+            else if (batch.Taxonomy != null)
+            {
+                productName = batch.Taxonomy.ScientificName ?? productName;
             }
 
             dtos.Add(new LowStockItemDto
             {
+                ProductId = productId,
+                ProductName = productName,
+                Price = price,
+                Category = category,
+                CurrentStock = batch.CurrentTotalQuantity ?? 0,
+                Threshold = 10,
+                BranchName = batch.Branch?.Name ?? "Global",
                 BatchId = batch.Id,
-                BatchCode = batch.BatchCode ?? "N/A",
-                SpeciesName = speciesName,
-                BranchId = batch.BranchId,
-                BranchName = branchName,
-                CurrentQuantity = batch.CurrentTotalQuantity ?? 0
+                BatchCode = batch.BatchCode ?? "N/A"
             });
         }
 
         return dtos;
     }
+
+    private static string? GetJsonString(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.Number => element.GetRawText(),
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        JsonValueKind.Null => null,
+        _ => element.GetRawText()
+    };
 }
