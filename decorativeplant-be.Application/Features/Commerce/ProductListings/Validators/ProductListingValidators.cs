@@ -7,9 +7,6 @@ public class CreateProductListingCommandValidator : AbstractValidator<CreateProd
 {
     public CreateProductListingCommandValidator()
     {
-        RuleFor(x => x.Request.BranchId)
-            .NotEmpty().WithMessage("Branch ID is required.");
-
         RuleFor(x => x.Request.Title)
             .NotEmpty().WithMessage("Title is required.")
             .MaximumLength(200).WithMessage("Title cannot exceed 200 characters.");

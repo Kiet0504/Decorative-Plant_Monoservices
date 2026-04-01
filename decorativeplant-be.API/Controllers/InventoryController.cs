@@ -86,6 +86,14 @@ public class InventoryController : BaseController
     {
         var query = new GetLowStockQuery { BranchId = branchId, Threshold = threshold };
         var result = await Mediator.Send(query);
+        
+        // DEBUG: Log the serialized JSON to see the naming case
+        foreach(var item in result) {
+            Console.WriteLine($"DEBUG-Inventory: ProductId={item.ProductId}, ProductName={item.ProductName}, Price={item.Price}, Category={item.Category}");
+        }
+        var json = System.Text.Json.JsonSerializer.Serialize(ApiResponse<List<LowStockItemDto>>.SuccessResponse(result));
+        Console.WriteLine($"DEBUG-Inventory-JSON: {json}");
+
         return Ok(ApiResponse<List<LowStockItemDto>>.SuccessResponse(result));
     }
 
