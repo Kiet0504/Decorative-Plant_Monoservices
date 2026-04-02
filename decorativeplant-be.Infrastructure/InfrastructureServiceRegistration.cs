@@ -14,7 +14,7 @@ using decorativeplant_be.Infrastructure.Jwt;
 using decorativeplant_be.Infrastructure.Cache;
 using decorativeplant_be.Infrastructure.Email;
 using decorativeplant_be.Infrastructure.Services;
-using decorativeplant_be.Infrastructure.Ghtk;
+using decorativeplant_be.Infrastructure.Ghn;
 using decorativeplant_be.Infrastructure.Storage.S3;
 using Amazon.S3;
 using Amazon.Runtime;
@@ -67,15 +67,9 @@ public static class InfrastructureServiceRegistration
         // Register Analytics Service
         services.AddScoped<IAnalyticsService, AnalyticsService>();
 
-        // Configure GHTK Settings
-        var ghtkSettings = configuration.GetSection("GhtkSettings").Get<GhtkSettings>();
-        if (ghtkSettings == null)
-        {
-            throw new InvalidOperationException("GhtkSettings not found in configuration.");
-        }
-        services.Configure<GhtkSettings>(configuration.GetSection("GhtkSettings"));
-
-        services.AddHttpClient<IGhtkService, GhtkService>();
+        // Configure GHN (Giao Hang Nhanh) Settings
+        services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
+        services.AddHttpClient<IShippingService, GhnService>();
         // Register MQTT Service
         services.AddSingleton<MqttService>();
         services.AddHostedService<MqttService>(provider => provider.GetRequiredService<MqttService>());

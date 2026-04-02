@@ -16,19 +16,23 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 {
     private readonly IApplicationDbContext _context;
     private readonly ILogger<CreateOrderHandler> _logger;
-    private readonly IGhtkService _ghtkService;
+    private readonly IShippingService _shippingService;
 
-    public CreateOrderHandler(IApplicationDbContext context, ILogger<CreateOrderHandler> logger, IGhtkService ghtkService)
+    public CreateOrderHandler(IApplicationDbContext context, ILogger<CreateOrderHandler> logger, IShippingService shippingService)
     {
         _context = context;
         _logger = logger;
-        _ghtkService = ghtkService;
+        _shippingService = shippingService;
     }
 
     public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
 
+        // Use execution strategy to support NpgsqlRetryingExecutionStrategy with transactions
+        var strategy = _context.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
         using var transaction = await _context.Database.BeginTransactionAsync(ct);
         try
         {
@@ -201,37 +205,27 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     });
                 }
 
-                // FIX #2: Per-branch shipping via GHTK fee estimate
+                // Per-branch shipping via GHN fee estimate
                 decimal branchShipping = 30000; // sensible default
                 if (req.DeliveryAddress != null && branchId.HasValue)
                 {
                     try
                     {
-                        var branchEntity = branchGroup.FirstOrDefault().listing.Branch;
-                        var pickProvince = "Hồ Chí Minh";
-                        var pickDistrict = "Thủ Đức";
-                        if (branchEntity?.ContactInfo != null)
+                        var feeResult = await _shippingService.CalculateFeeAsync(new ShippingFeeRequest
                         {
-                            var ci = branchEntity.ContactInfo.RootElement;
-                            pickProvince = ci.TryGetProperty("province", out var pp) ? pp.GetString() ?? pickProvince : pickProvince;
-                            pickDistrict = ci.TryGetProperty("district", out var pd) ? pd.GetString() ?? pickDistrict : pickDistrict;
-                        }
-
-                        var feeResult = await _ghtkService.CalculateFeeAsync(new GhtkFeeRequest
-                        {
-                            PickProvince = pickProvince,
-                            PickDistrict = pickDistrict,
-                            Province = req.DeliveryAddress.City ?? "Hồ Chí Minh",
-                            District = req.DeliveryAddress.City ?? "Hồ Chí Minh",
-                            Address = req.DeliveryAddress.AddressLine1 ?? "Unknown",
-                            Weight = orderItems.Sum(oi => oi.Quantity) * 1000, // weight in grams
-                            Value = (int)branchSubtotal
+                            FromDistrictId = 3695, // Default: Thủ Đức, HCM
+                            FromWardCode = "90737",
+                            ToDistrictId = 1454, // Default: District 1, HCM
+                            ToWardCode = "21211",
+                            Weight = orderItems.Sum(oi => oi.Quantity) * 1000,
+                            InsuranceValue = (int)branchSubtotal,
+                            ServiceTypeId = 2
                         });
-                        if (feeResult.Fee != null && feeResult.Fee.Fee > 0) branchShipping = feeResult.Fee.Fee;
+                        if (feeResult.Success && feeResult.Total > 0) branchShipping = feeResult.Total;
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "GHTK fee calc failed for branch {BranchId}, using default 30000", branchId);
+                        _logger.LogWarning(ex, "GHN fee calc failed for branch {BranchId}, using default 30000", branchId);
                     }
                 }
                 else if (req.ShippingFee > 0)
@@ -277,45 +271,36 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     OrderItems = orderItems
                 };
 
-                // Call GHTK to create order and get tracking code
+                // Call GHN to create shipping order and get tracking code
                 if (req.DeliveryAddress != null)
                 {
                     try
                     {
-                        var branchAddress = branchGroup.FirstOrDefault().listing.Branch?.ContactInfo?.RootElement.TryGetProperty("address", out var ba) == true ? ba.GetString() : "Hồ Chí Minh, Thành Phố Thủ Đức";
-                        
-                        var ghtkProducts = orderItems.Select(oi => new GhtkProduct {
+                        var ghnItems = orderItems.Select(oi => new ShippingOrderItem {
                             Name = "Cây cảnh",
                             Quantity = oi.Quantity,
-                            Weight = 1.0 // 1kg default
+                            Weight = 1000 // 1kg default in grams
                         }).ToList();
 
-                        var ghtkOrderObj = new GhtkOrderInfo
+                        var ghnRes = await _shippingService.CreateOrderAsync(new ShippingOrderRequest
                         {
-                            Id = orderCode,
-                            PickName = "Cửa hàng Decorative Plant",
-                            PickAddress = branchAddress ?? "Hồ Chí Minh",
-                            PickProvince = "Hồ Chí Minh",
-                            PickDistrict = "Thủ Đức",
-                            PickTel = "0900000000",
-                            Name = req.DeliveryAddress.RecipientName,
-                            Tel = req.DeliveryAddress.Phone,
-                            Address = req.DeliveryAddress.AddressLine1,
-                            Province = req.DeliveryAddress.City,
-                            District = req.DeliveryAddress.City, // temporary
-                            IsFreeship = 1,
-                            Value = (int)branchTotal,
-                            Transport = "road"
-                        };
+                            ToName = req.DeliveryAddress.RecipientName,
+                            ToPhone = req.DeliveryAddress.Phone,
+                            ToAddress = req.DeliveryAddress.AddressLine1,
+                            ToDistrictId = 1454, // Default district
+                            ToWardCode = "21211",
+                            Weight = orderItems.Sum(oi => oi.Quantity) * 1000,
+                            InsuranceValue = (int)branchTotal,
+                            ClientOrderCode = orderCode,
+                            Items = ghnItems
+                        });
 
-                        var ghtkRes = await _ghtkService.CreateOrderAsync(new GhtkOrderRequest { Products = ghtkProducts, Order = ghtkOrderObj });
-
-                        if (ghtkRes.Success && ghtkRes.Order != null)
+                        if (ghnRes.Success && !string.IsNullOrEmpty(ghnRes.OrderCode))
                         {
                             var notesObj = new Dictionary<string, string>
                             {
-                                { "tracking_code", ghtkRes.Order.Label },
-                                { "carrier_name", "GHTK" }
+                                { "tracking_code", ghnRes.OrderCode },
+                                { "carrier_name", "GHN" }
                             };
                             if (!string.IsNullOrEmpty(req.CustomerNote)) notesObj.Add("customer_note", req.CustomerNote);
                             
@@ -324,7 +309,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Failed to call GHTK CreateOrder for {OrderCode}", orderCode);
+                        _logger.LogError(ex, "Failed to call GHN CreateOrder for {OrderCode}", orderCode);
                     }
                 }
 
@@ -347,6 +332,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             await transaction.RollbackAsync(ct);
             throw;
         }
+        }); // end strategy.ExecuteAsync
     }
 
     internal static OrderResponse MapToResponse(OrderHeader o, Dictionary<Guid, string>? branchNames = null)
