@@ -36,6 +36,7 @@ MQTT_PASSWORD = config.env.get("MQTT_PASSWORD", "your_password_here")
 
 MQTT_CLIENT_ID = "esp32_" + DEVICE_SECRET[:8]
 MQTT_TOPIC_RULES = "decorativeplant/device/{}/rules".format(DEVICE_SECRET).encode('utf-8')
+MQTT_TOPIC_COMMAND = "decorativeplant/device/{}/command".format(DEVICE_SECRET).encode('utf-8')
 
 mqtt_client = None
 
@@ -43,11 +44,23 @@ def mqtt_callback(topic, msg):
     global active_rules
     print("\n[MQTT] ======== CO LENH MOI TU SERVER ========")
     try:
-        new_rules = ujson.loads(msg.decode('utf-8'))
-        active_rules = new_rules
-        print("[MQTT] Da cap nhat {} rules thanh cong!".format(len(active_rules)))
+        data = ujson.loads(msg.decode('utf-8'))
+        
+        # 1. Update Rules
+        if topic == MQTT_TOPIC_RULES:
+            active_rules = data
+            print("[MQTT] Da cap nhat {} rules thanh cong!".format(len(active_rules)))
+            
+        # 2. Direct Command Execution
+        elif topic == MQTT_TOPIC_COMMAND:
+            action = data.get("action")
+            value = data.get("value")
+            params = data.get("params", {})
+            print("[MQTT] Dang thuc thi lenh truc tiep: {}={}".format(action, value))
+            automation.HardwareActions.execute(action, value, params)
+            
     except Exception as e:
-        print("[MQTT] Loi parse JSON:", e)
+        print("[MQTT] Loi xu ly tin nhan:", e)
 
 def connect_mqtt():
     global mqtt_client
@@ -66,7 +79,8 @@ def connect_mqtt():
         client.set_callback(mqtt_callback)
         client.connect()
         client.subscribe(MQTT_TOPIC_RULES)
-        print("[MQTT] Da ket noi den {} va subscribe topic: {}".format(MQTT_BROKER, MQTT_TOPIC_RULES.decode()))
+        client.subscribe(MQTT_TOPIC_COMMAND)
+        print("[MQTT] Ket noi thanh cong! Subscribed to Rules & Commands.")
         mqtt_client = client
     except Exception as e:
         print("[MQTT] Loi ket noi:", e)

@@ -9,10 +9,10 @@ API_URL_LOGS = config.env.get("API_URL", "").replace("/sensors/ingest", "/sensor
 DEVICE_SECRET = config.env.get("DEVICE_SECRET", "")
 
 # Cau hinh chan GPIO
-RELAY_PUMP = Pin(4, Pin.OUT)
+RELAY_PUMP = Pin(18, Pin.OUT)
 
-# Dam bao mac dinh la tat
-RELAY_PUMP.value(0)
+# Dam bao mac dinh la TAT (Low-level trigger: 1 = OFF)
+RELAY_PUMP.value(1)
 
 class HardwareActions:
     @staticmethod
@@ -25,34 +25,48 @@ class HardwareActions:
         success = False
         msg = ""
         try:
-            # Handle duration if provided
+            # 1. Determine the effective duration
+            # Default to 0 (which means stay on indefinitely if not specified)
+            # But let's set a safe limit for water_pump to prevent crash loops
             duration = 0
             if params and "duration" in params:
-                duration = params["duration"]
-
-            # Mapping logic
-            # Support both manual ("command": "turn_on") and web ("action_type": "turn_on", "value": "100")
-            is_on = (action_value == "turn_on" or action_value == "ON" or action_value == "1" or action_value == 1)
-            is_off = (action_value == "turn_off" or action_value == "OFF" or action_value == "0" or action_value == 0)
+                duration = float(params["duration"])
             
-            # Special case for "set_value" from web
-            if not is_on and not is_off:
-                # If action_value is just a number string from "set_value"
+            # If the action_value is a number and it's a water_pump action, treat it as duration
+            if action_name == "water_pump" or action_name == "turn_on_pump":
                 try:
-                    num_val = float(action_value)
-                    if num_val > 0: is_on = True
-                    else: is_off = True
+                    val_num = float(action_value)
+                    if val_num > 1: # If it's a significant number (e.g., 50 or 5)
+                        duration = val_num / 10 if val_num > 20 else val_num # Handle '50' as 5s if user implies it
                 except:
                     pass
 
+            # Mapping logic
+            is_on = (action_value == "turn_on" or action_value == "ON" or action_value == "1" or action_value == 1)
+            is_off = (action_value == "turn_off" or action_value == "OFF" or action_value == "0" or action_value == 0)
+            
+            # If we calculated a duration, it implies 'is_on'
+            if duration > 0:
+                is_on = True
+
+            # 2. Execution Logic (Low-Level Trigger: 0=ON, 1=OFF)
             if action_name == "turn_on_pump" or (action_name == "water_pump" and is_on):
-                RELAY_PUMP.value(1)
+                print("[Action] Pump STARTING (LOW)...")
+                RELAY_PUMP.value(0) # 0 = ON
                 success = True
                 msg = "Pump turned ON"
+                
+                # If a duration was specified or detected, wait and then turn OFF
                 if duration > 0:
                     msg += " for {}s".format(duration)
+                    print("[Action] Waiting {}s...".format(duration))
+                    time.sleep(duration)
+                    RELAY_PUMP.value(1) # 1 = OFF
+                    msg += " and then AUTO-OFF"
+                    print("[Action] Pump AUTO-OFF.")
+                
             elif action_name == "turn_off_pump" or (action_name == "water_pump" and is_off):
-                RELAY_PUMP.value(0)
+                RELAY_PUMP.value(1) # 1 = OFF
                 success = True
                 msg = "Pump turned OFF"
             else:
@@ -111,8 +125,12 @@ def send_execution_log(rule_id, action_taken, success, message):
     except Exception as e:
         print("[Automation] Loi khi gui log:", str(e))
 
-# Tu dien theo doi de tranh chay lai Rule lich trinh nhieu lan trong cung 1 phut/ngay
+# Tu dien theo doi de tranh chay lai Rule thi hanh qua gan nhau (Cooldown)
 last_run_schedule = {}
+last_run_execution = {}
+
+# Thoi gian nghi mac dinh cho moi Rule (giay) - mac dinh 10 phut
+DEFAULT_COOLDOWN = 150 
 
 def check_schedule(rule_id, schedule_dict):
     """
@@ -203,11 +221,19 @@ def evaluate_and_run(sensor_data, active_rules):
         rule_id = rule.get("id", "0000")
         
         # 1. Kiem tra gio giac
-        # Fix: use 'schedule' variable defined above
         should_run_time, is_scheduled = check_schedule(rule_id, schedule)
-        print("  -> Schedule Check: should_run_time={}, is_scheduled={}".format(should_run_time, is_scheduled))
         if not should_run_time:
             continue
+            
+        # 2. Kiem tra Cooldown (Neu khong phai rule hen gio)
+        # De tranh viet tuoi di tuoi lai nhieu lan khi nuoc chua kip ngam
+        if not is_scheduled:
+            now = time.time()
+            if rule_id in last_run_execution:
+                elapsed = now - last_run_execution[rule_id]
+                if elapsed < DEFAULT_COOLDOWN:
+                    print("  -> Rule [{}] dang trong thoi gian nghi (con {}s)...".format(rule_name, int(DEFAULT_COOLDOWN - elapsed)))
+                    continue
             
         # 2. Kiem tra dieu kien cam bien
         logic = "and"
@@ -248,6 +274,10 @@ def evaluate_and_run(sensor_data, active_rules):
             is_valid = True
         else:
             is_valid = False
+            # Fix cho loi may bom khong chiu dung:
+            # Neu day la rule tuoi cay nhung khong thoa man dieu kien, ta cuong buc TẮT bơm cho an toan
+            if not is_scheduled and "water_pump" in ujson.dumps(actions):
+                RELAY_PUMP.value(1) # 1 = OFF
             
         # Kiem tra action co dien ra qua nhanh ko de chong spam (tu tuy chinh)
             
@@ -270,11 +300,16 @@ def evaluate_and_run(sensor_data, active_rules):
                     val = a.get("value") or cmd
                     
                     succ, msg = HardwareActions.execute(comp, val, params)
+                    if succ:
+                        # Cap nhat thoi gian chay cuoi cùng de cooldown
+                        last_run_execution[rule_id] = time.time()
                     send_execution_log(rule_id, comp, succ, msg)
             else:
                 # Legacy flat format: {"turn_on_pump": True}
                 for action_key, action_val in actions.items():
                     succ, msg = HardwareActions.execute(action_key, action_val)
+                    if succ:
+                        last_run_execution[rule_id] = time.time()
                     send_execution_log(rule_id, action_key, succ, msg)
                 
             # Ngi giua cac action de dam bao on dinh phan cung
