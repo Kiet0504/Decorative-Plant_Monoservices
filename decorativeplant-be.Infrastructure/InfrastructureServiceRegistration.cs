@@ -70,13 +70,18 @@ public static class InfrastructureServiceRegistration
         // Configure GHN (Giao Hang Nhanh) Settings
         services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
         services.AddHttpClient<IShippingService, GhnService>();
+
+        // Register Branch Allocation Service (Chain Store model)
+        services.AddScoped<decorativeplant_be.Application.Services.IBranchAllocationService, 
+                           decorativeplant_be.Application.Services.BranchAllocationService>();
         // Register MQTT Service
         services.AddSingleton<MqttService>();
         services.AddHostedService<MqttService>(provider => provider.GetRequiredService<MqttService>());
         services.AddSingleton<IMqttService>(provider => provider.GetRequiredService<MqttService>());
 
-        // Register Monthly Quota Reset Background Job
+        // Register Background Jobs
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.MonthlyQuotaResetJob>();
+        services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.PendingOrderCleanupJob>();
 
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();

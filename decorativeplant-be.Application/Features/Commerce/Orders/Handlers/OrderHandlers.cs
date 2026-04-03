@@ -8,6 +8,7 @@ using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
+using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Features.Commerce.Orders.Handlers;
@@ -17,12 +18,18 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
     private readonly IApplicationDbContext _context;
     private readonly ILogger<CreateOrderHandler> _logger;
     private readonly IShippingService _shippingService;
+    private readonly IBranchAllocationService _allocationService;
 
-    public CreateOrderHandler(IApplicationDbContext context, ILogger<CreateOrderHandler> logger, IShippingService shippingService)
+    public CreateOrderHandler(
+        IApplicationDbContext context, 
+        ILogger<CreateOrderHandler> logger, 
+        IShippingService shippingService,
+        IBranchAllocationService allocationService)
     {
         _context = context;
         _logger = logger;
         _shippingService = shippingService;
+        _allocationService = allocationService;
     }
 
     public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
@@ -36,65 +43,92 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         using var transaction = await _context.Database.BeginTransactionAsync(ct);
         try
         {
-            // 1. Fetch all listings and build enriched item list
-            var enrichedItems = new List<(CreateOrderItemRequest reqItem, ProductListing listing, string unitPrice, string? title, string? image)>();
-            foreach (var item in req.Items)
+            // 1. Use Branch Allocation Service to resolve optimal branch for each item
+            //    Chain Store model: customer sends listingId (primary), BE finds best branch with stock
+            var requestedItems = req.Items.Select(i => (i.ListingId, i.Quantity)).ToList();
+            var allocations = await _allocationService.AllocateAsync(requestedItems, ct);
+
+            // Map allocations to enriched items (compatible with existing order creation logic)
+            var enrichedItems = allocations.Select(a => (
+                reqItem: new CreateOrderItemRequest { ListingId = a.Listing.Id, Quantity = a.AllocatedQuantity },
+                listing: a.Listing,
+                unitPrice: a.UnitPrice,
+                title: a.Title,
+                image: a.Image
+            )).ToList();
+
+            // 2. Build all OrderItems (no branch grouping — 1 unified order)
+            var orderItems = new List<OrderItem>();
+            decimal cartSubtotal = 0;
+
+            foreach (var e in enrichedItems)
             {
-                var listing = await _context.ProductListings
-                    .Include(l => l.Branch)
-                    .FirstOrDefaultAsync(l => l.Id == item.ListingId, ct)
-                    ?? throw new NotFoundException($"Listing {item.ListingId} not found.");
+                var itemSubtotal = decimal.Parse(e.unitPrice) * e.reqItem.Quantity;
+                cartSubtotal += itemSubtotal;
 
-                string unitPrice = "0";
-                string? titleSnapshot = null;
-                string? imageSnapshot = null;
-                if (listing.ProductInfo != null)
+                // Reserve stock
+                if (e.listing.BatchId.HasValue)
                 {
-                    var root = listing.ProductInfo.RootElement;
-                    unitPrice = root.TryGetProperty("price", out var p) ? p.GetString() ?? "0" : "0";
-                    titleSnapshot = root.TryGetProperty("title", out var t) ? t.GetString() : null;
-                }
-                if (listing.Images?.RootElement.ValueKind == JsonValueKind.Array)
-                {
-                    var first = listing.Images.RootElement.EnumerateArray().FirstOrDefault();
-                    imageSnapshot = first.TryGetProperty("url", out var u) ? u.GetString() : null;
+                    var stock = await _context.BatchStocks
+                        .FirstOrDefaultAsync(s => s.BatchId == e.listing.BatchId, ct);
+                    if (stock?.Quantities != null)
+                    {
+                        var root = stock.Quantities.RootElement;
+                        var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
+                        var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
+                        var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
+
+                        if (available < e.reqItem.Quantity)
+                        {
+                            var productName = e.title ?? e.reqItem.ListingId.ToString();
+                            throw new BadRequestException($"Insufficient stock for '{productName}'. Available: {available}, requested: {e.reqItem.Quantity}.");
+                        }
+
+                        reserved += e.reqItem.Quantity;
+                        available -= e.reqItem.Quantity;
+
+                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                        {
+                            quantity = total,
+                            reserved_quantity = reserved,
+                            available_quantity = available
+                        }));
+                        stock.UpdatedAt = DateTime.UtcNow;
+                    }
                 }
 
-                enrichedItems.Add((item, listing, unitPrice, titleSnapshot, imageSnapshot));
+                orderItems.Add(new OrderItem
+                {
+                    Id = Guid.NewGuid(),
+                    ListingId = e.reqItem.ListingId,
+                    BatchId = e.listing.BatchId,
+                    BranchId = e.listing.BranchId,
+                    Quantity = e.reqItem.Quantity,
+                    Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0") })),
+                    Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = e.title, image_snapshot = e.image }))
+                });
             }
 
-            // 2. Group items by BranchId
-            var groupedByBranch = enrichedItems.GroupBy(e => e.listing.BranchId);
-
-            // 3. Resolve voucher once (applied proportionally to each sub-order)
-            //    FIX #1: Validate voucher BranchId — if voucher belongs to a specific branch,
-            //    only items from that branch are eligible for discount.
-            decimal cartTotal = enrichedItems.Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity);
+            // 3. Resolve voucher (applied once to the whole order)
             decimal totalDiscount = 0;
             Voucher? voucher = null;
-            var voucherBranchIds = new HashSet<Guid?>(); // branches eligible for this voucher
 
             if (!string.IsNullOrEmpty(req.VoucherCode))
             {
                 voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
                 if (voucher != null)
                 {
-                    // Determine which branches this voucher applies to
+                    // For chain store model, voucher applies to the whole order
+                    // (branch-specific vouchers are still checked for eligibility)
                     if (voucher.BranchId.HasValue)
                     {
-                        // Branch-specific voucher: only items from that branch get discount
                         var branchIdsInCart = enrichedItems.Select(e => e.listing.BranchId).Distinct().ToList();
                         if (!branchIdsInCart.Contains(voucher.BranchId))
                         {
                             _logger.LogWarning("Voucher {Code} belongs to branch {BranchId} but cart has no items from that branch.", req.VoucherCode, voucher.BranchId);
-                            voucher = null; // Voucher not applicable
-                        }
-                        else
-                        {
-                            voucherBranchIds.Add(voucher.BranchId);
+                            voucher = null;
                         }
                     }
-                    // else: null BranchId = global voucher, applies to all branches
                 }
 
                 if (voucher != null)
@@ -111,10 +145,9 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                         minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
                     }
 
-                    // Calculate eligible subtotal (only items from eligible branches)
                     decimal eligibleTotal = voucher.BranchId.HasValue
                         ? enrichedItems.Where(e => e.listing.BranchId == voucher.BranchId).Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity)
-                        : cartTotal;
+                        : cartSubtotal;
 
                     if (usedCount < usageLimit && eligibleTotal >= minOrder)
                     {
@@ -129,7 +162,6 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                             else if (type == "fixed") totalDiscount = val;
                         }
 
-                        // Cap discount at eligible total
                         if (totalDiscount > eligibleTotal) totalDiscount = eligibleTotal;
 
                         if (voucher.Rules != null)
@@ -149,183 +181,66 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 }
             }
 
-            // 4. Create one OrderHeader per branch
-            var createdOrders = new List<OrderHeader>();
-
-            foreach (var branchGroup in groupedByBranch)
+            // 4. Calculate shipping fee (1 fee for the whole order — all stores are in HCM)
+            decimal shippingFee = 30000; // sensible default
+            if (req.DeliveryAddress != null)
             {
-                var branchId = branchGroup.Key;
-                var orderItems = new List<OrderItem>();
-                decimal branchSubtotal = 0;
-
-                foreach (var e in branchGroup)
+                try
                 {
-                    var itemSubtotal = decimal.Parse(e.unitPrice) * e.reqItem.Quantity;
-                    branchSubtotal += itemSubtotal;
-
-                    // FIX #3: Reserve stock when creating order
-                    if (e.listing.BatchId.HasValue)
+                    var feeResult = await _shippingService.CalculateFeeAsync(new ShippingFeeRequest
                     {
-                        var stock = await _context.BatchStocks
-                            .FirstOrDefaultAsync(s => s.BatchId == e.listing.BatchId, ct);
-                        if (stock?.Quantities != null)
-                        {
-                            var root = stock.Quantities.RootElement;
-                            var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
-                            var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
-                            var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
-
-                            if (available < e.reqItem.Quantity)
-                            {
-                                var productName = e.title ?? e.reqItem.ListingId.ToString();
-                                throw new BadRequestException($"Insufficient stock for '{productName}'. Available: {available}, requested: {e.reqItem.Quantity}.");
-                            }
-
-                            reserved += e.reqItem.Quantity;
-                            available -= e.reqItem.Quantity;
-
-                            stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-                            {
-                                quantity = total,
-                                reserved_quantity = reserved,
-                                available_quantity = available
-                            }));
-                            stock.UpdatedAt = DateTime.UtcNow;
-                        }
-                    }
-
-                    orderItems.Add(new OrderItem
-                    {
-                        Id = Guid.NewGuid(),
-                        ListingId = e.reqItem.ListingId,
-                        BatchId = e.listing.BatchId,
-                        Quantity = e.reqItem.Quantity,
-                        Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0") })),
-                        Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = e.title, image_snapshot = e.image }))
+                        FromDistrictId = 3695, // Default: Thủ Đức, HCM
+                        FromWardCode = "90737",
+                        ToDistrictId = req.DeliveryAddress.DistrictId,
+                        ToWardCode = req.DeliveryAddress.WardCode,
+                        Weight = orderItems.Sum(oi => oi.Quantity) * 1000,
+                        InsuranceValue = (int)cartSubtotal,
+                        ServiceTypeId = 2
                     });
+                    if (feeResult.Success && feeResult.Total > 0) shippingFee = feeResult.Total;
                 }
-
-                // Per-branch shipping via GHN fee estimate
-                decimal branchShipping = 30000; // sensible default
-                if (req.DeliveryAddress != null && branchId.HasValue)
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        var feeResult = await _shippingService.CalculateFeeAsync(new ShippingFeeRequest
-                        {
-                            FromDistrictId = 3695, // Default: Thủ Đức, HCM
-                            FromWardCode = "90737",
-                            ToDistrictId = 1454, // Default: District 1, HCM
-                            ToWardCode = "21211",
-                            Weight = orderItems.Sum(oi => oi.Quantity) * 1000,
-                            InsuranceValue = (int)branchSubtotal,
-                            ServiceTypeId = 2
-                        });
-                        if (feeResult.Success && feeResult.Total > 0) branchShipping = feeResult.Total;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "GHN fee calc failed for branch {BranchId}, using default 30000", branchId);
-                    }
+                    _logger.LogWarning(ex, "GHN fee calc failed, using default 30000");
                 }
-                else if (req.ShippingFee > 0)
-                {
-                    // Fallback: use FE-provided fee split evenly
-                    branchShipping = req.ShippingFee / groupedByBranch.Count();
-                }
-
-                // FIX #1 continued: Only apply discount to eligible branches
-                decimal branchDiscount = 0;
-                if (totalDiscount > 0)
-                {
-                    bool isEligible = !voucher!.BranchId.HasValue || voucher.BranchId == branchId;
-                    if (isEligible)
-                    {
-                        decimal eligibleTotal = voucher.BranchId.HasValue
-                            ? branchSubtotal
-                            : cartTotal;
-                        branchDiscount = eligibleTotal > 0 ? totalDiscount * (branchSubtotal / eligibleTotal) : 0;
-                    }
-                }
-
-                branchShipping = Math.Round(branchShipping, 0);
-                branchDiscount = Math.Round(branchDiscount, 0);
-
-                decimal branchTotal = branchSubtotal + branchShipping - branchDiscount;
-                if (branchTotal < 0) branchTotal = 0;
-
-                var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
-
-                var order = new OrderHeader
-                {
-                    Id = Guid.NewGuid(),
-                    OrderCode = orderCode,
-                    UserId = cmd.UserId,
-                    BranchId = branchId,
-                    TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
-                    Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = branchSubtotal.ToString("0"), shipping = branchShipping.ToString("0"), discount = branchDiscount.ToString("0"), tax = "0", total = branchTotal.ToString("0") })),
-                    Status = "pending",
-                    Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
-                    DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City })) : null,
-                    CreatedAt = DateTime.UtcNow,
-                    OrderItems = orderItems
-                };
-
-                // Call GHN to create shipping order and get tracking code
-                if (req.DeliveryAddress != null)
-                {
-                    try
-                    {
-                        var ghnItems = orderItems.Select(oi => new ShippingOrderItem {
-                            Name = "Cây cảnh",
-                            Quantity = oi.Quantity,
-                            Weight = 1000 // 1kg default in grams
-                        }).ToList();
-
-                        var ghnRes = await _shippingService.CreateOrderAsync(new ShippingOrderRequest
-                        {
-                            ToName = req.DeliveryAddress.RecipientName,
-                            ToPhone = req.DeliveryAddress.Phone,
-                            ToAddress = req.DeliveryAddress.AddressLine1,
-                            ToDistrictId = 1454, // Default district
-                            ToWardCode = "21211",
-                            Weight = orderItems.Sum(oi => oi.Quantity) * 1000,
-                            InsuranceValue = (int)branchTotal,
-                            ClientOrderCode = orderCode,
-                            Items = ghnItems
-                        });
-
-                        if (ghnRes.Success && !string.IsNullOrEmpty(ghnRes.OrderCode))
-                        {
-                            var notesObj = new Dictionary<string, string>
-                            {
-                                { "tracking_code", ghnRes.OrderCode },
-                                { "carrier_name", "GHN" }
-                            };
-                            if (!string.IsNullOrEmpty(req.CustomerNote)) notesObj.Add("customer_note", req.CustomerNote);
-                            
-                            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to call GHN CreateOrder for {OrderCode}", orderCode);
-                    }
-                }
-
-                _context.OrderHeaders.Add(order);
-                createdOrders.Add(order);
-                _logger.LogInformation("Created Order {OrderCode} for Branch {BranchId}", orderCode, branchId);
             }
+            else if (req.ShippingFee > 0)
+            {
+                shippingFee = req.ShippingFee;
+            }
+
+            shippingFee = Math.Round(shippingFee, 0);
+            totalDiscount = Math.Round(totalDiscount, 0);
+
+            decimal orderTotal = cartSubtotal + shippingFee - totalDiscount;
+            if (orderTotal < 0) orderTotal = 0;
+
+            // 5. Create 1 unified OrderHeader (BranchId = null — system-level order)
+            var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+
+            var order = new OrderHeader
+            {
+                Id = Guid.NewGuid(),
+                OrderCode = orderCode,
+                UserId = cmd.UserId,
+                TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
+                Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = cartSubtotal.ToString("0"), shipping = shippingFee.ToString("0"), discount = totalDiscount.ToString("0"), tax = "0", total = orderTotal.ToString("0") })),
+                Status = "pending",
+                Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
+                DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City, district_id = req.DeliveryAddress.DistrictId, ward_code = req.DeliveryAddress.WardCode })) : null,
+                CreatedAt = DateTime.UtcNow,
+                OrderItems = orderItems
+            };
+
+            _context.OrderHeaders.Add(order);
+            _logger.LogInformation("Created unified Order {OrderCode} with {ItemCount} items from {BranchCount} branch(es)",
+                orderCode, orderItems.Count,
+                enrichedItems.Select(e => e.listing.BranchId).Distinct().Count());
 
             await _context.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
-            // 5. Load branch names for response
-            var branchIds = createdOrders.Where(o => o.BranchId.HasValue).Select(o => o.BranchId!.Value).Distinct().ToList();
-            var branches = await _context.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, b => b.Name, ct);
-
-            return createdOrders.Select(o => MapToResponse(o, branches)).ToList();
+            return new List<OrderResponse> { MapToResponse(order) };
         }
         catch
         {
@@ -335,16 +250,13 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         }); // end strategy.ExecuteAsync
     }
 
-    internal static OrderResponse MapToResponse(OrderHeader o, Dictionary<Guid, string>? branchNames = null)
+    internal static OrderResponse MapToResponse(OrderHeader o)
     {
         var response = new OrderResponse
         {
-            Id = o.Id, OrderCode = o.OrderCode, UserId = o.UserId, BranchId = o.BranchId,
+            Id = o.Id, OrderCode = o.OrderCode, UserId = o.UserId,
             Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt
         };
-
-        if (o.BranchId.HasValue && branchNames != null && branchNames.TryGetValue(o.BranchId.Value, out var name))
-            response.BranchName = name;
 
         if (o.TypeInfo != null)
         {
@@ -386,7 +298,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         {
             response.Items = o.OrderItems.Select(oi =>
             {
-                var item = new OrderItemResponse { Id = oi.Id, ListingId = oi.ListingId, StockId = oi.StockId, Quantity = oi.Quantity };
+                var item = new OrderItemResponse { Id = oi.Id, ListingId = oi.ListingId, StockId = oi.StockId, BranchId = oi.BranchId, Quantity = oi.Quantity };
                 if (oi.Pricing != null)
                 {
                     var pr = oi.Pricing.RootElement;
@@ -459,14 +371,15 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
         notes["cancellation_reason"] = cmd.Request.CancellationReason;
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
         
-        // Restore stock
+        // Restore stock — must use BatchId (matching CreateOrderHandler which reserves by BatchId)
         if (order.OrderItems != null)
         {
             foreach (var item in order.OrderItems)
             {
-                if (item.StockId.HasValue)
+                if (item.BatchId.HasValue)
                 {
-                    var stock = await _context.BatchStocks.FindAsync(new object[] { item.StockId.Value }, ct);
+                    var stock = await _context.BatchStocks
+                        .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
                     if (stock != null && stock.Quantities != null)
                     {
                         var root = stock.Quantities.RootElement;
@@ -503,9 +416,10 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
 
     public async Task<PagedResult<OrderResponse>> Handle(GetOrdersQuery query, CancellationToken ct)
     {
-        var q = _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.Branch).AsQueryable();
+        var q = _context.OrderHeaders.Include(o => o.OrderItems).AsQueryable();
         if (query.UserId.HasValue) q = q.Where(o => o.UserId == query.UserId);
-        if (query.BranchId.HasValue) q = q.Where(o => o.BranchId == query.BranchId);
+        // Chain Store: filter by branch at OrderItem level
+        if (query.BranchId.HasValue) q = q.Where(o => o.OrderItems.Any(oi => oi.BranchId == query.BranchId));
         if (!string.IsNullOrEmpty(query.Status)) q = q.Where(o => o.Status == query.Status);
 
         var total = await q.CountAsync(ct);
@@ -514,12 +428,10 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
             .ToListAsync(ct);
-
-        var branchNames = orders.Where(o => o.Branch != null).Select(o => o.Branch!).DistinctBy(b => b.Id).ToDictionary(b => b.Id, b => b.Name);
             
         return new PagedResult<OrderResponse>
         {
-            Items = orders.Select(o => CreateOrderHandler.MapToResponse(o, branchNames)).ToList(),
+            Items = orders.Select(o => CreateOrderHandler.MapToResponse(o)).ToList(),
             TotalCount = total,
             Page = query.Page,
             PageSize = query.PageSize
@@ -534,9 +446,8 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
 
     public async Task<OrderResponse?> Handle(GetOrderByIdQuery query, CancellationToken ct)
     {
-        var order = await _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.Branch).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
         if (order == null) return null;
-        var branchNames = order.Branch != null ? new Dictionary<Guid, string> { { order.Branch.Id, order.Branch.Name } } : null;
-        return CreateOrderHandler.MapToResponse(order, branchNames);
+        return CreateOrderHandler.MapToResponse(order);
     }
 }

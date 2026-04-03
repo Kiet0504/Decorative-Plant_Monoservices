@@ -11,7 +11,7 @@ public class OrderHeader
     public Guid Id { get; set; }
     public string? OrderCode { get; set; }
     public Guid? UserId { get; set; }
-    public Guid? BranchId { get; set; }
+
     public JsonDocument? TypeInfo { get; set; }
     public JsonDocument? Financials { get; set; }
     public string? Status { get; set; }
@@ -22,7 +22,7 @@ public class OrderHeader
     public DateTime? ConfirmedAt { get; set; }
 
     public UserAccount? User { get; set; }
-    public Branch? Branch { get; set; }
+
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
     public ICollection<PaymentTransaction> PaymentTransactions { get; set; } = new List<PaymentTransaction>();
     public ICollection<Shipping> Shippings { get; set; } = new List<Shipping>();

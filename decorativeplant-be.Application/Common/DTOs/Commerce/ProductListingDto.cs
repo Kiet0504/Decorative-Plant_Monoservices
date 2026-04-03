@@ -69,6 +69,10 @@ public class ProductListingResponse
     public List<string> Tags { get; set; } = new();
     public List<ProductImageDto> Images { get; set; } = new();
     public DateTime? CreatedAt { get; set; }
+
+    // Unified Product fields (Chain Store model)
+    public int TotalSystemStock { get; set; }
+    public int AvailableBranches { get; set; }
 }
 
 public class ProductImageDto

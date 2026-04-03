@@ -267,28 +267,72 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
         var q = _context.ProductListings
             .Include(x => x.Batch)
             .AsQueryable();
+
         if (query.BranchId.HasValue)
-            q = q.Where(x => x.BranchId == query.BranchId.Value);
-            
-        // Assuming search by title if requested
-        if (!string.IsNullOrEmpty(query.Search))
         {
-            // The title is inside the ProductInfo JSON string. EF Core raw translation of JSON properties is complex.
-            // For a basic implementation, we skip DB-level search for JSON or use EF Core JSON methods if configured.
-            // In a real scenario, full-text search over JSON is preferred. 
+            // Admin/branch-specific view: return raw listings without grouping
+            q = q.Where(x => x.BranchId == query.BranchId.Value);
+            var total = await q.CountAsync(ct);
+            var entities = await q.OrderByDescending(x => x.CreatedAt)
+                .Skip((query.Page - 1) * query.PageSize)
+                .Take(query.PageSize)
+                .ToListAsync(ct);
+
+            return new PagedResult<ProductListingResponse>
+            {
+                Items = entities.Select(e =>
+                {
+                    var r = CreateProductListingHandler.MapToResponse(e);
+                    r.TotalSystemStock = r.StockQuantity;
+                    r.AvailableBranches = 1;
+                    return r;
+                }).ToList(),
+                TotalCount = total,
+                Page = query.Page,
+                PageSize = query.PageSize
+            };
         }
 
-        var total = await q.CountAsync(ct);
+        // ── Chain Store model: Group listings by title, aggregate stock ──
+        var allListings = await q.OrderByDescending(x => x.CreatedAt).ToListAsync(ct);
+        var mapped = allListings.Select(CreateProductListingHandler.MapToResponse).ToList();
 
-        var entities = await q.OrderByDescending(x => x.CreatedAt)
+        // Group by normalized title (case-insensitive, trimmed)
+        var grouped = mapped
+            .GroupBy(p => (p.Title ?? "").Trim().ToLowerInvariant())
+            .Select(g =>
+            {
+                // Pick the listing with the highest stock as the "primary" representative
+                var primary = g.OrderByDescending(p => p.StockQuantity).First();
+                primary.TotalSystemStock = g.Sum(p => p.StockQuantity);
+                primary.AvailableBranches = g.Select(p => p.BranchId).Distinct().Count();
+                // Aggregate sold count & view count
+                primary.SoldCount = g.Sum(p => p.SoldCount);
+                primary.ViewCount = g.Sum(p => p.ViewCount);
+                return primary;
+            })
+            .ToList();
+
+        // Apply search filter (post-grouping, on title)
+        if (!string.IsNullOrEmpty(query.Search))
+        {
+            var searchLower = query.Search.Trim().ToLowerInvariant();
+            grouped = grouped.Where(p =>
+                (p.Title ?? "").ToLowerInvariant().Contains(searchLower) ||
+                (p.ScientificName ?? "").ToLowerInvariant().Contains(searchLower)
+            ).ToList();
+        }
+
+        var totalCount = grouped.Count;
+        var pagedItems = grouped
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
-            .ToListAsync(ct);
-            
+            .ToList();
+
         return new PagedResult<ProductListingResponse>
         {
-            Items = entities.Select(CreateProductListingHandler.MapToResponse).ToList(),
-            TotalCount = total,
+            Items = pagedItems,
+            TotalCount = totalCount,
             Page = query.Page,
             PageSize = query.PageSize
         };
