@@ -118,17 +118,20 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly IPayOSService _payOS;
     private readonly ILogger<HandlePayOSWebhookHandler> _logger;
     private readonly IEmailTemplateService _emailTemplateService;
+    private readonly IShippingService _shippingService;
 
     public HandlePayOSWebhookHandler(
         IApplicationDbContext context, 
         IPayOSService payOS, 
         ILogger<HandlePayOSWebhookHandler> logger, 
-        IEmailTemplateService emailTemplateService)
+        IEmailTemplateService emailTemplateService,
+        IShippingService shippingService)
     { 
         _context = context; 
         _payOS = payOS; 
         _logger = logger; 
         _emailTemplateService = emailTemplateService;
+        _shippingService = shippingService;
     }
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
@@ -171,8 +174,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
             {
                 var orderIds = orderIdsJson.Value.EnumerateArray().Select(e => e.GetGuid()).ToList();
                 var orders = await _context.OrderHeaders
-                    .Include(o => o.Branch)
                     .Include(o => o.User)
+                    .Include(o => o.OrderItems)
                     .Where(o => orderIds.Contains(o.Id))
                     .ToListAsync(ct);
 
@@ -182,6 +185,9 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                     { 
                         order.Status = "confirmed"; 
                         order.ConfirmedAt = DateTime.UtcNow; 
+
+                        // Create GHN shipping order now that payment is confirmed
+                        await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
 
                         // Send Email Notification
                         try
@@ -198,7 +204,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                                 {
                                     { "CustomerName", order.User.DisplayName ?? "Customer" },
                                     { "OrderCode", order.OrderCode ?? "N/A" },
-                                    { "BranchName", order.Branch?.Name ?? "Decorative Plant Store" },
+                                    { "BranchName", "Decorative Plant Store" },
                                     { "Total", total }
                                 };
 
@@ -215,6 +221,66 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                         {
                             _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
                             // Don't fail the whole transaction if email fails
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            var orderIdsJson = payment.Details?.RootElement.GetProperty("order_ids");
+            if (orderIdsJson.HasValue && orderIdsJson.Value.ValueKind == JsonValueKind.Array)
+            {
+                var orderIds = orderIdsJson.Value.EnumerateArray().Select(e => e.GetGuid()).ToList();
+                var orders = await _context.OrderHeaders
+                    .Include(o => o.OrderItems)
+                    .Where(o => orderIds.Contains(o.Id))
+                    .ToListAsync(ct);
+
+                foreach (var order in orders)
+                {
+                    if (order.Status == "pending")
+                    {
+                        order.Status = "cancelled";
+
+                        var notes = new Dictionary<string, object?>();
+                        if (order.Notes != null)
+                            foreach (var p in order.Notes.RootElement.EnumerateObject())
+                                notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+                        
+                        notes["cancellation_reason"] = $"Payment failed or cancelled via PayOS Webhook (Code: {cmd.Webhook.Code}).";
+                        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+
+                        // Restore stock
+                        if (order.OrderItems != null)
+                        {
+                            foreach (var item in order.OrderItems)
+                            {
+                                if (item.BatchId.HasValue)
+                                {
+                                    var stock = await _context.BatchStocks
+                                        .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
+                                    if (stock != null && stock.Quantities != null)
+                                    {
+                                        var root = stock.Quantities.RootElement;
+                                        var total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
+                                        var reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
+                                        var available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
+
+                                        var q = item.Quantity;
+                                        reserved -= q;
+                                        if (reserved < 0) reserved = 0;
+                                        available += q;
+
+                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                                        {
+                                            quantity = total,
+                                            reserved_quantity = reserved,
+                                            available_quantity = available
+                                        }));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -241,5 +307,205 @@ public class GetPaymentByIdHandler : IRequestHandler<GetPaymentByIdQuery, Paymen
     {
         var e = await _context.PaymentTransactions.FindAsync(new object[] { q.Id }, ct);
         return e == null ? null : CreatePaymentHandler.MapToResponse(e);
+    }
+}
+
+public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, bool>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly IPayOSService _payOS;
+    private readonly IShippingService _shippingService;
+    private readonly ILogger<SyncPaymentCommandHandler> _logger;
+
+    public SyncPaymentCommandHandler(
+        IApplicationDbContext context, 
+        IPayOSService payOS, 
+        IShippingService shippingService, 
+        ILogger<SyncPaymentCommandHandler> logger)
+    {
+        _context = context;
+        _payOS = payOS;
+        _shippingService = shippingService;
+        _logger = logger;
+    }
+
+    public async Task<bool> Handle(SyncPaymentCommand request, CancellationToken ct)
+    {
+        var targetString = request.OrderId.ToString();
+        var payment = await _context.PaymentTransactions
+            .OrderByDescending(p => p.CreatedAt)
+            .FirstOrDefaultAsync(p => p.OrderId == request.OrderId, ct);
+
+        if (payment == null || payment.Details == null) return false;
+
+        if (payment.Details.RootElement.TryGetProperty("payos_order_code", out var poc) && poc.ValueKind == JsonValueKind.Number)
+        {
+            var code = poc.GetInt64();
+            var info = await _payOS.GetPaymentInfoAsync(code, ct);
+            if (info == null) return false;
+
+            if (info.Status == "PAID" || info.Status == "00")
+            {
+                var details = new Dictionary<string, object?>();
+                foreach (var prop in payment.Details.RootElement.EnumerateObject())
+                    details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+                
+                if (details["status"]?.ToString() == "paid") return true; // already synced
+
+                details["status"] = "paid";
+                payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
+
+                var orderIdsJson = payment.Details.RootElement.GetProperty("order_ids");
+                var orderIds = orderIdsJson.EnumerateArray().Select(e => e.GetGuid()).ToList();
+                var orders = await _context.OrderHeaders
+                    .Include(o => o.OrderItems)
+                    .Where(o => orderIds.Contains(o.Id))
+                    .ToListAsync(ct);
+                
+                foreach (var order in orders)
+                {
+                    if (order.Status == "pending")
+                    {
+                        order.Status = "confirmed";
+                        order.ConfirmedAt = DateTime.UtcNow;
+
+                        // Create GHN shipping order now that payment is confirmed
+                        await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+                    }
+                }
+                
+                await _context.SaveChangesAsync(ct);
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+/// <summary>
+/// Shared helper for creating GHN shipping orders after payment confirmation.
+/// Chain Store model: groups OrderItems by branch and creates N GHN shipments for 1 order.
+/// </summary>
+internal static class GhnOrderHelper
+{
+    internal static async Task TryCreateGhnOrderAsync(OrderHeader order, IShippingService shippingService, ILogger logger)
+    {
+        if (order.DeliveryAddress == null || order.OrderItems == null || order.OrderItems.Count == 0) return;
+
+        // Skip if shipments already created
+        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("shipments", out _)) return;
+        // Backward compat: also skip if old tracking_code exists
+        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("tracking_code", out _)) return;
+
+        try
+        {
+            // Parse delivery address once
+            var toName = order.DeliveryAddress.RootElement.TryGetProperty("recipient_name", out var n)
+                ? (n.GetString() ?? "") : "";
+            var toPhone = order.DeliveryAddress.RootElement.TryGetProperty("phone", out var p)
+                ? (p.GetString() ?? "") : "";
+            var toAddress = order.DeliveryAddress.RootElement.TryGetProperty("address_line_1", out var a)
+                ? (a.GetString() ?? "") : "";
+            var toDistrict = order.DeliveryAddress.RootElement.TryGetProperty("district_id", out var d)
+                ? d.GetInt32() : 1454;
+            var toWard = order.DeliveryAddress.RootElement.TryGetProperty("ward_code", out var w)
+                ? (w.GetString() ?? "21211") : "21211";
+
+            // Group OrderItems by BranchId (direct column on OrderItem)
+            var itemsByBranch = order.OrderItems
+                .GroupBy(oi => oi.BranchId)
+                .ToList();
+
+            var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var t) == true
+                ? (t.GetString() ?? "0") : "0";
+            var orderTotal = (int)decimal.Parse(totalStr);
+
+            var shipments = new List<object>();
+            var shipmentIndex = 0;
+
+            foreach (var branchGroup in itemsByBranch)
+            {
+                shipmentIndex++;
+                var branchItems = branchGroup.ToList();
+
+                var ghnItems = branchItems.Select(oi =>
+                {
+                    var itemName = "Decorative Plant";
+                    if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
+                        itemName = ts.GetString() ?? itemName;
+                    return new ShippingOrderItem
+                    {
+                        Name = itemName,
+                        Quantity = oi.Quantity,
+                        Weight = 1000
+                    };
+                }).ToList();
+
+                // Split insurance value proportionally
+                var branchInsurance = itemsByBranch.Count == 1 ? orderTotal :
+                    (int)(orderTotal * ((decimal)branchItems.Sum(oi => oi.Quantity) / order.OrderItems.Sum(oi => oi.Quantity)));
+
+                var clientOrderCode = itemsByBranch.Count == 1
+                    ? (order.OrderCode ?? order.Id.ToString())
+                    : $"{order.OrderCode}-S{shipmentIndex}";
+
+                var ghnRes = await shippingService.CreateOrderAsync(new ShippingOrderRequest
+                {
+                    ToName = toName,
+                    ToPhone = toPhone,
+                    ToAddress = toAddress,
+                    ToDistrictId = toDistrict,
+                    ToWardCode = toWard,
+                    Weight = ghnItems.Sum(i => i.Quantity) * 1000,
+                    InsuranceValue = branchInsurance,
+                    ClientOrderCode = clientOrderCode,
+                    Items = ghnItems
+                });
+
+                if (ghnRes.Success && !string.IsNullOrEmpty(ghnRes.OrderCode))
+                {
+                    shipments.Add(new
+                    {
+                        branch_id = branchGroup.Key?.ToString(),
+                        tracking_code = ghnRes.OrderCode,
+                        carrier = "GHN",
+                        items = branchItems.Select(oi =>
+                        {
+                            if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
+                                return ts.GetString() ?? "item";
+                            return "item";
+                        }).ToList()
+                    });
+
+                    logger.LogInformation("GHN shipment created for Order {OrderCode}, Branch {BranchId}: {TrackingCode}",
+                        order.OrderCode, branchGroup.Key, ghnRes.OrderCode);
+                }
+            }
+
+            // Save all tracking info to order.Notes
+            if (shipments.Count > 0)
+            {
+                var notesObj = new Dictionary<string, object?>();
+                if (order.Notes != null)
+                {
+                    foreach (var prop in order.Notes.RootElement.EnumerateObject())
+                        notesObj[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                            ? prop.Value.GetString() : prop.Value.GetRawText();
+                }
+                notesObj["shipments"] = shipments;
+                // Backward compat: set tracking_code to first shipment's code
+                if (shipments.Count == 1)
+                {
+                    var first = (dynamic)shipments[0];
+                    notesObj["tracking_code"] = first.tracking_code;
+                    notesObj["carrier_name"] = "GHN";
+                }
+                order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to create GHN shipments for {OrderCode}", order.OrderCode);
+        }
     }
 }

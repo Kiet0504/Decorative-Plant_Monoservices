@@ -35,7 +35,8 @@ public class PayOSService : IPayOSService
             description: description,
             items: payOSItems,
             cancelUrl: cancelUrl,
-            returnUrl: returnUrl
+            returnUrl: returnUrl,
+            expiredAt: (int)DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds()
         );
 
         var result = await _payOS.createPaymentLink(paymentData);

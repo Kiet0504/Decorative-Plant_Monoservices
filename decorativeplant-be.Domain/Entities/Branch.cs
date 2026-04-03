@@ -27,7 +27,7 @@ public class Branch : BaseEntity
     public ICollection<ShippingZone> ShippingZones { get; set; } = new List<ShippingZone>();
     public ICollection<Voucher> Vouchers { get; set; } = new List<Voucher>();
     public ICollection<Promotion> Promotions { get; set; } = new List<Promotion>();
-    public ICollection<OrderHeader> Orders { get; set; } = new List<OrderHeader>();
+    public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
     public ICollection<StockTransfer> StockTransfersFrom { get; set; } = new List<StockTransfer>();
     public ICollection<StockTransfer> StockTransfersTo { get; set; } = new List<StockTransfer>();
 }

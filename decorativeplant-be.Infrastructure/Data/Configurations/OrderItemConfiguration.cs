@@ -17,5 +17,6 @@ public class OrderItemConfiguration : IEntityTypeConfiguration<OrderItem>
         builder.HasOne(o => o.Listing).WithMany(l => l.OrderItems).HasForeignKey(o => o.ListingId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(o => o.Stock).WithMany(s => s.OrderItems).HasForeignKey(o => o.StockId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(o => o.Batch).WithMany(b => b.OrderItems).HasForeignKey(o => o.BatchId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(o => o.Branch).WithMany(b => b.OrderItems).HasForeignKey(o => o.BranchId).OnDelete(DeleteBehavior.SetNull);
     }
 }
