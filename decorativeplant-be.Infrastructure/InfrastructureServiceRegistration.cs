@@ -240,12 +240,8 @@ public static class InfrastructureServiceRegistration
             password = Uri.UnescapeDataString(userInfo);
         }
 
-        // Redis Cloud public hostnames use TLS even when the dashboard shows redis:// (not rediss://)
-        if (!ssl && (hostPort.Contains("redislabs.com", StringComparison.OrdinalIgnoreCase) ||
-                     hostPort.Contains("redis.cloud", StringComparison.OrdinalIgnoreCase)))
-        {
-            ssl = true;
-        }
+        // Match the URL scheme from Redis Cloud / Valkey: <c>redis://</c> = plain TCP, <c>rediss://</c> = TLS.
+        // Forcing ssl=true for <c>redis://</c> breaks the handshake with "Cannot determine the frame size or a corrupted frame was received".
 
         return $"{hostPort},user={user},password={password},ssl={(ssl ? "true" : "false")},abortConnect=false";
     }
