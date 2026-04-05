@@ -98,6 +98,7 @@ public static class InfrastructureServiceRegistration
         var redisConnectionString = configuration.GetConnectionString("Redis");
         if (!string.IsNullOrEmpty(redisConnectionString))
         {
+            redisConnectionString = NormalizeRedisConnectionStringForStackExchangeRedis(redisConnectionString);
             services.AddStackExchangeRedisCache(options =>
             {
                 options.Configuration = redisConnectionString;
@@ -195,5 +196,57 @@ public static class InfrastructureServiceRegistration
         });
 
         return services;
+    }
+
+    /// <summary>
+    /// Converts <c>redis://</c> / <c>rediss://</c> URLs (e.g. Redis Cloud) to StackExchange.Redis format.
+    /// Passing URI-style strings directly to <see cref="StackExchange.Redis.ConfigurationOptions.Parse(string)"/>
+    /// can produce invalid endpoints (e.g. <c>:13424:6379</c>).
+    /// </summary>
+    private static string NormalizeRedisConnectionStringForStackExchangeRedis(string connectionString)
+    {
+        var s = connectionString.Trim();
+        if (!s.StartsWith("redis://", StringComparison.OrdinalIgnoreCase) &&
+            !s.StartsWith("rediss://", StringComparison.OrdinalIgnoreCase))
+        {
+            return s;
+        }
+
+        var ssl = s.StartsWith("rediss://", StringComparison.OrdinalIgnoreCase);
+        var schemeEnd = s.IndexOf("://", StringComparison.Ordinal);
+        if (schemeEnd < 0)
+            return connectionString;
+
+        var rest = s.AsSpan(schemeEnd + 3);
+        var at = rest.LastIndexOf('@');
+        if (at < 0)
+            return connectionString;
+
+        var userInfo = rest[..at].ToString();
+        var hostPort = rest[(at + 1)..].ToString().Trim();
+        if (string.IsNullOrEmpty(hostPort))
+            return connectionString;
+
+        string user = "default";
+        string password;
+        var colonIdx = userInfo.IndexOf(':');
+        if (colonIdx >= 0)
+        {
+            user = Uri.UnescapeDataString(userInfo[..colonIdx]);
+            password = Uri.UnescapeDataString(userInfo[(colonIdx + 1)..]);
+        }
+        else
+        {
+            password = Uri.UnescapeDataString(userInfo);
+        }
+
+        // Redis Cloud public hostnames use TLS even when the dashboard shows redis:// (not rediss://)
+        if (!ssl && (hostPort.Contains("redislabs.com", StringComparison.OrdinalIgnoreCase) ||
+                     hostPort.Contains("redis.cloud", StringComparison.OrdinalIgnoreCase)))
+        {
+            ssl = true;
+        }
+
+        return $"{hostPort},user={user},password={password},ssl={(ssl ? "true" : "false")},abortConnect=false";
     }
 }
