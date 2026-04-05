@@ -155,8 +155,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         // from data, sorting them alphabetically by key, and connecting with '=' and '&'
         var dict = new SortedDictionary<string, string>();
         var wd = cmd.Webhook.Data;
-        dict.Add("amount", wd.Amount.ToString());
-        dict.Add("orderCode", wd.OrderCode.ToString());
+        if (wd.Amount.HasValue) dict.Add("amount", wd.Amount.Value.ToString());
+        if (wd.OrderCode.HasValue) dict.Add("orderCode", wd.OrderCode.Value.ToString());
         if (!string.IsNullOrEmpty(wd.AccountNumber)) dict.Add("accountNumber", wd.AccountNumber);
         if (!string.IsNullOrEmpty(wd.Code)) dict.Add("code", wd.Code);
         if (!string.IsNullOrEmpty(wd.CounterAccountBankId)) dict.Add("counterAccountBankId", wd.CounterAccountBankId);
@@ -174,13 +174,13 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
         var dataString = string.Join("&", dict.Select(kvp => $"{kvp.Key}={kvp.Value}"));
 
-        if (!_payOS.VerifyWebhookSignature(dataString, cmd.Webhook.Signature))
+        if (!_payOS.VerifyWebhookSignature(dataString, cmd.Webhook.Signature ?? ""))
         {
             _logger.LogWarning("Invalid webhook signature for order code: {OrderCode}", cmd.Webhook.Data.OrderCode);
             throw new BadRequestException("Invalid webhook signature.");
         }
 
-        var orderCode = cmd.Webhook.Data.OrderCode;
+        var orderCode = cmd.Webhook.Data.OrderCode ?? 0;
         
         // Optimization: Lazily load matching payment
         var payment = _context.PaymentTransactions.AsEnumerable().FirstOrDefault(p =>
