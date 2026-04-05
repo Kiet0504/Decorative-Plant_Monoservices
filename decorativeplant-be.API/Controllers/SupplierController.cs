@@ -17,7 +17,7 @@ public class SupplierController : BaseController
     /// Register a new supplier.
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<SupplierDto>>> Create([FromBody] CreateSupplierCommand command)
     {
         var result = await Mediator.Send(command);

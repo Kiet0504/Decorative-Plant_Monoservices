@@ -16,7 +16,7 @@ public class CultivationController : BaseController
     /// Log a cultivation activity (Watering, Fertilizing, Pruning, etc.).
     /// </summary>
     [HttpPost("logs")]
-    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<CultivationLogDto>>> LogActivity([FromBody] CreateCultivationLogDto dto)
     {
         var command = new LogCultivationActivityCommand

@@ -81,7 +81,7 @@ public class InventoryController : BaseController
     /// Get items with low stock.
     /// </summary>
     [HttpGet("low-stock")]
-    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<List<LowStockItemDto>>>> GetLowStock([FromQuery] Guid? branchId, [FromQuery] int threshold = 10)
     {
         var query = new GetLowStockQuery { BranchId = branchId, Threshold = threshold };

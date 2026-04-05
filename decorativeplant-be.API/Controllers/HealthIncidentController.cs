@@ -16,7 +16,7 @@ public class HealthIncidentController : BaseController
     /// Report a new health incident (Pest, Disease, etc.).
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> Report([FromBody] CreateHealthIncidentDto dto)
     {
         var command = new ReportHealthIncidentCommand

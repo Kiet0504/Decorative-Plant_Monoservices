@@ -17,7 +17,7 @@ public class PlantBatchController : BaseController
     /// Create a new plant batch (e.g., from supplier or propagation).
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<PlantBatchDto>>> Create([FromBody] CreatePlantBatchCommand command)
     {
         var result = await Mediator.Send(command);
