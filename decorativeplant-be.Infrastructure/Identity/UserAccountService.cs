@@ -59,6 +59,14 @@ public class UserAccountService : IUserAccountService
             cancellationToken);
     }
 
+    public async Task<UserAccount?> FindByPhoneAsync(string phone, bool includeInactive = false, CancellationToken cancellationToken = default)
+    {
+        var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
+        return await userAccountRepository.FirstOrDefaultAsync(
+            u => u.Phone == phone && (includeInactive || u.IsActive),
+            cancellationToken);
+    }
+
     public async Task<UserAccount?> GetByIdAsync(Guid userId, CancellationToken cancellationToken = default)
     {
         var userAccountRepository = _repositoryFactory.CreateRepository<UserAccount>();
