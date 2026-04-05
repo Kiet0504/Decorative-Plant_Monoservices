@@ -14,7 +14,7 @@ using decorativeplant_be.Infrastructure.Jwt;
 using decorativeplant_be.Infrastructure.Cache;
 using decorativeplant_be.Infrastructure.Email;
 using decorativeplant_be.Infrastructure.Services;
-using decorativeplant_be.Infrastructure.Ghtk;
+using decorativeplant_be.Infrastructure.Ghn;
 using decorativeplant_be.Infrastructure.Storage.S3;
 using Amazon.S3;
 using Amazon.Runtime;
@@ -67,22 +67,21 @@ public static class InfrastructureServiceRegistration
         // Register Analytics Service
         services.AddScoped<IAnalyticsService, AnalyticsService>();
 
-        // Configure GHTK Settings
-        var ghtkSettings = configuration.GetSection("GhtkSettings").Get<GhtkSettings>();
-        if (ghtkSettings == null)
-        {
-            throw new InvalidOperationException("GhtkSettings not found in configuration.");
-        }
-        services.Configure<GhtkSettings>(configuration.GetSection("GhtkSettings"));
+        // Configure GHN (Giao Hang Nhanh) Settings
+        services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
+        services.AddHttpClient<IShippingService, GhnService>();
 
-        services.AddHttpClient<IGhtkService, GhtkService>();
+        // Register Branch Allocation Service (Chain Store model)
+        services.AddScoped<decorativeplant_be.Application.Services.IBranchAllocationService, 
+                           decorativeplant_be.Application.Services.BranchAllocationService>();
         // Register MQTT Service
         services.AddSingleton<MqttService>();
         services.AddHostedService<MqttService>(provider => provider.GetRequiredService<MqttService>());
         services.AddSingleton<IMqttService>(provider => provider.GetRequiredService<MqttService>());
 
-        // Register Monthly Quota Reset Background Job
+        // Register Background Jobs
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.MonthlyQuotaResetJob>();
+        services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.PendingOrderCleanupJob>();
 
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();
@@ -149,16 +148,28 @@ public static class InfrastructureServiceRegistration
         services.AddSingleton<IAmazonS3>(sp =>
         {
             var s3 = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<S3Settings>>().Value;
-            if (string.IsNullOrWhiteSpace(s3.Region))
+            var region = s3.Region;
+            if (string.IsNullOrWhiteSpace(region))
             {
-                throw new InvalidOperationException("S3 region is not configured.");
+                region = Environment.GetEnvironmentVariable("S3__Region")
+                    ?? Environment.GetEnvironmentVariable("S3_Region");
+            }
+            if (string.IsNullOrWhiteSpace(region))
+            {
+                region = Environment.GetEnvironmentVariable("AWS_REGION")
+                    ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION");
+            }
+            if (string.IsNullOrWhiteSpace(region))
+            {
+                throw new InvalidOperationException(
+                    "S3 region is not configured. Set S3:Region, S3__Region, or S3_Region, or AWS_REGION.");
             }
             if (string.IsNullOrWhiteSpace(s3.AccessKeyId) || string.IsNullOrWhiteSpace(s3.SecretAccessKey))
             {
                 throw new InvalidOperationException("S3 credentials are not configured.");
             }
             var creds = new BasicAWSCredentials(s3.AccessKeyId, s3.SecretAccessKey);
-            return new AmazonS3Client(creds, RegionEndpoint.GetBySystemName(s3.Region));
+            return new AmazonS3Client(creds, RegionEndpoint.GetBySystemName(region));
         });
         services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IMediaStorageService, S3MediaStorageService>();
 

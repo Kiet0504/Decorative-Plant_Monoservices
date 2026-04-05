@@ -91,6 +91,19 @@ services:
       - AiDiagnosis__ApiKey=${AiDiagnosis__ApiKey:-}
       - AiDiagnosis__Model=${AiDiagnosis__Model:-gpt-4o}
       - AiDiagnosis__MaxTokens=${AiDiagnosis__MaxTokens:-1024}
+      - GhnSettings__BaseUrl=${GhnSettings__BaseUrl:-https://dev-online-gateway.ghn.vn}
+      - GhnSettings__Token=${GhnSettings__Token:-}
+      - GhnSettings__ShopId=${GhnSettings__ShopId:-0}
+      # S3 — must be listed here or Compose never forwards Infisical/host env into the container
+      - S3__Region=${S3__Region:-}
+      - S3__Bucket=${S3__Bucket:-}
+      - S3__AccessKeyId=${S3__AccessKeyId:-}
+      - S3__SecretAccessKey=${S3__SecretAccessKey:-}
+      - S3__PublicBaseUrl=${S3__PublicBaseUrl:-}
+      - S3__UsePresignedUrl=${S3__UsePresignedUrl:-false}
+      - S3__PresignedUrlExpiresMinutes=${S3__PresignedUrlExpiresMinutes:-60}
+      - AWS_REGION=${AWS_REGION:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
     ports:
       - "8080:8080"
       - "8081:8081"

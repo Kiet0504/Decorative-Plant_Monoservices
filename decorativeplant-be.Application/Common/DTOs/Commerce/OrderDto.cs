@@ -40,8 +40,6 @@ public class OrderResponse
     public Guid Id { get; set; }
     public string? OrderCode { get; set; }
     public Guid? UserId { get; set; }
-    public Guid? BranchId { get; set; }
-    public string? BranchName { get; set; }
     public string? OrderType { get; set; }
     public string? FulfillmentMethod { get; set; }
     public string Status { get; set; } = string.Empty;
@@ -60,6 +58,7 @@ public class OrderItemResponse
     public Guid Id { get; set; }
     public Guid? ListingId { get; set; }
     public Guid? StockId { get; set; }
+    public Guid? BranchId { get; set; }
     public int Quantity { get; set; }
     public string? UnitPrice { get; set; }
     public string? Subtotal { get; set; }
@@ -82,4 +81,6 @@ public class DeliveryAddressDto
     public string Phone { get; set; } = string.Empty;
     public string AddressLine1 { get; set; } = string.Empty;
     public string? City { get; set; }
+    public int DistrictId { get; set; }
+    public string WardCode { get; set; } = string.Empty;
 }

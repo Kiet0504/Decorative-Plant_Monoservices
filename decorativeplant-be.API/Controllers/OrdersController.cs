@@ -33,16 +33,15 @@ public class OrdersController : BaseController
     [HttpGet("shipping-fee")]
     [Authorize]
     public async Task<IActionResult> GetShippingFee(
-        [FromQuery] string pickProvince,
-        [FromQuery] string pickDistrict,
-        [FromQuery] string province,
-        [FromQuery] string district,
-        [FromQuery] string address = "",
+        [FromQuery] int fromDistrictId = 3695,
+        [FromQuery] string fromWardCode = "90737",
+        [FromQuery] int toDistrictId = 1454,
+        [FromQuery] string toWardCode = "21211",
         [FromQuery] int weight = 1000,
-        [FromQuery] int value = 500000)
+        [FromQuery] int insuranceValue = 500000)
     {
-        var result = await Mediator.Send(new GetShippingFeeQuery(pickProvince, pickDistrict, province, district, address, weight, value));
-        return Ok(ApiResponse<GhtkFeeResponse>.SuccessResponse(result));
+        var result = await Mediator.Send(new GetShippingFeeQuery(fromDistrictId, fromWardCode, toDistrictId, toWardCode, weight, insuranceValue));
+        return Ok(ApiResponse<ShippingFeeResponse>.SuccessResponse(result));
     }
 
     [HttpPost]

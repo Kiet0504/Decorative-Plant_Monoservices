@@ -19,6 +19,5 @@ public class OrderHeaderConfiguration : IEntityTypeConfiguration<OrderHeader>
         builder.Property(o => o.DeliveryAddress).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(o => o.PickupInfo).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.HasOne(o => o.User).WithMany(u => u.Orders).HasForeignKey(o => o.UserId).OnDelete(DeleteBehavior.SetNull);
-        builder.HasOne(o => o.Branch).WithMany(b => b.Orders).HasForeignKey(o => o.BranchId).OnDelete(DeleteBehavior.SetNull);
     }
 }

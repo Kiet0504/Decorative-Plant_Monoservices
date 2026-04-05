@@ -5,37 +5,36 @@ using MediatR;
 namespace decorativeplant_be.Application.Features.Commerce.Orders.Queries;
 
 public record GetShippingFeeQuery(
-    string PickProvince,
-    string PickDistrict,
-    string Province,
-    string District,
-    string Address,
+    int FromDistrictId,
+    string FromWardCode,
+    int ToDistrictId,
+    string ToWardCode,
     int Weight,
-    int Value
-) : IRequest<GhtkFeeResponse>;
+    int InsuranceValue
+) : IRequest<ShippingFeeResponse>;
 
-public class GetShippingFeeHandler : IRequestHandler<GetShippingFeeQuery, GhtkFeeResponse>
+public class GetShippingFeeHandler : IRequestHandler<GetShippingFeeQuery, ShippingFeeResponse>
 {
-    private readonly IGhtkService _ghtkService;
+    private readonly IShippingService _shippingService;
 
-    public GetShippingFeeHandler(IGhtkService ghtkService)
+    public GetShippingFeeHandler(IShippingService shippingService)
     {
-        _ghtkService = ghtkService;
+        _shippingService = shippingService;
     }
 
-    public async Task<GhtkFeeResponse> Handle(GetShippingFeeQuery request, CancellationToken cancellationToken)
+    public async Task<ShippingFeeResponse> Handle(GetShippingFeeQuery request, CancellationToken cancellationToken)
     {
-        var feeRequest = new GhtkFeeRequest
+        var feeRequest = new ShippingFeeRequest
         {
-            PickProvince = request.PickProvince,
-            PickDistrict = request.PickDistrict,
-            Province = request.Province,
-            District = request.District,
-            Address = string.IsNullOrEmpty(request.Address) ? "Unknown" : request.Address,
-            Weight = request.Weight > 0 ? request.Weight : 1000, // default 1kg
-            Value = request.Value > 0 ? request.Value : 500000 // default value
+            FromDistrictId = request.FromDistrictId > 0 ? request.FromDistrictId : 3695,
+            FromWardCode = !string.IsNullOrEmpty(request.FromWardCode) ? request.FromWardCode : "90737",
+            ToDistrictId = request.ToDistrictId > 0 ? request.ToDistrictId : 1454,
+            ToWardCode = !string.IsNullOrEmpty(request.ToWardCode) ? request.ToWardCode : "21211",
+            Weight = request.Weight > 0 ? request.Weight : 1000,
+            InsuranceValue = request.InsuranceValue > 0 ? request.InsuranceValue : 500000,
+            ServiceTypeId = 2
         };
 
-        return await _ghtkService.CalculateFeeAsync(feeRequest);
+        return await _shippingService.CalculateFeeAsync(feeRequest);
     }
 }

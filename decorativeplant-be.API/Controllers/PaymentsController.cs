@@ -51,4 +51,12 @@ public class PaymentsController : BaseController
         var result = await Mediator.Send(new HandlePayOSWebhookCommand { Webhook = request });
         return Ok(new { success = result });
     }
+
+    [HttpPost("{orderId:guid}/sync")]
+    [Authorize]
+    public async Task<IActionResult> SyncPaymentStatus(Guid orderId)
+    {
+        var result = await Mediator.Send(new SyncPaymentCommand { OrderId = orderId });
+        return Ok(new ApiResponse<bool> { Data = result });
+    }
 }
