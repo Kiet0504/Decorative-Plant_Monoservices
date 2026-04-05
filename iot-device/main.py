@@ -36,6 +36,7 @@ MQTT_PASSWORD = config.env.get("MQTT_PASSWORD", "your_password_here")
 
 MQTT_CLIENT_ID = "esp32_" + DEVICE_SECRET[:8]
 MQTT_TOPIC_RULES = "decorativeplant/device/{}/rules".format(DEVICE_SECRET).encode('utf-8')
+MQTT_TOPIC_COMMANDS = "decorativeplant/device/{}/commands".format(DEVICE_SECRET).encode('utf-8')
 
 mqtt_client = None
 
@@ -43,11 +44,24 @@ def mqtt_callback(topic, msg):
     global active_rules
     print("\n[MQTT] ======== CO LENH MOI TU SERVER ========")
     try:
-        new_rules = ujson.loads(msg.decode('utf-8'))
-        active_rules = new_rules
-        print("[MQTT] Da cap nhat {} rules thanh cong!".format(len(active_rules)))
+        data = ujson.loads(msg.decode('utf-8'))
+        
+        # 1. Update Rules
+        if topic == MQTT_TOPIC_RULES:
+            active_rules = data
+            print("[MQTT] Da cap nhat {} rules thanh cong!".format(len(active_rules)))
+            
+        # 2. Direct Command Execution
+        elif topic == MQTT_TOPIC_COMMANDS:
+            action = data.get("action") or data.get("command")
+            value = data.get("value") or action
+            params = data.get("params") or data.get("data") or {}
+            
+            print("[MQTT] Dang thuc thi lenh truc tiep: {}={}".format(action, value))
+            automation.HardwareActions.execute(action, value, params)
+            
     except Exception as e:
-        print("[MQTT] Loi parse JSON:", e)
+        print("[MQTT] Loi xu ly tin nhan:", e)
 
 def connect_mqtt():
     global mqtt_client
@@ -66,7 +80,8 @@ def connect_mqtt():
         client.set_callback(mqtt_callback)
         client.connect()
         client.subscribe(MQTT_TOPIC_RULES)
-        print("[MQTT] Da ket noi den {} va subscribe topic: {}".format(MQTT_BROKER, MQTT_TOPIC_RULES.decode()))
+        client.subscribe(MQTT_TOPIC_COMMANDS)
+        print("[MQTT] Ket noi thanh cong! Subscribed to Rules & Commands.")
         mqtt_client = client
     except Exception as e:
         print("[MQTT] Loi ket noi:", e)
@@ -92,7 +107,6 @@ i2c = machine.SoftI2C(scl=machine.Pin(I2C_SCL), sda=machine.Pin(I2C_SDA))
 BH1750_ADDR = 0x23  # Dia chi khi chan ADDR noi GND hoac de ho
 
 def read_bh1750():
-    """Doc cuong do anh sang tu BH1750, tra ve lux (float) hoac None neu loi."""
     try:
         i2c.writeto(BH1750_ADDR, bytes([0x10]))
         time.sleep_ms(180)
@@ -104,10 +118,6 @@ def read_bh1750():
         return None
 
 def read_soil_moisture():
-    """Doc cam bien do am dat.
-    ADC tra ve 0-4095:  0 = uot sung, 4095 = kho can
-    Ham nay chuyen doi thanh phan tram % (0% = kho, 100% = uot)
-    """
     try:
         raw = soil_adc.read()
         percent = round((1 - raw / 4095.0) * 100, 1)
@@ -117,7 +127,6 @@ def read_soil_moisture():
         return None
 
 def send_sensor_data(component_key, value):
-    """Gui du lieu cam bien len Backend API."""
     payload = {"componentKey": component_key, "value": value}
     headers = {
         "Content-Type": "application/json",
@@ -156,7 +165,6 @@ while True:
     
     print("\n[" + str(time.ticks_ms() // 1000) + "s] Dang doc cam bien...")
     
-    # Dictionary de luu tam du lieu cung cap cho engine Automation
     sensor_data = {}
 
     # 1. Doc DHT22 (Nhiet do & Do am Khong khi)
@@ -198,11 +206,9 @@ while True:
 
     print("  -> Dang cho vuot {}s (MQTT san sang nhan lenh realtime)...".format(SEND_INTERVAL))
     
-    # Cho doi bang vong lap nho de giu ban tin MQTT (Real-time) va khong block
     for _ in range(SEND_INTERVAL * 5):
         if mqtt_client:
             try:
-                # Periodic log to show MQTT is alive
                 if _ % 50 == 0:
                     print("[MQTT] Dang cho lenh ({}s)...".format(time.ticks_ms() // 1000))
                 mqtt_client.check_msg()

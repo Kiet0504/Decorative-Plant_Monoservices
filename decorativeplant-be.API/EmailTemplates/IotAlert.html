@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IoT Alert - Decorative Plant</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f4; color: #1b4332; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #d8e2dc; }
+        .header { background: linear-gradient(135deg, #2d6a4f, #1b4332); color: #ffffff; padding: 25px; text-align: center; }
+        .content { padding: 30px; line-height: 1.6; }
+        .alert-box { background-color: #fff9f0; border-left: 5px solid #ff9f1c; padding: 15px; margin: 20px 0; font-weight: 500; }
+        .footer { background-color: #f8f9fa; color: #6c757d; padding: 20px; text-align: center; font-size: 14px; border-top: 1px solid #eee; }
+        .button {
+            display: inline-block;
+            padding: 12px 25px;
+            background-color: #40916c;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            margin-top: 20px;
+            transition: background-color 0.3s;
+        }
+        .button:hover { background-color: #2d6a4f; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Cảnh báo Hệ thống IoT</h1>
+        </div>
+        <div class="content">
+            <p>Xin chào,</p>
+            <p>Hệ thống giám sát của <strong>Decorative Plant</strong> vừa ghi nhận một cảnh báo từ thiết bị của bạn:</p>
+
+            <div class="alert-box">
+                <strong>Cảnh báo:</strong> {{AlertMessage}}
+            </div>
+
+            <p>Bạn có muốn thực hiện tưới nước ngay lập tức không?</p>
+            
+            <div style="text-align: center;">
+                <a href="{{ActionUrl}}&action=water_now&token={{ActionToken}}" class="button">Tưới nước ngay (30 giây)</a>
+            </div>
+
+            <p style="margin-top: 30px;">Nếu bạn không phải là người yêu cầu thông tin này, vui lòng bỏ qua email.</p>
+        </div>
+        <div class="footer">
+            &copy; 2026 Decorative Plant - Advanced IoT Services.
+        </div>
+    </div>
+</body>
+</html>
