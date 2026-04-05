@@ -43,6 +43,10 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
+    // Flat env vars like S3_Region do not bind to S3:Region; only S3__Region does.
+    // Map common Infisical/Docker names so Region/Bucket/keys are picked up.
+    ApplyFlatS3EnvironmentVariables(builder.Configuration);
+
     // Use Serilog for logging
     builder.Host.UseSerilog();
 
@@ -168,4 +172,27 @@ catch (Exception ex)
 finally
 {
     Log.CloseAndFlush();
+}
+
+static void ApplyFlatS3EnvironmentVariables(ConfigurationManager configuration)
+{
+    void MapIfEmpty(string configKey, params string[] envVarNames)
+    {
+        if (!string.IsNullOrWhiteSpace(configuration[configKey]))
+            return;
+        foreach (var name in envVarNames)
+        {
+            var v = Environment.GetEnvironmentVariable(name);
+            if (!string.IsNullOrWhiteSpace(v))
+            {
+                configuration[configKey] = v.Trim();
+                return;
+            }
+        }
+    }
+
+    MapIfEmpty("S3:Region", "S3_Region", "S3_REGION");
+    MapIfEmpty("S3:Bucket", "S3_Bucket");
+    MapIfEmpty("S3:AccessKeyId", "S3_AccessKeyId", "S3_AccesskeyID");
+    MapIfEmpty("S3:SecretAccessKey", "S3_SecretAccessKey", "S3_SecreteAcessKey");
 }

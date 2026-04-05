@@ -148,16 +148,28 @@ public static class InfrastructureServiceRegistration
         services.AddSingleton<IAmazonS3>(sp =>
         {
             var s3 = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<S3Settings>>().Value;
-            if (string.IsNullOrWhiteSpace(s3.Region))
+            var region = s3.Region;
+            if (string.IsNullOrWhiteSpace(region))
             {
-                throw new InvalidOperationException("S3 region is not configured.");
+                region = Environment.GetEnvironmentVariable("S3__Region")
+                    ?? Environment.GetEnvironmentVariable("S3_Region");
+            }
+            if (string.IsNullOrWhiteSpace(region))
+            {
+                region = Environment.GetEnvironmentVariable("AWS_REGION")
+                    ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION");
+            }
+            if (string.IsNullOrWhiteSpace(region))
+            {
+                throw new InvalidOperationException(
+                    "S3 region is not configured. Set S3:Region, S3__Region, or S3_Region, or AWS_REGION.");
             }
             if (string.IsNullOrWhiteSpace(s3.AccessKeyId) || string.IsNullOrWhiteSpace(s3.SecretAccessKey))
             {
                 throw new InvalidOperationException("S3 credentials are not configured.");
             }
             var creds = new BasicAWSCredentials(s3.AccessKeyId, s3.SecretAccessKey);
-            return new AmazonS3Client(creds, RegionEndpoint.GetBySystemName(s3.Region));
+            return new AmazonS3Client(creds, RegionEndpoint.GetBySystemName(region));
         });
         services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IMediaStorageService, S3MediaStorageService>();
 
