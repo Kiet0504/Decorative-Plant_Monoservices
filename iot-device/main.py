@@ -36,7 +36,7 @@ MQTT_PASSWORD = config.env.get("MQTT_PASSWORD", "your_password_here")
 
 MQTT_CLIENT_ID = "esp32_" + DEVICE_SECRET[:8]
 MQTT_TOPIC_RULES = "decorativeplant/device/{}/rules".format(DEVICE_SECRET).encode('utf-8')
-MQTT_TOPIC_COMMAND = "decorativeplant/device/{}/command".format(DEVICE_SECRET).encode('utf-8')
+MQTT_TOPIC_COMMANDS = "decorativeplant/device/{}/commands".format(DEVICE_SECRET).encode('utf-8')
 
 mqtt_client = None
 
@@ -52,10 +52,12 @@ def mqtt_callback(topic, msg):
             print("[MQTT] Da cap nhat {} rules thanh cong!".format(len(active_rules)))
             
         # 2. Direct Command Execution
-        elif topic == MQTT_TOPIC_COMMAND:
-            action = data.get("action")
-            value = data.get("value")
-            params = data.get("params", {})
+        elif topic == MQTT_TOPIC_COMMANDS:
+            # Flexible key mapping for backward/forward compatibility
+            action = data.get("action") or data.get("command")
+            value = data.get("value") or action
+            params = data.get("params") or data.get("data") or {}
+            
             print("[MQTT] Dang thuc thi lenh truc tiep: {}={}".format(action, value))
             automation.HardwareActions.execute(action, value, params)
             
@@ -79,7 +81,7 @@ def connect_mqtt():
         client.set_callback(mqtt_callback)
         client.connect()
         client.subscribe(MQTT_TOPIC_RULES)
-        client.subscribe(MQTT_TOPIC_COMMAND)
+        client.subscribe(MQTT_TOPIC_COMMANDS)
         print("[MQTT] Ket noi thanh cong! Subscribed to Rules & Commands.")
         mqtt_client = client
     except Exception as e:

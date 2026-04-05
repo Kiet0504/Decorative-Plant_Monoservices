@@ -11,48 +11,82 @@ DEVICE_SECRET = config.env.get("DEVICE_SECRET", "")
 # Cau hinh chan GPIO
 RELAY_PUMP = Pin(18, Pin.OUT)
 
-# Dam bao mac dinh la TAT (Low-level trigger: 1 = OFF)
-RELAY_PUMP.value(1)
+# CAU HINH MUC TIN HIEU (High Level Trigger: 1 = ON, 0 = OFF)
+# Thay doi neu dung Relay Low Level Trigger: ON=0, OFF=1
+LEVEL_ON  = 1
+LEVEL_OFF = 0
+
+# Dam bao mac dinh la TAT luc moi khoi dong
+RELAY_PUMP.value(LEVEL_OFF)
+
+# Flag de chong chay chong (Concurrency Lock)
+_is_watering = False
 
 class HardwareActions:
     @staticmethod
+    def all_off():
+        """Cuong buc TAT tat ca thiet bi dau ra (Relay)"""
+        RELAY_PUMP.value(LEVEL_OFF)
+        print("[Action] All outputs forced OFF.")
+
+    @staticmethod
     def execute(action_name, action_value, params=None):
+        global _is_watering
         """
         Supports:
         1. Flat call: execute("turn_on_pump", 1)
         2. Nested DTO: execute("water_pump", "turn_on", {"duration": 5})
         """
+        if action_name in ["water_pump", "turn_on_pump", "water_now"]:
+            if _is_watering:
+                print("[Action] Device is currently watering. Command skipped.")
+                return False, "Already watering"
+
         success = False
         msg = ""
         try:
-            # 1. Determine the effective duration
-            # Default to 0 (which means stay on indefinitely if not specified)
-            # But let's set a safe limit for water_pump to prevent crash loops
-            duration = 0
-            if params and "duration" in params:
-                duration = float(params["duration"])
-            
-            # If the action_value is a number and it's a water_pump action, treat it as duration
-            if action_name == "water_pump" or action_name == "turn_on_pump":
+            # 1. Determine the effective duration and ON/OFF status
+            # Try to force action_value to numeric if it's a string representation of a number
+            if isinstance(action_value, str):
                 try:
-                    val_num = float(action_value)
-                    if val_num > 1: # If it's a significant number (e.g., 50 or 5)
-                        duration = val_num / 10 if val_num > 20 else val_num # Handle '50' as 5s if user implies it
+                    action_value = float(action_value)
                 except:
                     pass
 
-            # Mapping logic
-            is_on = (action_value == "turn_on" or action_value == "ON" or action_value == "1" or action_value == 1)
+            is_on = (action_value == "turn_on" or action_value == "ON" or action_value == "1" or action_value == 1 or action_name == "water_now")
             is_off = (action_value == "turn_off" or action_value == "OFF" or action_value == "0" or action_value == 0)
+
+            # If action_value is a number > 0, it implies ON for pump/actuator components
+            if isinstance(action_value, (int, float)) and action_value > 0:
+                is_on = True
+
+            # Extract duration from params or action_value
+            duration = 0
+            if params and "duration" in params:
+                try:
+                    duration = float(params["duration"])
+                except:
+                    pass
+            
+            # If the action_name is a watering action and action_value is a number, treat it as duration
+            if action_name in ["water_pump", "turn_on_pump", "water_now"]:
+                if isinstance(action_value, (int, float)) and action_value > 1:
+                    # Logic: if > 20, assume it might be '50' for 5s ( legacy support), else use as is
+                    duration = action_value / 10 if action_value > 20 else action_value
             
             # If we calculated a duration, it implies 'is_on'
             if duration > 0:
                 is_on = True
 
-            # 2. Execution Logic (Low-Level Trigger: 0=ON, 1=OFF)
-            if action_name == "turn_on_pump" or (action_name == "water_pump" and is_on):
-                print("[Action] Pump STARTING (LOW)...")
-                RELAY_PUMP.value(0) # 0 = ON
+            if is_on and action_name in ["turn_on_pump", "water_pump", "water_now"]:
+                # Safety Fix: Default 5s duration if not specified for a water command
+                if duration <= 0:
+                    duration = 5 
+                    print("[Safety] No duration specified for water command. Using default 5s.")
+
+                print("[Action] Pump STARTING ({})...".format(LEVEL_ON))
+                _is_watering = True
+                RELAY_PUMP.value(LEVEL_ON) 
                 success = True
                 msg = "Pump turned ON"
                 
@@ -61,12 +95,14 @@ class HardwareActions:
                     msg += " for {}s".format(duration)
                     print("[Action] Waiting {}s...".format(duration))
                     time.sleep(duration)
-                    RELAY_PUMP.value(1) # 1 = OFF
+                    RELAY_PUMP.value(LEVEL_OFF) 
+                    _is_watering = False
                     msg += " and then AUTO-OFF"
                     print("[Action] Pump AUTO-OFF.")
                 
             elif action_name == "turn_off_pump" or (action_name == "water_pump" and is_off):
-                RELAY_PUMP.value(1) # 1 = OFF
+                RELAY_PUMP.value(LEVEL_OFF) 
+                _is_watering = False
                 success = True
                 msg = "Pump turned OFF"
             else:
@@ -128,9 +164,42 @@ def send_execution_log(rule_id, action_taken, success, message):
 # Tu dien theo doi de tranh chay lai Rule thi hanh qua gan nhau (Cooldown)
 last_run_schedule = {}
 last_run_execution = {}
+COOLDOWN_FILE = "/last_run.json"
 
-# Thoi gian nghi mac dinh cho moi Rule (giay) - mac dinh 10 phut
-DEFAULT_COOLDOWN = 150 
+def _load_cooldown_data():
+    global last_run_execution
+    try:
+        import os
+        # Check if file exists (MicroPython os.stat or similar)
+        try:
+            os.stat(COOLDOWN_FILE)
+        except:
+            return # File not found
+
+        with open(COOLDOWN_FILE, "r") as f:
+            data = ujson.loads(f.read())
+            if isinstance(data, dict):
+                # MicroPython: dictionary update
+                for k, v in data.items():
+                    last_run_execution[k] = v
+                print("[Cooldown] Da tai thong tin lan vung cuoi tu flash.")
+    except Exception as e:
+        print("[Cooldown] Loi khi doc file flash:", e)
+
+def _save_cooldown_data(rule_id, timestamp):
+    global last_run_execution
+    try:
+        last_run_execution[rule_id] = timestamp
+        with open(COOLDOWN_FILE, "w") as f:
+            f.write(ujson.dumps(last_run_execution))
+    except Exception as e:
+        print("[Cooldown] Loi khi ghi file flash:", e)
+
+# Initial load
+_load_cooldown_data()
+
+# Thoi gian nghi mac dinh cho moi Rule (giay) - 10 phut (đa ngam nuoc)
+DEFAULT_COOLDOWN = 600 
 
 def check_schedule(rule_id, schedule_dict):
     """
@@ -228,11 +297,17 @@ def evaluate_and_run(sensor_data, active_rules):
         # 2. Kiem tra Cooldown (Neu khong phai rule hen gio)
         # De tranh viet tuoi di tuoi lai nhieu lan khi nuoc chua kip ngam
         if not is_scheduled:
+            # Re-load from flash just in case it was updated by another process or after reboot
+            # (Though in single-thread MicroPython it's mostly for startup)
             now = time.time()
             if rule_id in last_run_execution:
                 elapsed = now - last_run_execution[rule_id]
                 if elapsed < DEFAULT_COOLDOWN:
                     print("  -> Rule [{}] dang trong thoi gian nghi (con {}s)...".format(rule_name, int(DEFAULT_COOLDOWN - elapsed)))
+                    # Fix cho loi may bom van chay: 
+                    # Khi đang nghỉ, ta vẫn cưỡng bức Tắt bơm cho chắc chắn
+                    if "water" in ujson.dumps(actions) or "pump" in ujson.dumps(actions):
+                        HardwareActions.all_off()
                     continue
             
         # 2. Kiem tra dieu kien cam bien
@@ -276,8 +351,8 @@ def evaluate_and_run(sensor_data, active_rules):
             is_valid = False
             # Fix cho loi may bom khong chiu dung:
             # Neu day la rule tuoi cay nhung khong thoa man dieu kien, ta cuong buc TẮT bơm cho an toan
-            if not is_scheduled and "water_pump" in ujson.dumps(actions):
-                RELAY_PUMP.value(1) # 1 = OFF
+            if not is_scheduled and ("water_pump" in ujson.dumps(actions) or "water_now" in ujson.dumps(actions)):
+                HardwareActions.all_off() 
             
         # Kiem tra action co dien ra qua nhanh ko de chong spam (tu tuy chinh)
             
@@ -299,17 +374,17 @@ def evaluate_and_run(sensor_data, active_rules):
                     params = a.get("parameters") or {}
                     val = a.get("value") or cmd
                     
+                    # Cap nhat thoi gian chay cuoi cùng de cooldown (Persist to Flash) 
+                    # QUAN TRONG: Phai luu TRUOC khi thuc thi hanh dong delay (5s) de tranh trung lap khi reboot
+                    _save_cooldown_data(rule_id, time.time())
+                    
                     succ, msg = HardwareActions.execute(comp, val, params)
-                    if succ:
-                        # Cap nhat thoi gian chay cuoi cùng de cooldown
-                        last_run_execution[rule_id] = time.time()
                     send_execution_log(rule_id, comp, succ, msg)
             else:
                 # Legacy flat format: {"turn_on_pump": True}
                 for action_key, action_val in actions.items():
+                    _save_cooldown_data(rule_id, time.time())
                     succ, msg = HardwareActions.execute(action_key, action_val)
-                    if succ:
-                        last_run_execution[rule_id] = time.time()
                     send_execution_log(rule_id, action_key, succ, msg)
                 
             # Ngi giua cac action de dam bao on dinh phan cung
