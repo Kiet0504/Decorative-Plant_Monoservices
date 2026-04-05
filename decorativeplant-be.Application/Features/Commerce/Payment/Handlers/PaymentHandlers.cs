@@ -7,6 +7,7 @@ using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Payment.Commands;
 using decorativeplant_be.Application.Features.Commerce.Payment.Queries;
+using decorativeplant_be.Application.Features.Commerce.ShoppingCart.Handlers;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 
@@ -151,30 +152,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
             return true;
         }
 
-        // According to PayOS, webhook signature data string is built by picking non-null fields
-        // from data, sorting them alphabetically by key, and connecting with '=' and '&'
-        var dict = new SortedDictionary<string, string>();
-        var wd = cmd.Webhook.Data;
-        if (wd.Amount.HasValue) dict.Add("amount", wd.Amount.Value.ToString());
-        if (wd.OrderCode.HasValue) dict.Add("orderCode", wd.OrderCode.Value.ToString());
-        if (wd.AccountNumber != null) dict.Add("accountNumber", wd.AccountNumber);
-        if (wd.Code != null) dict.Add("code", wd.Code);
-        if (wd.CounterAccountBankId != null) dict.Add("counterAccountBankId", wd.CounterAccountBankId);
-        if (wd.CounterAccountBankName != null) dict.Add("counterAccountBankName", wd.CounterAccountBankName);
-        if (wd.CounterAccountName != null) dict.Add("counterAccountName", wd.CounterAccountName);
-        if (wd.CounterAccountNumber != null) dict.Add("counterAccountNumber", wd.CounterAccountNumber);
-        if (wd.Currency != null) dict.Add("currency", wd.Currency);
-        if (wd.Desc != null) dict.Add("desc", wd.Desc);
-        if (wd.Description != null) dict.Add("description", wd.Description);
-        if (wd.PaymentLinkId != null) dict.Add("paymentLinkId", wd.PaymentLinkId);
-        if (wd.Reference != null) dict.Add("reference", wd.Reference);
-        if (wd.TransactionDateTime != null) dict.Add("transactionDateTime", wd.TransactionDateTime);
-        if (wd.VirtualAccountName != null) dict.Add("virtualAccountName", wd.VirtualAccountName);
-        if (wd.VirtualAccountNumber != null) dict.Add("virtualAccountNumber", wd.VirtualAccountNumber);
-
-        var dataString = string.Join("&", dict.Select(kvp => $"{kvp.Key}={kvp.Value}"));
-
-        if (!_payOS.VerifyWebhookSignature(dataString, cmd.Webhook.Signature ?? ""))
+        if (!_payOS.VerifyWebhookSignature(cmd.RawJsonBody))
         {
             _logger.LogWarning("Invalid webhook signature for order code: {OrderCode}", cmd.Webhook.Data.OrderCode);
             throw new BadRequestException("Invalid webhook signature.");
@@ -186,9 +164,12 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         var payment = _context.PaymentTransactions.AsEnumerable().FirstOrDefault(p =>
         {
             if (p.Details == null) return false;
-            return p.Details.RootElement.TryGetProperty("payos_order_code", out var poc) && 
-                   poc.ValueKind == JsonValueKind.Number && 
-                   poc.GetInt64() == orderCode;
+            if (p.Details.RootElement.TryGetProperty("payos_order_code", out var poc))
+            {
+                if (poc.ValueKind == JsonValueKind.Number && poc.GetInt64() == orderCode) return true;
+                if (poc.ValueKind == JsonValueKind.String && long.TryParse(poc.GetString(), out var strval) && strval == orderCode) return true;
+            }
+            return false;
         });
         if (payment == null) return false;
 
@@ -242,6 +223,58 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                     { 
                         order.Status = "confirmed"; 
                         order.ConfirmedAt = DateTime.UtcNow; 
+
+                        // Remove items from user's cart
+                        if (order.UserId != Guid.Empty)
+                        {
+                            var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
+                            if (cart != null && cart.Items != null && order.OrderItems != null)
+                            {
+                                var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
+                                var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
+                                
+                                if (purchasedListingIds.Any())
+                                {
+                                    cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
+                                    cart.Items = AddToCartHandler.SerializeItems(cartItems);
+                                    cart.UpdatedAt = DateTime.UtcNow;
+                                }
+                            }
+                        }
+
+                        // Deduct stock (from reserved to completed)
+                        if (order.OrderItems != null)
+                        {
+                            foreach (var item in order.OrderItems)
+                            {
+                                if (item.BatchId.HasValue)
+                                {
+                                    var stock = await _context.BatchStocks.FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
+                                    if (stock != null && stock.Quantities != null)
+                                    {
+                                        var root = stock.Quantities.RootElement;
+                                        var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
+                                        var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
+                                        var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
+
+                                        var q = item.Quantity;
+                                        // Finalize deduction: subtract from both total and reserved
+                                        reserved -= q;
+                                        if (reserved < 0) reserved = 0;
+                                        total -= q;
+                                        if (total < 0) total = 0;
+
+                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                                        {
+                                            quantity = total,
+                                            reserved_quantity = reserved,
+                                            available_quantity = available // (total-q) - (reserved-q) = same as before
+                                        }));
+                                        stock.UpdatedAt = DateTime.UtcNow;
+                                    }
+                                }
+                            }
+                        }
 
                         // Create GHN shipping order now that payment is confirmed
                         await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
@@ -443,6 +476,56 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                     {
                         order.Status = "confirmed";
                         order.ConfirmedAt = DateTime.UtcNow;
+
+                        // Remove purchased items from user's cart
+                        if (order.UserId.HasValue && order.UserId != Guid.Empty)
+                        {
+                            var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
+                            if (cart != null && cart.Items != null && order.OrderItems != null)
+                            {
+                                var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
+                                var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
+                                if (purchasedListingIds.Any())
+                                {
+                                    cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
+                                    cart.Items = AddToCartHandler.SerializeItems(cartItems);
+                                    cart.UpdatedAt = DateTime.UtcNow;
+                                }
+                            }
+                        }
+
+                        // Deduct stock (from reserved to completed)
+                        if (order.OrderItems != null)
+                        {
+                            foreach (var item in order.OrderItems)
+                            {
+                                if (item.BatchId.HasValue)
+                                {
+                                    var stock = await _context.BatchStocks.FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
+                                    if (stock != null && stock.Quantities != null)
+                                    {
+                                        var root = stock.Quantities.RootElement;
+                                        var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
+                                        var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
+                                        var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
+
+                                        var q = item.Quantity;
+                                        reserved -= q;
+                                        if (reserved < 0) reserved = 0;
+                                        total -= q;
+                                        if (total < 0) total = 0;
+
+                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                                        {
+                                            quantity = total,
+                                            reserved_quantity = reserved,
+                                            available_quantity = available
+                                        }));
+                                        stock.UpdatedAt = DateTime.UtcNow;
+                                    }
+                                }
+                            }
+                        }
 
                         // Create GHN shipping order now that payment is confirmed
                         await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);

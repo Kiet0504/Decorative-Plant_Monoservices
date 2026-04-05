@@ -46,9 +46,19 @@ public class PaymentsController : BaseController
     /// </summary>
     [HttpPost("payos/webhook")]
     [AllowAnonymous]
-    public async Task<IActionResult> PayOSWebhook([FromBody] PayOSWebhookRequest request)
+    public async Task<IActionResult> PayOSWebhook()
     {
-        var result = await Mediator.Send(new HandlePayOSWebhookCommand { Webhook = request });
+        // Read raw body to preserve exact JSON for signature verification
+        using var reader = new StreamReader(Request.Body);
+        var rawBody = await reader.ReadToEndAsync();
+        
+        var request = System.Text.Json.JsonSerializer.Deserialize<PayOSWebhookRequest>(rawBody, 
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        
+        if (request == null)
+            return BadRequest(new { success = false, message = "Invalid webhook body" });
+        
+        var result = await Mediator.Send(new HandlePayOSWebhookCommand { Webhook = request, RawJsonBody = rawBody });
         return Ok(new { success = result });
     }
 

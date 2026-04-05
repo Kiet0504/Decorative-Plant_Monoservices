@@ -3,6 +3,9 @@ using Microsoft.Extensions.Logging;
 using Net.payOS;
 using Net.payOS.Types;
 using decorativeplant_be.Application.Services;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace decorativeplant_be.Infrastructure.Services;
 
@@ -84,11 +87,88 @@ public class PayOSService : IPayOSService
         }
     }
 
-    public bool VerifyWebhookSignature(string data, string signature)
+    /// <summary>
+    /// Verify webhook signature using raw JSON body.
+    /// This avoids any DTO mapping issues with null vs empty string.
+    /// PayOS algorithm: sort data object keys alphabetically, build "key=value&key=value" string,
+    /// HMAC-SHA256 hash it, compare with provided signature.
+    /// </summary>
+    public bool VerifyWebhookSignature(string rawJsonBody)
     {
-        using var hmac = new System.Security.Cryptography.HMACSHA256(System.Text.Encoding.UTF8.GetBytes(_checksumKey));
-        var hash = hmac.ComputeHash(System.Text.Encoding.UTF8.GetBytes(data));
-        var computed = BitConverter.ToString(hash).Replace("-", "").ToLower();
-        return computed == signature.ToLower();
+        try
+        {
+            using var doc = JsonDocument.Parse(rawJsonBody);
+            var root = doc.RootElement;
+
+            // Get the signature from root
+            if (!root.TryGetProperty("signature", out var sigElement))
+            {
+                _logger.LogWarning("Webhook body missing 'signature' field");
+                return false;
+            }
+            var providedSignature = sigElement.GetString() ?? "";
+
+            // Get the data object from root
+            if (!root.TryGetProperty("data", out var dataElement) || dataElement.ValueKind != JsonValueKind.Object)
+            {
+                _logger.LogWarning("Webhook body missing 'data' object");
+                return false;
+            }
+
+            // Build sorted key=value pairs from data, excluding null values
+            var sortedData = new SortedDictionary<string, string>();
+            foreach (var prop in dataElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind == JsonValueKind.Null)
+                    continue; // Skip null values per PayOS spec
+
+                string value;
+                switch (prop.Value.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        value = prop.Value.GetString() ?? "";
+                        break;
+                    case JsonValueKind.Number:
+                        // Use raw text to preserve exact number format
+                        value = prop.Value.GetRawText();
+                        break;
+                    case JsonValueKind.True:
+                        value = "true";
+                        break;
+                    case JsonValueKind.False:
+                        value = "false";
+                        break;
+                    default:
+                        value = prop.Value.GetRawText();
+                        break;
+                }
+                sortedData[prop.Name] = value;
+            }
+
+            var dataString = string.Join("&", sortedData.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+
+            _logger.LogDebug("PayOS webhook signature data string: {DataString}", dataString);
+
+            // Compute HMAC-SHA256
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_checksumKey));
+            var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(dataString));
+            var computedSignature = BitConverter.ToString(hash).Replace("-", "").ToLower();
+
+            var isValid = computedSignature == providedSignature.ToLower();
+
+            if (!isValid)
+            {
+                _logger.LogWarning(
+                    "PayOS webhook signature mismatch. Computed: {Computed}, Provided: {Provided}",
+                    computedSignature, providedSignature);
+            }
+
+            return isValid;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to verify PayOS webhook signature");
+            return false;
+        }
     }
 }
