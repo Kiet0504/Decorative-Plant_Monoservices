@@ -16,7 +16,7 @@ public class CultivationController : BaseController
     /// Log a cultivation activity (Watering, Fertilizing, Pruning, etc.).
     /// </summary>
     [HttpPost("logs")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<CultivationLogDto>>> LogActivity([FromBody] CreateCultivationLogDto dto)
     {
         var command = new LogCultivationActivityCommand
@@ -38,7 +38,7 @@ public class CultivationController : BaseController
     /// Get cultivation history for a specific batch.
     /// </summary>
     [HttpGet("batches/{batchId}/history")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<List<CultivationLogDto>>>> GetBatchHistory(Guid batchId)
     {
         var query = new GetBatchCultivationHistoryQuery { BatchId = batchId };

@@ -89,4 +89,30 @@ public class MqttService : IHostedService, IMqttService
         await _mqttClient.EnqueueAsync(message);
         _logger.LogInformation($"[MQTT] Published updated rules to {topic}");
     }
+
+    public async Task PublishCommandAsync(string deviceSecret, string commandName, object payload, CancellationToken cancellationToken)
+    {
+        if (_mqttClient == null || !_mqttClient.IsStarted)
+        {
+            _logger.LogWarning("MQTT Client not started, cannot publish command.");
+            return;
+        }
+
+        var topic = $"decorativeplant/device/{deviceSecret}/commands";
+        var jsonPayload = JsonSerializer.Serialize(new
+        {
+            command = commandName,
+            data = payload,
+            timestamp = DateTime.UtcNow
+        });
+
+        var message = new MqttApplicationMessageBuilder()
+            .WithTopic(topic)
+            .WithPayload(jsonPayload)
+            .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+            .Build();
+
+        await _mqttClient.EnqueueAsync(message);
+        _logger.LogInformation($"[MQTT] Published manual command '{commandName}' to {topic}");
+    }
 }

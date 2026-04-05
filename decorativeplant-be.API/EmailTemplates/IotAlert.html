@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IoT System Alert</title>
+</head>
+<body style="margin:0; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background:#fffcfc; padding: 40px 20px;">
+  <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.05); border: 1px solid #fee2e2;">
+    <!-- Alert Header -->
+    <div style="background: #ef4444; padding: 40px 32px; text-align: center;">
+      <div style="background: rgba(255,255,255,0.2); width: 80px; height: 80px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+        <span style="font-size: 40px;">⚠️</span>
+      </div>
+      <h1 style="margin:0; font-size: 28px; font-weight: 900; color: #ffffff; letter-spacing: -0.5px;">Critical System Alert</h1>
+      <p style="margin: 10px 0 0; color: rgba(255,255,255,0.9); font-weight: 600; font-size: 16px;">Action Required Immediately</p>
+    </div>
+
+    <!-- Content Section -->
+    <div style="padding: 40px 32px;">
+      <p style="margin: 0 0 32px; font-size: 18px; color: #1f2937; line-height: 1.6; text-align: center; font-weight: 500;">
+        An IoT automation rule has been breached at your facility. Please review the details below.
+      </p>
+
+      <div style="background: #fdf2f2; border-radius: 20px; padding: 24px; margin-bottom: 32px; border: 1px dashed #f87171;">
+        <table style="width: 100%; border-collapse: collapse;">
+          <tr>
+            <td style="padding: 8px 0; color: #7f1d1d; font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; width: 40%;">Rule Name</td>
+            <td style="padding: 8px 0; color: #b91c1c; font-weight: 900; font-size: 16px; text-align: right;">{{RuleName}}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #4b5563; font-weight: 600; font-size: 14px;">Device</td>
+            <td style="padding: 8px 0; color: #111827; font-weight: 700; font-size: 15px; text-align: right;">{{DeviceName}}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #4b5563; font-weight: 600; font-size: 14px;">Sensor Data</td>
+            <td style="padding: 8px 0; color: #111827; font-weight: 700; font-size: 15px; text-align: right;">{{Value}}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #4b5563; font-weight: 600; font-size: 14px;">Threshold</td>
+            <td style="padding: 8px 0; color: #111827; font-weight: 700; font-size: 15px; text-align: right;">{{Threshold}}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #4b5563; font-weight: 600; font-size: 14px;">Occurred At</td>
+            <td style="padding: 8px 0; color: #111827; font-weight: 700; font-size: 15px; text-align: right;">{{OccurredAt}}</td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Solution Section -->
+      <div style="background: #f0fdf4; border-radius: 20px; padding: 24px; margin-bottom: 24px; border: 1px solid #dcfce7;">
+        <p style="margin: 0 0 12px; font-size: 13px; font-weight: 800; color: #15803d; text-transform: uppercase; letter-spacing: 1px;">Recommended Solution</p>
+        <p style="margin: 0; font-size: 18px; font-weight: 900; color: #166534; line-height: 1.4;">{{Solution}}</p>
+      </div>
+
+      <!-- Quick Action Section -->
+      <div style="background: #eff6ff; border-radius: 20px; padding: 24px; margin-bottom: 32px; border: 1px solid #dbeafe; text-align: center;">
+        <p style="margin: 0 0 16px; font-size: 13px; font-weight: 800; color: #1e40af; text-transform: uppercase; letter-spacing: 1px;">Quick Actions</p>
+        <a href="{{WaterNowUrl}}" style="display: block; background: #2563eb; color: #ffffff; padding: 18px 32px; border-radius: 16px; font-weight: 800; text-decoration: none; font-size: 17px; box-shadow: 0 10px 20px rgba(37, 99, 235, 0.2);">💧 Water Plant Now (30s)</a>
+        <p style="margin: 12px 0 0; font-size: 12px; color: #60a5fa; font-weight: 600;">One-click remote irrigation. No login required.</p>
+      </div>
+
+      <!-- Action Button -->
+      <div style="text-align: center; margin-bottom: 32px;">
+        <a href="{{DashboardUrl}}" style="display: inline-block; background: #111827; color: #ffffff; padding: 18px 36px; border-radius: 16px; font-weight: 800; text-decoration: none; font-size: 15px; transition: all 0.2s; box-shadow: 0 10px 20px rgba(0,0,0,0.1);">Open Alert Dashboard</a>
+      </div>
+
+      <p style="margin: 0; font-size: 13px; color: #9ca3af; text-align: center; line-height: 1.5;">
+        You are receiving this because your account is assigned to the affected branch. No further emails will be sent for this specific issue until it is marked as resolved.
+      </p>
+    </div>
+
+    <!-- Footer -->
+    <div style="background: #f9fafb; padding: 24px; text-align: center; border-top: 1px solid #f3f4f6;">
+      <p style="margin:0; font-size: 12px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 1.5px;">&copy; 2026 Decorative Plant System</p>
+    </div>
+  </div>
+</body>
+</html>

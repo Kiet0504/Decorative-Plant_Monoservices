@@ -70,17 +70,41 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
             .Take(request.PageSize)
             .ToList();
 
-        // Populate Taxonomy Name for display
+        // Populate Taxonomy and Statuses for display
         var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
+        var healthRepo = _repositoryFactory.CreateRepository<HealthIncident>();
+        
+        var dtos = new List<PlantBatchSummaryDto>();
         foreach (var item in pagedItems)
         {
             if (item.TaxonomyId.HasValue && item.Taxonomy == null)
             {
                 item.Taxonomy = await taxRepo.GetByIdAsync(item.TaxonomyId.Value, cancellationToken);
             }
-        }
 
-        var dtos = pagedItems.Select(PlantBatchMapper.ToSummaryDto).ToList();
+            var dto = PlantBatchMapper.ToSummaryDto(item);
+
+            // Extract Stage from Specs JSONB
+            if (item.Specs != null && item.Specs.RootElement.TryGetProperty("maturity_stage", out var stageProp))
+            {
+                dto.Stage = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(stageProp.GetString() ?? "Stable");
+            }
+
+            // Derive HealthStatus from latest HealthIncident
+            var incidents = await healthRepo.FindAsync(x => x.BatchId == item.Id, cancellationToken);
+            var latestIncident = incidents.OrderByDescending(x => x.Id).FirstOrDefault(); // Heuristic: last ID as latest
+            
+            if (latestIncident == null) 
+            {
+                dto.HealthStatus = "Resolved";
+            }
+            else 
+            {
+                dto.HealthStatus = latestIncident.Severity == "High" ? "High" : "In Treatment";
+            }
+
+            dtos.Add(dto);
+        }
 
         return new PagedResultDto<PlantBatchSummaryDto>
         {
