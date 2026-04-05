@@ -67,4 +67,13 @@ public class OrdersController : BaseController
         var result = await Mediator.Send(new CancelOrderCommand { Id = id, UserId = GetUserId(), Request = request });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
+
+    [HttpPost("offline-bopis-request")]
+    [Authorize(Roles = "BrandManager,Admin")]
+    public async Task<IActionResult> CreateOfflineBopis([FromBody] CreateOfflineBopisRequest request)
+    {
+        if (GetUserId() == null) return Unauthorized();
+        var result = await Mediator.Send(new CreateOfflineBopisOrderCommand { BrandManagerId = GetUserId()!.Value, Request = request });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Offline BOPIS request created successfully", 201));
+    }
 }

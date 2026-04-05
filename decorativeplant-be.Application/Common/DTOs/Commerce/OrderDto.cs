@@ -34,6 +34,23 @@ public class CancelOrderRequest
     public string? CancellationReason { get; set; }
 }
 
+public class CreateOfflineBopisRequest
+{
+    public Guid PickupBranchId { get; set; }
+    public string CustomerName { get; set; } = string.Empty;
+    public string CustomerPhone { get; set; } = string.Empty;
+    public decimal DepositAmount { get; set; }
+    public string PaymentMethod { get; set; } = "cash";
+    public List<CreateOfflineBopisItemRequest> Items { get; set; } = new();
+}
+
+public class CreateOfflineBopisItemRequest
+{
+    public Guid ListingId { get; set; }
+    public int Quantity { get; set; }
+    public decimal UnitPrice { get; set; }
+}
+
 // ── Response DTOs ──
 public class OrderResponse
 {

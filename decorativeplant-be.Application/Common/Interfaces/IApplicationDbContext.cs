@@ -34,6 +34,7 @@ public interface IApplicationDbContext
     DbSet<InventoryLocation> InventoryLocations { get; }
     DbSet<PlantBatch> PlantBatches { get; }
     DbSet<PlantTaxonomy> PlantTaxonomies { get; }
+    DbSet<StockTransfer> StockTransfers { get; }
     
     // Admin / Core
     DbSet<Company> Companies { get; }
