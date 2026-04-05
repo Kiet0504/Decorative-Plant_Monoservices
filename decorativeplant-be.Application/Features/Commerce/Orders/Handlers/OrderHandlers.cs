@@ -451,3 +451,112 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
         return CreateOrderHandler.MapToResponse(order);
     }
 }
+
+public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopisOrderCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    
+    public CreateOfflineBopisOrderHandler(IApplicationDbContext context)
+    {
+        _context = context;
+    }
+
+    public async Task<OrderResponse> Handle(CreateOfflineBopisOrderCommand cmd, CancellationToken ct)
+    {
+        var req = cmd.Request;
+        
+        // 1. Calculate totals
+        decimal cartSubtotal = req.Items.Sum(i => i.Quantity * i.UnitPrice);
+        if (cartSubtotal <= 0)
+        {
+            throw new Exception("Order subtotal must be greater than 0");
+        }
+
+        // 2. Validate deposit (must be >= 30%)
+        decimal minDeposit = cartSubtotal * 0.3m;
+        if (req.DepositAmount < minDeposit)
+        {
+            throw new Exception($"Deposit amount must be at least 30% ({minDeposit:N0} VND)");
+        }
+        
+        decimal remainingBalance = cartSubtotal - req.DepositAmount;
+        if (remainingBalance < 0) remainingBalance = 0;
+
+        var orderCode = $"BOPIS-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+        var orderId = Guid.NewGuid();
+
+        // 3. Create Order Items and Stock Transfers
+        var orderItems = new List<OrderItem>();
+        foreach (var itemReq in req.Items)
+        {
+            // Note: BranchId is currently null for revenue purpose (awaiting admin approval)
+            var orderItem = new OrderItem
+            {
+                Id = Guid.NewGuid(),
+                OrderId = orderId,
+                ListingId = itemReq.ListingId,
+                Quantity = itemReq.Quantity,
+                Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+                    unit_price = itemReq.UnitPrice.ToString("0"), 
+                    subtotal = (itemReq.Quantity * itemReq.UnitPrice).ToString("0") 
+                }))
+            };
+            orderItems.Add(orderItem);
+
+            // Create a pending stock transfer (Sourcing request)
+            var stockTransfer = new StockTransfer
+            {
+                Id = Guid.NewGuid(),
+                TransferCode = $"REQ-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..6].ToUpper()}",
+                ToBranchId = req.PickupBranchId,
+                Quantity = itemReq.Quantity,
+                Status = "requested",
+                LogisticsInfo = JsonDocument.Parse(JsonSerializer.Serialize(new 
+                {
+                    order_id = orderId,
+                    order_code = orderCode,
+                    listing_id = itemReq.ListingId
+                })),
+                CreatedAt = DateTime.UtcNow
+            };
+            _context.StockTransfers.Add(stockTransfer);
+        }
+
+        // 4. Create Order Header
+        var order = new OrderHeader
+        {
+            Id = orderId,
+            OrderCode = orderCode,
+            TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+                order_type = "offline", 
+                fulfillment_method = "bopis_transfer" 
+            })),
+            Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+                subtotal = cartSubtotal.ToString("0"), 
+                discount = "0", 
+                tax = "0", 
+                shipping = "0",
+                total = cartSubtotal.ToString("0"),
+                amount_paid = req.DepositAmount.ToString("0"),
+                remaining_balance = remainingBalance.ToString("0")
+            })),
+            Status = "deposit_paid", 
+            DeliveryAddress = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+                pickup_branch_id = req.PickupBranchId,
+                recipient_name = req.CustomerName,
+                phone = req.CustomerPhone
+            })),
+            Notes = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+                payment_method = req.PaymentMethod,
+                sourcing_required = true
+            })),
+            CreatedAt = DateTime.UtcNow,
+            OrderItems = orderItems
+        };
+
+        _context.OrderHeaders.Add(order);
+        await _context.SaveChangesAsync(ct);
+
+        return CreateOrderHandler.MapToResponse(order);
+    }
+}

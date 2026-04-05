@@ -136,7 +136,13 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
     {
-        if (cmd.Webhook.Data == null) return false;
+        // When setting up the webhook in the PayOS dashboard, PayOS sends a verification webhook with Data = null.
+        // We MUST return true for the webhook setup to succeed.
+        if (cmd.Webhook.Data == null) 
+        {
+            _logger.LogInformation("Received PayOS webhook verification/test request. Responding success.");
+            return true;
+        }
         
         // Serialize the data back to JSON string for signature verification
         var dataString = JsonSerializer.Serialize(cmd.Webhook.Data);
@@ -158,10 +164,35 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         });
         if (payment == null) return false;
 
+        List<Guid> orderIdsList = new();
+        if (payment.Details != null && payment.Details.RootElement.TryGetProperty("order_ids", out var originalOrderIdsJson))
+        {
+            if (originalOrderIdsJson.ValueKind == JsonValueKind.Array)
+            {
+                orderIdsList = originalOrderIdsJson.EnumerateArray().Select(e => e.GetGuid()).ToList();
+            }
+            else if (originalOrderIdsJson.ValueKind == JsonValueKind.String)
+            {
+                var str = originalOrderIdsJson.GetString();
+                if (!string.IsNullOrEmpty(str))
+                {
+                    var parsed = JsonDocument.Parse(str);
+                    orderIdsList = parsed.RootElement.EnumerateArray().Select(e => e.GetGuid()).ToList();
+                }
+            }
+        }
+
         var details = new Dictionary<string, object?>();
         if (payment.Details != null)
+        {
             foreach (var prop in payment.Details.RootElement.EnumerateObject())
-                details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+            {
+                if (prop.Name == "order_ids")
+                    details[prop.Name] = orderIdsList;
+                else
+                    details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+            }
+        }
         
         var isSuccess = cmd.Webhook.Code == "00";
         details["status"] = isSuccess ? "paid" : "failed";
@@ -169,14 +200,12 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
         if (isSuccess)
         {
-            var orderIdsJson = payment.Details?.RootElement.GetProperty("order_ids");
-            if (orderIdsJson.HasValue && orderIdsJson.Value.ValueKind == JsonValueKind.Array)
+            if (orderIdsList.Any())
             {
-                var orderIds = orderIdsJson.Value.EnumerateArray().Select(e => e.GetGuid()).ToList();
                 var orders = await _context.OrderHeaders
                     .Include(o => o.User)
                     .Include(o => o.OrderItems)
-                    .Where(o => orderIds.Contains(o.Id))
+                    .Where(o => orderIdsList.Contains(o.Id))
                     .ToListAsync(ct);
 
                 foreach (var order in orders)
@@ -228,13 +257,11 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         }
         else
         {
-            var orderIdsJson = payment.Details?.RootElement.GetProperty("order_ids");
-            if (orderIdsJson.HasValue && orderIdsJson.Value.ValueKind == JsonValueKind.Array)
+            if (orderIdsList.Any())
             {
-                var orderIds = orderIdsJson.Value.EnumerateArray().Select(e => e.GetGuid()).ToList();
                 var orders = await _context.OrderHeaders
                     .Include(o => o.OrderItems)
-                    .Where(o => orderIds.Contains(o.Id))
+                    .Where(o => orderIdsList.Contains(o.Id))
                     .ToListAsync(ct);
 
                 foreach (var order in orders)
@@ -344,19 +371,39 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
             var info = await _payOS.GetPaymentInfoAsync(code, ct);
             if (info == null) return false;
 
-            if (info.Status == "PAID" || info.Status == "00")
+            _logger.LogInformation("PayOS sync for order {OrderId}: PayOS status = '{Status}'", request.OrderId, info.Status);
+
+            var payosStatus = info.Status?.Trim().ToUpperInvariant();
+            if (payosStatus == "PAID" || payosStatus == "00" || payosStatus == "SUCCESS")
             {
+                // Read order_ids BEFORE overwriting payment.Details
+                var originalOrderIdsJson = payment.Details.RootElement.GetProperty("order_ids");
+                List<Guid> orderIds;
+                if (originalOrderIdsJson.ValueKind == JsonValueKind.Array)
+                {
+                    orderIds = originalOrderIdsJson.EnumerateArray().Select(e => e.GetGuid()).ToList();
+                }
+                else
+                {
+                    // Fallback: might be stored as a string representation of an array
+                    var parsed = JsonDocument.Parse(originalOrderIdsJson.GetString()!);
+                    orderIds = parsed.RootElement.EnumerateArray().Select(e => e.GetGuid()).ToList();
+                }
+
                 var details = new Dictionary<string, object?>();
                 foreach (var prop in payment.Details.RootElement.EnumerateObject())
-                    details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+                {
+                    if (prop.Name == "order_ids")
+                        details[prop.Name] = orderIds; // preserve as real array
+                    else
+                        details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+                }
                 
                 if (details["status"]?.ToString() == "paid") return true; // already synced
 
                 details["status"] = "paid";
                 payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
 
-                var orderIdsJson = payment.Details.RootElement.GetProperty("order_ids");
-                var orderIds = orderIdsJson.EnumerateArray().Select(e => e.GetGuid()).ToList();
                 var orders = await _context.OrderHeaders
                     .Include(o => o.OrderItems)
                     .Where(o => orderIds.Contains(o.Id))
@@ -376,6 +423,10 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                 
                 await _context.SaveChangesAsync(ct);
                 return true;
+            }
+            else
+            {
+                _logger.LogWarning("PayOS sync: payment not yet paid. Status = '{Status}' for order {OrderId}", info.Status, request.OrderId);
             }
         }
         return false;

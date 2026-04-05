@@ -19,7 +19,5 @@ public class HandlePayOSWebhookCommandValidator : AbstractValidator<HandlePayOSW
     public HandlePayOSWebhookCommandValidator()
     {
         RuleFor(x => x.Webhook).NotNull();
-        RuleFor(x => x.Webhook.Signature).NotEmpty().WithMessage("Webhook signature is missing");
-        RuleFor(x => x.Webhook.Data).NotNull().WithMessage("Webhook payload data is missing");
     }
 }
