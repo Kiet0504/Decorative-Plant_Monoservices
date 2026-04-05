@@ -14,12 +14,12 @@ using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
 
 // Load environment variables from .env file (if it exists)
-// This should be done before any configuration is read
+// TraversePath allows it to look up the directory tree to find the .env file in the root folder
 try
 {
-    Env.Load();
+    Env.TraversePath().Load();
 }
-catch (FileNotFoundException)
+catch (Exception)
 {
     // .env file is optional - environment variables can be set directly
     Console.WriteLine("Warning: .env file not found. Using environment variables or appsettings.json.");

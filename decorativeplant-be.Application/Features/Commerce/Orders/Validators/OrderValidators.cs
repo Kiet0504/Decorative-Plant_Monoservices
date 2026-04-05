@@ -53,3 +53,27 @@ public class UpdateOrderStatusCommandValidator : AbstractValidator<UpdateOrderSt
         RuleFor(x => x.Request.Status).NotEmpty().WithMessage("Status is required.");
     }
 }
+
+public class CreateOfflineBopisOrderValidator : AbstractValidator<CreateOfflineBopisOrderCommand>
+{
+    public CreateOfflineBopisOrderValidator()
+    {
+        RuleFor(x => x.BrandManagerId).NotEmpty();
+        RuleFor(x => x.Request.PickupBranchId).NotEmpty();
+        RuleFor(x => x.Request.CustomerName).NotEmpty();
+        RuleFor(x => x.Request.CustomerPhone).NotEmpty();
+        RuleFor(x => x.Request.DepositAmount).GreaterThanOrEqualTo(0);
+        RuleFor(x => x.Request.Items).NotEmpty().WithMessage("Order must contain at least one item.");
+        RuleForEach(x => x.Request.Items).SetValidator(new CreateOfflineBopisItemRequestValidator());
+    }
+}
+
+public class CreateOfflineBopisItemRequestValidator : AbstractValidator<CreateOfflineBopisItemRequest>
+{
+    public CreateOfflineBopisItemRequestValidator()
+    {
+        RuleFor(i => i.ListingId).NotEmpty();
+        RuleFor(i => i.Quantity).GreaterThan(0).WithMessage("Item quantity must be at least 1.");
+        RuleFor(i => i.UnitPrice).GreaterThanOrEqualTo(0);
+    }
+}

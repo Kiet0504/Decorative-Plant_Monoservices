@@ -21,3 +21,9 @@ public class CancelOrderCommand : IRequest<OrderResponse>
     public Guid? UserId { get; set; }
     public CancelOrderRequest Request { get; set; } = null!;
 }
+
+public class CreateOfflineBopisOrderCommand : IRequest<OrderResponse>
+{
+    public Guid BrandManagerId { get; set; }
+    public CreateOfflineBopisRequest Request { get; set; } = null!;
+}
