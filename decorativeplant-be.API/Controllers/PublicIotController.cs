@@ -38,10 +38,10 @@ public class PublicIotController : BaseController
         [FromQuery] string token)
     {
         var device = await _context.IotDevices
-            .FirstOrDefaultAsync(d => d.DeviceId == deviceId);
+            .FirstOrDefaultAsync(d => d.Id == deviceId);
 
         if (device == null)
-            return NotFound(new ApiResponse<string>(false, "Device not found"));
+            return NotFound(ApiResponse<string>.ErrorResponse("Device not found"));
 
         // Validate Token: SHA256(deviceId + action + secretKey)
         var secretKey = _configuration["ApiSettings:SecretKey"] ?? "default_secret";
@@ -52,7 +52,7 @@ public class PublicIotController : BaseController
             var computedToken = BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
 
             if (token != computedToken)
-                return Unauthorized(new ApiResponse<string>(false, "Invalid or expired token"));
+                return Unauthorized(ApiResponse<string>.ErrorResponse("Invalid or expired token"));
         }
 
         // Execute Action
@@ -60,9 +60,9 @@ public class PublicIotController : BaseController
         {
             // Send MQTT command to the device
             await _mqttService.PublishCommandAsync(device.SecretKey, "water_now", new { duration = 30 }, default);
-            return Ok(new ApiResponse<string>(true, "Command 'Water Now' sent to device successfully.", "Success"));
+            return Ok(ApiResponse<string>.SuccessResponse("Success", "Command 'Water Now' sent to device successfully."));
         }
 
-        return BadRequest(new ApiResponse<string>(false, "Unknown action"));
+        return BadRequest(ApiResponse<string>.ErrorResponse("Unknown action"));
     }
 }

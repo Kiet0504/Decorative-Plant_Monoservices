@@ -12,7 +12,6 @@ DEVICE_SECRET = config.env.get("DEVICE_SECRET", "")
 RELAY_PUMP = Pin(18, Pin.OUT)
 
 # CAU HINH MUC TIN HIEU (High Level Trigger: 1 = ON, 0 = OFF)
-# Thay doi neu dung Relay Low Level Trigger: ON=0, OFF=1
 LEVEL_ON  = 1
 LEVEL_OFF = 0
 
@@ -30,7 +29,7 @@ class HardwareActions:
         print("[Action] All outputs forced OFF.")
 
     @staticmethod
-    def execute(action_name, action_value, params=None):
+    def execute(action_name, action_value, params=None, mqtt_client=None):
         global _is_watering
         """
         Supports:
@@ -45,7 +44,7 @@ class HardwareActions:
         success = False
         msg = ""
         try:
-            # 1. Determine the effective duration and ON/OFF status
+            # Normalize action_value
             if isinstance(action_value, str):
                 try:
                     action_value = float(action_value)
@@ -65,9 +64,10 @@ class HardwareActions:
                 except:
                     pass
             
+            # Neu nhan qua "value" ma lon hon 1 thi mac dinh do la duration (giay)
             if action_name in ["water_pump", "turn_on_pump", "water_now"]:
                 if isinstance(action_value, (int, float)) and action_value > 1:
-                    duration = action_value / 10 if action_value > 20 else action_value
+                    duration = action_value / 10 if action_value > 30 else action_value
             
             if duration > 0:
                 is_on = True
@@ -81,16 +81,23 @@ class HardwareActions:
                 _is_watering = True
                 RELAY_PUMP.value(LEVEL_ON) 
                 success = True
-                msg = "Pump turned ON"
+                msg = "Pump turned ON for {}s".format(duration)
                 
-                if duration > 0:
-                    msg += " for {}s".format(duration)
-                    print("[Action] Waiting {}s...".format(duration))
-                    time.sleep(duration)
-                    RELAY_PUMP.value(LEVEL_OFF) 
-                    _is_watering = False
-                    msg += " and then AUTO-OFF"
-                    print("[Action] Pump AUTO-OFF.")
+                # Non-blocking loop for duration
+                print("[Action] Waiting {}s...".format(duration))
+                start_wait = time.time()
+                while (time.time() - start_wait) < duration:
+                    if mqtt_client:
+                        try:
+                            mqtt_client.check_msg()
+                        except:
+                            pass
+                    time.sleep(0.5)
+                
+                RELAY_PUMP.value(LEVEL_OFF) 
+                _is_watering = False
+                msg += " and then AUTO-OFF"
+                print("[Action] Pump AUTO-OFF.")
                 
             elif action_name == "turn_off_pump" or (action_name == "water_pump" and is_off):
                 RELAY_PUMP.value(LEVEL_OFF) 
@@ -168,9 +175,8 @@ def _load_cooldown_data():
         with open(COOLDOWN_FILE, "r") as f:
             data = ujson.loads(f.read())
             if isinstance(data, dict):
-                for k, v in data.items():
-                    last_run_execution[k] = v
-                print("[Cooldown] Da tai thong tin lan vung cuoi tu flash.")
+                last_run_execution = data
+                print("[Cooldown] Da tai thong tin lan vung cuoi tu flash ({} rules).".format(len(last_run_execution)))
     except Exception as e:
         print("[Cooldown] Loi khi doc file flash:", e)
 
@@ -180,11 +186,19 @@ def _save_cooldown_data(rule_id, timestamp):
         last_run_execution[rule_id] = timestamp
         with open(COOLDOWN_FILE, "w") as f:
             f.write(ujson.dumps(last_run_execution))
+        # Micropython requires flush usually or just close (which with open does)
     except Exception as e:
         print("[Cooldown] Loi khi ghi file flash:", e)
 
 _load_cooldown_data()
 DEFAULT_COOLDOWN = 600 
+
+def is_time_synced():
+    """Kiem tra xem gio da duoc dong bo (NTP) chua.
+    MicroPython mac dinh bat dau tu nam 2000.
+    """
+    t = time.localtime()
+    return t[0] >= 2024
 
 def check_schedule(rule_id, schedule_dict):
     if not schedule_dict:
@@ -192,6 +206,10 @@ def check_schedule(rule_id, schedule_dict):
 
     if schedule_dict.get("type") == "always":
         return True, False
+
+    # Neu lich trinh can gio dung, ma chua sync NTP thi khong chay
+    if not is_time_synced():
+        return False, True
 
     target_time = schedule_dict.get("time")
     if not target_time:
@@ -202,7 +220,7 @@ def check_schedule(rule_id, schedule_dict):
     if not target_time:
         return True, False
 
-    t = time.localtime(time.time() + 25200) 
+    t = time.localtime(time.time() + 25200) # GMT+7
     curr_hour, curr_min = t[3], t[4]
     curr_date_str = "{}-{}-{}".format(t[0], t[1], t[2]) 
 
@@ -246,10 +264,13 @@ def _check_single_condition(r, sensor_data):
         except:
             pass
 
-    print("    [Check] {} (v={}) {} (t={}) -> {}".format(comp, current_val, op, val, res))
     return res
 
-def evaluate_and_run(sensor_data, active_rules):
+def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
+    if not is_time_synced():
+        print("[Engine] Dang cho dong bo gio (NTP)... Automation tam dung.")
+        return
+
     print("[Engine] Bat dau kiem tra {} rules...".format(len(active_rules)))
     for rule in active_rules:
         rule_name = rule.get('name', 'Unknown')
@@ -262,11 +283,12 @@ def evaluate_and_run(sensor_data, active_rules):
         if not should_run_time:
             continue
             
+        # Neu la Rule khong co lich (chay bang sensor), kiem tra cooldown
         if not is_scheduled:
             now = time.time()
             if rule_id in last_run_execution:
                 elapsed = now - last_run_execution[rule_id]
-                if elapsed < DEFAULT_COOLDOWN:
+                if 0 <= elapsed < DEFAULT_COOLDOWN:
                     print("  -> Rule [{}] dang trong thoi gian nghi (con {}s)...".format(rule_name, int(DEFAULT_COOLDOWN - elapsed)))
                     if "water" in ujson.dumps(actions) or "pump" in ujson.dumps(actions):
                         HardwareActions.all_off()
@@ -282,8 +304,6 @@ def evaluate_and_run(sensor_data, active_rules):
         elif isinstance(conditions, dict) and "rules" in conditions:
             rules_list = conditions["rules"]
 
-        print("  -> Dang xet Rule: '{}' (Logic={})".format(rule_name, logic))
-        
         match = (logic == "and")
         if not rules_list:
             match = True
@@ -301,8 +321,7 @@ def evaluate_and_run(sensor_data, active_rules):
                         match = False
                         break
                 
-        print("  => Result: match={}".format(match))
-
+        # Final safety check
         is_valid = False
         if is_scheduled and match:
             is_valid = True
@@ -310,11 +329,12 @@ def evaluate_and_run(sensor_data, active_rules):
             is_valid = True
         else:
             is_valid = False
+            # Neu khong match ma la rule pump, dam bao tat pin
             if not is_scheduled and ("water_pump" in ujson.dumps(actions) or "water_now" in ujson.dumps(actions)):
                 HardwareActions.all_off() 
             
         if is_valid and actions:
-            print("[Automation] Rule [{}] triggered!".format(rule.get('name', 'Unknown')))
+            print("[Automation] Rule [{}] triggered!".format(rule_name))
             
             action_list = []
             if isinstance(actions, list):
@@ -330,12 +350,12 @@ def evaluate_and_run(sensor_data, active_rules):
                     val = a.get("value") or cmd
                     
                     _save_cooldown_data(rule_id, time.time())
-                    succ, msg = HardwareActions.execute(comp, val, params)
+                    succ, msg = HardwareActions.execute(comp, val, params, mqtt_client)
                     send_execution_log(rule_id, comp, succ, msg)
             else:
                 for action_key, action_val in actions.items():
                     _save_cooldown_data(rule_id, time.time())
-                    succ, msg = HardwareActions.execute(action_key, action_val)
+                    succ, msg = HardwareActions.execute(action_key, action_val, None, mqtt_client)
                     send_execution_log(rule_id, action_key, succ, msg)
                 
             time.sleep(1)

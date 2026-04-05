@@ -202,7 +202,7 @@ while True:
 
     # 4. Kiem tra cac tin hieu tu Automation
     if active_rules and sensor_data:
-        automation.evaluate_and_run(sensor_data, active_rules)
+        automation.evaluate_and_run(sensor_data, active_rules, mqtt_client)
 
     print("  -> Dang cho vuot {}s (MQTT san sang nhan lenh realtime)...".format(SEND_INTERVAL))
     
