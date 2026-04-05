@@ -157,20 +157,20 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         var wd = cmd.Webhook.Data;
         if (wd.Amount.HasValue) dict.Add("amount", wd.Amount.Value.ToString());
         if (wd.OrderCode.HasValue) dict.Add("orderCode", wd.OrderCode.Value.ToString());
-        if (!string.IsNullOrEmpty(wd.AccountNumber)) dict.Add("accountNumber", wd.AccountNumber);
-        if (!string.IsNullOrEmpty(wd.Code)) dict.Add("code", wd.Code);
-        if (!string.IsNullOrEmpty(wd.CounterAccountBankId)) dict.Add("counterAccountBankId", wd.CounterAccountBankId);
-        if (!string.IsNullOrEmpty(wd.CounterAccountBankName)) dict.Add("counterAccountBankName", wd.CounterAccountBankName);
-        if (!string.IsNullOrEmpty(wd.CounterAccountName)) dict.Add("counterAccountName", wd.CounterAccountName);
-        if (!string.IsNullOrEmpty(wd.CounterAccountNumber)) dict.Add("counterAccountNumber", wd.CounterAccountNumber);
-        if (!string.IsNullOrEmpty(wd.Currency)) dict.Add("currency", wd.Currency);
-        if (!string.IsNullOrEmpty(wd.Desc)) dict.Add("desc", wd.Desc);
-        if (!string.IsNullOrEmpty(wd.Description)) dict.Add("description", wd.Description);
-        if (!string.IsNullOrEmpty(wd.PaymentLinkId)) dict.Add("paymentLinkId", wd.PaymentLinkId);
-        if (!string.IsNullOrEmpty(wd.Reference)) dict.Add("reference", wd.Reference);
-        if (!string.IsNullOrEmpty(wd.TransactionDateTime)) dict.Add("transactionDateTime", wd.TransactionDateTime);
-        if (!string.IsNullOrEmpty(wd.VirtualAccountName)) dict.Add("virtualAccountName", wd.VirtualAccountName);
-        if (!string.IsNullOrEmpty(wd.VirtualAccountNumber)) dict.Add("virtualAccountNumber", wd.VirtualAccountNumber);
+        if (wd.AccountNumber != null) dict.Add("accountNumber", wd.AccountNumber);
+        if (wd.Code != null) dict.Add("code", wd.Code);
+        if (wd.CounterAccountBankId != null) dict.Add("counterAccountBankId", wd.CounterAccountBankId);
+        if (wd.CounterAccountBankName != null) dict.Add("counterAccountBankName", wd.CounterAccountBankName);
+        if (wd.CounterAccountName != null) dict.Add("counterAccountName", wd.CounterAccountName);
+        if (wd.CounterAccountNumber != null) dict.Add("counterAccountNumber", wd.CounterAccountNumber);
+        if (wd.Currency != null) dict.Add("currency", wd.Currency);
+        if (wd.Desc != null) dict.Add("desc", wd.Desc);
+        if (wd.Description != null) dict.Add("description", wd.Description);
+        if (wd.PaymentLinkId != null) dict.Add("paymentLinkId", wd.PaymentLinkId);
+        if (wd.Reference != null) dict.Add("reference", wd.Reference);
+        if (wd.TransactionDateTime != null) dict.Add("transactionDateTime", wd.TransactionDateTime);
+        if (wd.VirtualAccountName != null) dict.Add("virtualAccountName", wd.VirtualAccountName);
+        if (wd.VirtualAccountNumber != null) dict.Add("virtualAccountNumber", wd.VirtualAccountNumber);
 
         var dataString = string.Join("&", dict.Select(kvp => $"{kvp.Key}={kvp.Value}"));
 
