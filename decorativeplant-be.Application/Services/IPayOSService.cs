@@ -28,9 +28,9 @@ public interface IPayOSService
     Task<bool> CancelPaymentLinkAsync(long orderCode, string? reason = null, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Verifies the webhook signature from PayOS.
+    /// Verifies the webhook signature from PayOS using the raw JSON body.
     /// </summary>
-    bool VerifyWebhookSignature(string data, string signature);
+    bool VerifyWebhookSignature(string rawJsonBody);
 }
 
 public class PayOSItem
