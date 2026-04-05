@@ -15,9 +15,20 @@ public static class PlantBatchMapper
     public static PlantBatchDto ToDto(PlantBatch entity)
     {
         object? sourceInfo = null;
+        string? speciesName = entity.Taxonomy?.ScientificName;
+
         if (entity.SourceInfo != null)
         {
-            try { sourceInfo = JsonSerializer.Deserialize<object>(entity.SourceInfo.RootElement.GetRawText(), JsonOptions); } catch {}
+            try 
+            { 
+                sourceInfo = JsonSerializer.Deserialize<object>(entity.SourceInfo.RootElement.GetRawText(), JsonOptions);
+                
+                // Fallback for speciesName if Taxonomy is null
+                if (string.IsNullOrEmpty(speciesName) && entity.SourceInfo.RootElement.TryGetProperty("scientific_name", out var prop))
+                {
+                    speciesName = prop.GetString();
+                }
+            } catch {}
         }
 
         object? specs = null;
@@ -34,7 +45,7 @@ public static class PlantBatchMapper
             ParentBatchCode = entity.ParentBatch?.BatchCode,
             BranchId = entity.BranchId,
             TaxonomyId = entity.TaxonomyId,
-            SpeciesName = entity.Taxonomy?.ScientificName, // Or common name if available/preferred
+            SpeciesName = speciesName,
             SupplierId = entity.SupplierId,
             SupplierName = entity.Supplier?.Name,
             SourceInfo = sourceInfo,
@@ -47,12 +58,24 @@ public static class PlantBatchMapper
 
     public static PlantBatchSummaryDto ToSummaryDto(PlantBatch entity)
     {
+        string? speciesName = entity.Taxonomy?.ScientificName;
+
+        if (string.IsNullOrEmpty(speciesName) && entity.SourceInfo != null)
+        {
+            if (entity.SourceInfo.RootElement.TryGetProperty("scientific_name", out var prop))
+            {
+                speciesName = prop.GetString();
+            }
+        }
+
         return new PlantBatchSummaryDto
         {
             Id = entity.Id,
             BatchCode = entity.BatchCode,
-            SpeciesName = entity.Taxonomy?.ScientificName,
+            SpeciesName = speciesName,
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
+            Stage = "Stable", // Default placeholder, will be refined in handler
+            HealthStatus = "Resolved", // Default placeholder, will be refined in handler
             CreatedAt = entity.CreatedAt
         };
     }

@@ -17,7 +17,7 @@ public class PlantBatchController : BaseController
     /// Create a new plant batch (e.g., from supplier or propagation).
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantBatchDto>>> Create([FromBody] CreatePlantBatchCommand command)
     {
         var result = await Mediator.Send(command);
@@ -28,7 +28,7 @@ public class PlantBatchController : BaseController
     /// Update an existing plant batch (specs, source info).
     /// </summary>
     [HttpPut("{id}")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantBatchDto>>> Update(Guid id, [FromBody] UpdatePlantBatchCommand command)
     {
         if (id != command.Id)
@@ -44,7 +44,7 @@ public class PlantBatchController : BaseController
     /// Get details of a plant batch, including lineage.
     /// </summary>
     [HttpGet("{id}")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantBatchDto>>> GetById(Guid id)
     {
         var result = await Mediator.Send(new GetPlantBatchQuery { Id = id });
@@ -55,7 +55,7 @@ public class PlantBatchController : BaseController
     /// List plant batches with filtering.
     /// </summary>
     [HttpGet]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PagedResultDto<PlantBatchSummaryDto>>>> List(
         [FromQuery] string? search = null,
         [FromQuery] Guid? taxonomyId = null,

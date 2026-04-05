@@ -29,6 +29,8 @@ public class PlantBatchSummaryDto
     public string? BatchCode { get; set; }
     public string? SpeciesName { get; set; }
     public int CurrentTotalQuantity { get; set; }
+    public string? Stage { get; set; }
+    public string? HealthStatus { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
 
