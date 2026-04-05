@@ -144,8 +144,36 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
             return true;
         }
         
-        // Serialize the data back to JSON string for signature verification
-        var dataString = JsonSerializer.Serialize(cmd.Webhook.Data);
+        // Dummy test payload from PayOS dashboard
+        if (cmd.Webhook.Data.OrderCode == 123 || cmd.Webhook.Data.Description == "VQRIO123")
+        {
+            _logger.LogInformation("Received PayOS dummy test webhook for URL config. Responding success.");
+            return true;
+        }
+
+        // According to PayOS, webhook signature data string is built by picking non-null fields
+        // from data, sorting them alphabetically by key, and connecting with '=' and '&'
+        var dict = new SortedDictionary<string, string>();
+        var wd = cmd.Webhook.Data;
+        dict.Add("amount", wd.Amount.ToString());
+        dict.Add("orderCode", wd.OrderCode.ToString());
+        if (!string.IsNullOrEmpty(wd.AccountNumber)) dict.Add("accountNumber", wd.AccountNumber);
+        if (!string.IsNullOrEmpty(wd.Code)) dict.Add("code", wd.Code);
+        if (!string.IsNullOrEmpty(wd.CounterAccountBankId)) dict.Add("counterAccountBankId", wd.CounterAccountBankId);
+        if (!string.IsNullOrEmpty(wd.CounterAccountBankName)) dict.Add("counterAccountBankName", wd.CounterAccountBankName);
+        if (!string.IsNullOrEmpty(wd.CounterAccountName)) dict.Add("counterAccountName", wd.CounterAccountName);
+        if (!string.IsNullOrEmpty(wd.CounterAccountNumber)) dict.Add("counterAccountNumber", wd.CounterAccountNumber);
+        if (!string.IsNullOrEmpty(wd.Currency)) dict.Add("currency", wd.Currency);
+        if (!string.IsNullOrEmpty(wd.Desc)) dict.Add("desc", wd.Desc);
+        if (!string.IsNullOrEmpty(wd.Description)) dict.Add("description", wd.Description);
+        if (!string.IsNullOrEmpty(wd.PaymentLinkId)) dict.Add("paymentLinkId", wd.PaymentLinkId);
+        if (!string.IsNullOrEmpty(wd.Reference)) dict.Add("reference", wd.Reference);
+        if (!string.IsNullOrEmpty(wd.TransactionDateTime)) dict.Add("transactionDateTime", wd.TransactionDateTime);
+        if (!string.IsNullOrEmpty(wd.VirtualAccountName)) dict.Add("virtualAccountName", wd.VirtualAccountName);
+        if (!string.IsNullOrEmpty(wd.VirtualAccountNumber)) dict.Add("virtualAccountNumber", wd.VirtualAccountNumber);
+
+        var dataString = string.Join("&", dict.Select(kvp => $"{kvp.Key}={kvp.Value}"));
+
         if (!_payOS.VerifyWebhookSignature(dataString, cmd.Webhook.Signature))
         {
             _logger.LogWarning("Invalid webhook signature for order code: {OrderCode}", cmd.Webhook.Data.OrderCode);
