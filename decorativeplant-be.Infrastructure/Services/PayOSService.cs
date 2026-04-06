@@ -115,16 +115,17 @@ public class PayOSService : IPayOSService
                 return false;
             }
 
-            // Build sorted key=value pairs from data, excluding null values
+            // Build sorted key=value pairs from data
+            // IMPORTANT: PayOS SDK includes null values as empty strings, NOT skip them
             var sortedData = new SortedDictionary<string, string>();
             foreach (var prop in dataElement.EnumerateObject())
             {
-                if (prop.Value.ValueKind == JsonValueKind.Null)
-                    continue; // Skip null values per PayOS spec
-
                 string value;
                 switch (prop.Value.ValueKind)
                 {
+                    case JsonValueKind.Null:
+                        value = ""; // PayOS treats null as empty string in signature
+                        break;
                     case JsonValueKind.String:
                         value = prop.Value.GetString() ?? "";
                         break;
@@ -147,7 +148,7 @@ public class PayOSService : IPayOSService
 
             var dataString = string.Join("&", sortedData.Select(kvp => $"{kvp.Key}={kvp.Value}"));
 
-            _logger.LogDebug("PayOS webhook signature data string: {DataString}", dataString);
+            _logger.LogInformation("PayOS webhook signature data string: {DataString}", dataString);
 
             // Compute HMAC-SHA256
             using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_checksumKey));

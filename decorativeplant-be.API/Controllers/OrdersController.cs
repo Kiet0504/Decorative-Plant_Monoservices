@@ -44,6 +44,30 @@ public class OrdersController : BaseController
         return Ok(ApiResponse<ShippingFeeResponse>.SuccessResponse(result));
     }
 
+    [HttpGet("ghn/provinces")]
+    [Authorize]
+    public async Task<IActionResult> GetProvinces([FromServices] decorativeplant_be.Application.Common.Interfaces.IShippingService shipping)
+    {
+        var result = await shipping.GetProvincesAsync();
+        return Ok(ApiResponse<List<GhnProvince>>.SuccessResponse(result));
+    }
+
+    [HttpGet("ghn/districts")]
+    [Authorize]
+    public async Task<IActionResult> GetDistricts([FromQuery] int provinceId, [FromServices] decorativeplant_be.Application.Common.Interfaces.IShippingService shipping)
+    {
+        var result = await shipping.GetDistrictsAsync(provinceId);
+        return Ok(ApiResponse<List<GhnDistrict>>.SuccessResponse(result));
+    }
+
+    [HttpGet("ghn/wards")]
+    [Authorize]
+    public async Task<IActionResult> GetWards([FromQuery] int districtId, [FromServices] decorativeplant_be.Application.Common.Interfaces.IShippingService shipping)
+    {
+        var result = await shipping.GetWardsAsync(districtId);
+        return Ok(ApiResponse<List<GhnWard>>.SuccessResponse(result));
+    }
+
     [HttpPost]
     [Authorize]
     public async Task<IActionResult> Create([FromBody] CreateOrderRequest request)

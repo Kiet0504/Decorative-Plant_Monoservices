@@ -37,7 +37,7 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
 
         int totalAmount = 0;
         var payOSItems = new List<PayOSItem>();
-        
+
         // Sum financials and collect items
         foreach (var order in orders)
         {
@@ -54,7 +54,7 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
                     string name = "Product"; int price = 0;
                     if (oi.Snapshots != null) name = oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts) ? ts.GetString() ?? "Product" : "Product";
                     if (oi.Pricing != null) price = (int)decimal.Parse(oi.Pricing.RootElement.TryGetProperty("unit_price", out var up) ? up.GetString() ?? "0" : "0");
-                    
+
                     // PayOS API limits items array size, compress if necessary
                     payOSItems.Add(new PayOSItem { Name = name.Length > 200 ? name[..200] : name, Quantity = oi.Quantity, Price = price });
                 }
@@ -78,14 +78,20 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         // but store ALL order ids in the Details JSON.
         var entity = new PaymentTransaction
         {
-            Id = Guid.NewGuid(), OrderId = firstOrder.Id,
+            Id = Guid.NewGuid(),
+            OrderId = firstOrder.Id,
             TransactionCode = $"PAY-{Guid.NewGuid().ToString()[..8].ToUpper()}",
             Details = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
-                provider = "payos", method = "bank_transfer", type = "payment",
-                amount = totalAmount.ToString(), status = "pending",
-                external_id = result.PaymentLinkId, checkout_url = result.CheckoutUrl,
-                qr_code = result.QrCode, payos_order_code = payosOrderCode,
+                provider = "payos",
+                method = "bank_transfer",
+                type = "payment",
+                amount = totalAmount.ToString(),
+                status = "pending",
+                external_id = result.PaymentLinkId,
+                checkout_url = result.CheckoutUrl,
+                qr_code = result.QrCode,
+                payos_order_code = payosOrderCode,
                 order_ids = cmd.Request.OrderIds // Crucial: store list of all order ids
             })),
             CreatedAt = DateTime.UtcNow
@@ -122,15 +128,15 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly IShippingService _shippingService;
 
     public HandlePayOSWebhookHandler(
-        IApplicationDbContext context, 
-        IPayOSService payOS, 
-        ILogger<HandlePayOSWebhookHandler> logger, 
+        IApplicationDbContext context,
+        IPayOSService payOS,
+        ILogger<HandlePayOSWebhookHandler> logger,
         IEmailTemplateService emailTemplateService,
         IShippingService shippingService)
-    { 
-        _context = context; 
-        _payOS = payOS; 
-        _logger = logger; 
+    {
+        _context = context;
+        _payOS = payOS;
+        _logger = logger;
         _emailTemplateService = emailTemplateService;
         _shippingService = shippingService;
     }
@@ -139,12 +145,12 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     {
         // When setting up the webhook in the PayOS dashboard, PayOS sends a verification webhook with Data = null.
         // We MUST return true for the webhook setup to succeed.
-        if (cmd.Webhook.Data == null) 
+        if (cmd.Webhook.Data == null)
         {
             _logger.LogInformation("Received PayOS webhook verification/test request. Responding success.");
             return true;
         }
-        
+
         // Dummy test payload from PayOS dashboard
         if (cmd.Webhook.Data.OrderCode == 123 || cmd.Webhook.Data.Description == "VQRIO123")
         {
@@ -159,19 +165,28 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         }
 
         var orderCode = cmd.Webhook.Data.OrderCode ?? 0;
-        
-        // Optimization: Lazily load matching payment
-        var payment = _context.PaymentTransactions.AsEnumerable().FirstOrDefault(p =>
+
+        // PayOS payment links expire in 30 minutes — only scan last 2 hours to avoid full table scan
+        var cutoff = DateTime.UtcNow.AddHours(-2);
+        var recentPayments = await _context.PaymentTransactions
+            .Where(p => p.Details != null && p.CreatedAt >= cutoff)
+            .ToListAsync(ct);
+
+        var payment = recentPayments.FirstOrDefault(p =>
         {
-            if (p.Details == null) return false;
-            if (p.Details.RootElement.TryGetProperty("payos_order_code", out var poc))
+            if (p.Details!.RootElement.TryGetProperty("payos_order_code", out var poc))
             {
                 if (poc.ValueKind == JsonValueKind.Number && poc.GetInt64() == orderCode) return true;
                 if (poc.ValueKind == JsonValueKind.String && long.TryParse(poc.GetString(), out var strval) && strval == orderCode) return true;
             }
             return false;
         });
-        if (payment == null) return false;
+
+        if (payment == null)
+        {
+            _logger.LogError("PayOS Webhook: No matching payment found for payos_order_code={OrderCode}. Order may remain pending.", orderCode);
+            return false;
+        }
 
         List<Guid> orderIdsList = new();
         if (payment.Details != null && payment.Details.RootElement.TryGetProperty("order_ids", out var originalOrderIdsJson))
@@ -202,7 +217,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                     details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
             }
         }
-        
+
         var isSuccess = cmd.Webhook.Code == "00";
         details["status"] = isSuccess ? "paid" : "failed";
         payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
@@ -219,10 +234,10 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
                 foreach (var order in orders)
                 {
-                    if (order.Status == "pending") 
-                    { 
-                        order.Status = "confirmed"; 
-                        order.ConfirmedAt = DateTime.UtcNow; 
+                    if (order.Status == "pending")
+                    {
+                        order.Status = "confirmed";
+                        order.ConfirmedAt = DateTime.UtcNow;
 
                         // Remove items from user's cart
                         if (order.UserId != Guid.Empty)
@@ -232,7 +247,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                             {
                                 var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
                                 var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
-                                
+
                                 if (purchasedListingIds.Any())
                                 {
                                     cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
@@ -335,7 +350,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                         if (order.Notes != null)
                             foreach (var p in order.Notes.RootElement.EnumerateObject())
                                 notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
-                        
+
                         notes["cancellation_reason"] = $"Payment failed or cancelled via PayOS Webhook (Code: {cmd.Webhook.Code}).";
                         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
 
@@ -406,9 +421,9 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
     private readonly ILogger<SyncPaymentCommandHandler> _logger;
 
     public SyncPaymentCommandHandler(
-        IApplicationDbContext context, 
-        IPayOSService payOS, 
-        IShippingService shippingService, 
+        IApplicationDbContext context,
+        IPayOSService payOS,
+        IShippingService shippingService,
         ILogger<SyncPaymentCommandHandler> logger)
     {
         _context = context;
@@ -459,7 +474,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                     else
                         details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
                 }
-                
+
                 if (details["status"]?.ToString() == "paid") return true; // already synced
 
                 details["status"] = "paid";
@@ -469,7 +484,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                     .Include(o => o.OrderItems)
                     .Where(o => orderIds.Contains(o.Id))
                     .ToListAsync(ct);
-                
+
                 foreach (var order in orders)
                 {
                     if (order.Status == "pending")
@@ -531,7 +546,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                         await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                     }
                 }
-                
+
                 await _context.SaveChangesAsync(ct);
                 return true;
             }
@@ -552,12 +567,31 @@ internal static class GhnOrderHelper
 {
     internal static async Task TryCreateGhnOrderAsync(OrderHeader order, IShippingService shippingService, ILogger logger)
     {
-        if (order.DeliveryAddress == null || order.OrderItems == null || order.OrderItems.Count == 0) return;
+        logger.LogInformation("GHN: Starting shipment creation for Order {OrderCode} (ID: {OrderId})", order.OrderCode, order.Id);
+
+        if (order.DeliveryAddress == null)
+        {
+            logger.LogWarning("GHN: Skipping - DeliveryAddress is null for Order {OrderCode}", order.OrderCode);
+            return;
+        }
+        if (order.OrderItems == null || order.OrderItems.Count == 0)
+        {
+            logger.LogWarning("GHN: Skipping - No OrderItems for Order {OrderCode}", order.OrderCode);
+            return;
+        }
 
         // Skip if shipments already created
-        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("shipments", out _)) return;
+        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("shipments", out _))
+        {
+            logger.LogInformation("GHN: Skipping - Shipments already exist for Order {OrderCode}", order.OrderCode);
+            return;
+        }
         // Backward compat: also skip if old tracking_code exists
-        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("tracking_code", out _)) return;
+        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("tracking_code", out _))
+        {
+            logger.LogInformation("GHN: Skipping - tracking_code already exists for Order {OrderCode}", order.OrderCode);
+            return;
+        }
 
         try
         {
@@ -572,6 +606,9 @@ internal static class GhnOrderHelper
                 ? d.GetInt32() : 1454;
             var toWard = order.DeliveryAddress.RootElement.TryGetProperty("ward_code", out var w)
                 ? (w.GetString() ?? "21211") : "21211";
+
+            logger.LogInformation("GHN: Delivery address for Order {OrderCode}: Name={Name}, Phone={Phone}, Address={Address}, District={District}, Ward={Ward}",
+                order.OrderCode, toName, toPhone, toAddress, toDistrict, toWard);
 
             // Group OrderItems by BranchId (direct column on OrderItem)
             var itemsByBranch = order.OrderItems
@@ -611,6 +648,9 @@ internal static class GhnOrderHelper
                     ? (order.OrderCode ?? order.Id.ToString())
                     : $"{order.OrderCode}-S{shipmentIndex}";
 
+                logger.LogInformation("GHN: Creating shipment #{Index} for Order {OrderCode}, Branch={BranchId}, FromDist={FromDist}, FromWard={FromWard}, Items={ItemCount}, Insurance={Insurance}, ClientOrderCode={ClientOrderCode}",
+                    shipmentIndex, order.OrderCode, branchGroup.Key, shippingService.DefaultFromDistrictId, shippingService.DefaultFromWardCode, branchItems.Count, branchInsurance, clientOrderCode);
+
                 var ghnRes = await shippingService.CreateOrderAsync(new ShippingOrderRequest
                 {
                     ToName = toName,
@@ -618,11 +658,16 @@ internal static class GhnOrderHelper
                     ToAddress = toAddress,
                     ToDistrictId = toDistrict,
                     ToWardCode = toWard,
+                    FromDistrictId = shippingService.DefaultFromDistrictId,
+                    FromWardCode = shippingService.DefaultFromWardCode,
                     Weight = ghnItems.Sum(i => i.Quantity) * 1000,
                     InsuranceValue = branchInsurance,
                     ClientOrderCode = clientOrderCode,
                     Items = ghnItems
                 });
+
+                logger.LogInformation("GHN: Response for Order {OrderCode}: Success={Success}, OrderCode={GhnOrderCode}, Message={Message}",
+                    order.OrderCode, ghnRes.Success, ghnRes.OrderCode, ghnRes.Message);
 
                 if (ghnRes.Success && !string.IsNullOrEmpty(ghnRes.OrderCode))
                 {
@@ -663,6 +708,10 @@ internal static class GhnOrderHelper
                     notesObj["carrier_name"] = "GHN";
                 }
                 order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+            }
+            else
+            {
+                logger.LogWarning("GHN: No shipments were created for Order {OrderCode}!", order.OrderCode);
             }
         }
         catch (Exception ex)

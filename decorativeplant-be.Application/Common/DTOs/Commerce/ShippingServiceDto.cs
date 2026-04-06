@@ -31,6 +31,8 @@ public class ShippingOrderRequest
     public string ToAddress { get; set; } = string.Empty;
     public string ToWardCode { get; set; } = string.Empty;
     public int ToDistrictId { get; set; }
+    public int FromDistrictId { get; set; }
+    public string FromWardCode { get; set; } = string.Empty;
     public int Weight { get; set; } // grams
     public int Length { get; set; } = 20; // cm
     public int Width { get; set; } = 20;
@@ -59,3 +61,9 @@ public class ShippingOrderResponse
     public string? ExpectedDeliveryTime { get; set; }
     public int TotalFee { get; set; }
 }
+
+// ── GHN Location Master Data ──
+
+public record GhnProvince(int ProvinceId, string ProvinceName);
+public record GhnDistrict(int DistrictId, string DistrictName, int ProvinceId);
+public record GhnWard(string WardCode, string WardName, int DistrictId);
