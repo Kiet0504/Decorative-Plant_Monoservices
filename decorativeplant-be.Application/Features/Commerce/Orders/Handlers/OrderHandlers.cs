@@ -189,8 +189,8 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 {
                     var feeResult = await _shippingService.CalculateFeeAsync(new ShippingFeeRequest
                     {
-                        FromDistrictId = 3695, // Default: Thủ Đức, HCM
-                        FromWardCode = "90737",
+                        FromDistrictId = _shippingService.DefaultFromDistrictId,
+                        FromWardCode = _shippingService.DefaultFromWardCode,
                         ToDistrictId = req.DeliveryAddress.DistrictId,
                         ToWardCode = req.DeliveryAddress.WardCode,
                         Weight = orderItems.Sum(oi => oi.Quantity) * 1000,

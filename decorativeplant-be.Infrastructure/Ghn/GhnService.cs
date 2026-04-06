@@ -41,6 +41,9 @@ public class GhnService : IShippingService
         }
     }
 
+    public int DefaultFromDistrictId => _settings.FromDistrictId;
+    public string DefaultFromWardCode => _settings.FromWardCode;
+
     public async Task<ShippingFeeResponse> CalculateFeeAsync(ShippingFeeRequest request)
     {
         if (!_isConfigured)
@@ -111,6 +114,8 @@ public class GhnService : IShippingService
                 to_address = request.ToAddress,
                 to_ward_code = request.ToWardCode,
                 to_district_id = request.ToDistrictId,
+                from_district_id = request.FromDistrictId,
+                from_ward_code = request.FromWardCode,
                 weight = request.Weight,
                 length = request.Length,
                 width = request.Width,
@@ -128,7 +133,7 @@ public class GhnService : IShippingService
             var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/create", content);
             var responseBody = await response.Content.ReadAsStringAsync();
 
-            _logger.LogDebug("GHN create order response: {Response}", responseBody);
+            _logger.LogInformation("GHN create order response: {Response}", responseBody);
 
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
@@ -154,5 +159,78 @@ public class GhnService : IShippingService
             _logger.LogError(ex, "Error creating GHN shipping order.");
             return new ShippingOrderResponse { Success = false, Message = ex.Message };
         }
+    }
+
+    // ── GHN Master Data (Location) ──
+
+    public async Task<List<GhnProvince>> GetProvincesAsync()
+    {
+        if (!_isConfigured) return new List<GhnProvince>();
+        try
+        {
+            var response = await _httpClient.GetAsync("/shiip/public-api/master-data/province");
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var c) && c.GetInt32() == 200 && root.TryGetProperty("data", out var data))
+            {
+                return data.EnumerateArray().Select(p => new GhnProvince(
+                    p.TryGetProperty("ProvinceID", out var id) ? id.GetInt32() : 0,
+                    p.TryGetProperty("ProvinceName", out var name) ? name.GetString() ?? "" : ""
+                )).Where(p => p.ProvinceId > 0).OrderBy(p => p.ProvinceName).ToList();
+            }
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Error fetching GHN provinces"); }
+        return new List<GhnProvince>();
+    }
+
+    public async Task<List<GhnDistrict>> GetDistrictsAsync(int provinceId)
+    {
+        if (!_isConfigured) return new List<GhnDistrict>();
+        try
+        {
+            var content = new StringContent(
+                JsonSerializer.Serialize(new { province_id = provinceId }, JsonOptions),
+                System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/master-data/district", content);
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var c) && c.GetInt32() == 200 && root.TryGetProperty("data", out var data))
+            {
+                return data.EnumerateArray().Select(d => new GhnDistrict(
+                    d.TryGetProperty("DistrictID", out var id) ? id.GetInt32() : 0,
+                    d.TryGetProperty("DistrictName", out var name) ? name.GetString() ?? "" : "",
+                    provinceId
+                )).Where(d => d.DistrictId > 0).OrderBy(d => d.DistrictName).ToList();
+            }
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Error fetching GHN districts for province {ProvinceId}", provinceId); }
+        return new List<GhnDistrict>();
+    }
+
+    public async Task<List<GhnWard>> GetWardsAsync(int districtId)
+    {
+        if (!_isConfigured) return new List<GhnWard>();
+        try
+        {
+            var content = new StringContent(
+                JsonSerializer.Serialize(new { district_id = districtId }, JsonOptions),
+                System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/master-data/ward", content);
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var c) && c.GetInt32() == 200 && root.TryGetProperty("data", out var data))
+            {
+                return data.EnumerateArray().Select(w => new GhnWard(
+                    w.TryGetProperty("WardCode", out var code) ? code.GetString() ?? "" : "",
+                    w.TryGetProperty("WardName", out var name) ? name.GetString() ?? "" : "",
+                    districtId
+                )).Where(w => !string.IsNullOrEmpty(w.WardCode)).OrderBy(w => w.WardName).ToList();
+            }
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Error fetching GHN wards for district {DistrictId}", districtId); }
+        return new List<GhnWard>();
     }
 }
