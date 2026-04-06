@@ -16,7 +16,7 @@ public class HealthIncidentController : BaseController
     /// Report a new health incident (Pest, Disease, etc.).
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> Report([FromBody] CreateHealthIncidentDto dto)
     {
         var command = new ReportHealthIncidentCommand
@@ -38,7 +38,7 @@ public class HealthIncidentController : BaseController
     /// Mark a health incident as resolved.
     /// </summary>
     [HttpPut("{id}/resolve")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> Resolve(Guid id, [FromBody] ResolveHealthIncidentDto dto)
     {
         if (id != dto.Id)
@@ -63,7 +63,7 @@ public class HealthIncidentController : BaseController
     /// Get health history for a specific batch.
     /// </summary>
     [HttpGet("batches/{batchId}/history")] // Note: Route is structured under batches logic but controller handles incidents
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<List<HealthIncidentDto>>>> GetBatchHistory(Guid batchId)
     {
         var query = new GetBatchHealthHistoryQuery { BatchId = batchId };

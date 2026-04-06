@@ -37,10 +37,22 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
         userAccount.RoomTemperatureRange = request.RoomTemperatureRange;
         userAccount.HumidityLevel = request.HumidityLevel;
         userAccount.WateringFrequency = request.WateringFrequency;
-        userAccount.PlacementLocation = request.PlacementLocation;
-        userAccount.SpaceSize = request.SpaceSize;
+
+        // Concatenate multiple selections into comma-separated strings
+        userAccount.PlacementLocation = request.PlacementLocation != null && request.PlacementLocation.Count > 0
+            ? string.Join(", ", request.PlacementLocation)
+            : null;
+
+        userAccount.SpaceSize = request.SpaceSize != null && request.SpaceSize.Count > 0
+            ? string.Join(", ", request.SpaceSize)
+            : null;
+
         userAccount.HasChildrenOrPets = request.HasChildrenOrPets;
-        userAccount.PreferredStyle = request.PreferredStyle;
+
+        userAccount.PreferredStyle = request.PreferredStyle != null && request.PreferredStyle.Count > 0
+            ? string.Join(", ", request.PreferredStyle)
+            : null;
+
         userAccount.BudgetRange = request.BudgetRange;
 
         // Update ExperienceLevel if provided

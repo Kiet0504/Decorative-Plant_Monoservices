@@ -15,6 +15,8 @@ public interface IUserAccountService
 
     Task<UserAccount?> FindByEmailAsync(string email, bool includeInactive = false, CancellationToken cancellationToken = default);
 
+    Task<UserAccount?> FindByPhoneAsync(string phone, bool includeInactive = false, CancellationToken cancellationToken = default);
+
     Task<UserAccount?> GetByIdAsync(Guid userId, CancellationToken cancellationToken = default);
 
     Task<bool> ValidatePasswordAsync(UserAccount userAccount, string password, CancellationToken cancellationToken = default);

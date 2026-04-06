@@ -17,7 +17,7 @@ public class SupplierController : BaseController
     /// Register a new supplier.
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "Admin,Manager")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff,fulfillment_staff")]
     public async Task<ActionResult<ApiResponse<SupplierDto>>> Create([FromBody] CreateSupplierCommand command)
     {
         var result = await Mediator.Send(command);
@@ -28,6 +28,7 @@ public class SupplierController : BaseController
     /// List suppliers with pagination.
     /// </summary>
     [HttpGet]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PagedResultDto<SupplierDto>>>> List(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,

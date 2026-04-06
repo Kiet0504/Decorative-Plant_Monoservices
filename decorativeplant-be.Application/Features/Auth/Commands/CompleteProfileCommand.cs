@@ -11,11 +11,17 @@ public class CompleteProfileCommand : IRequest<bool>
     public string? HumidityLevel { get; set; }
     public string? WateringFrequency { get; set; }
     public string? ExperienceLevel { get; set; }
-    public string? PlacementLocation { get; set; }
-    public string? SpaceSize { get; set; }
+
+    // Changed to List to support multiple selections - will be concatenated as comma-separated string in handler
+    public List<string>? PlacementLocation { get; set; }
+    public List<string>? SpaceSize { get; set; }
+
     public bool? HasChildrenOrPets { get; set; }
     public List<string>? PlantGoals { get; set; }
-    public string? PreferredStyle { get; set; }
+
+    // Changed to List to support multiple selections - will be concatenated as comma-separated string in handler
+    public List<string>? PreferredStyle { get; set; }
+
     public string? BudgetRange { get; set; }
     public string? LocationCity { get; set; }
 }

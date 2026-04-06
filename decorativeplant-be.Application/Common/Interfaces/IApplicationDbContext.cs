@@ -40,6 +40,12 @@ public interface IApplicationDbContext
     DbSet<Company> Companies { get; }
     DbSet<Branch> Branches { get; }
     DbSet<StaffAssignment> StaffAssignments { get; }
+    
+    // Module 4: IoT & Automation
+    DbSet<IotDevice> IotDevices { get; }
+    DbSet<SensorReading> SensorReadings { get; }
+    DbSet<AutomationRule> AutomationRules { get; }
+    DbSet<IotAlert> IotAlerts { get; }
 
     // Module 6: My Garden
     DbSet<GardenPlant> GardenPlants { get; }

@@ -57,6 +57,16 @@ public class RegisterCommandHandler : IRequestHandler<RegisterCommand, TokenResp
             throw new ValidationException("Email is already registered.");
         }
 
+        // Check if phone number already exists (including inactive)
+        if (!string.IsNullOrWhiteSpace(request.PhoneNumber))
+        {
+            var existingPhoneUser = await _userAccountService.FindByPhoneAsync(request.PhoneNumber, true, cancellationToken);
+            if (existingPhoneUser != null)
+            {
+                throw new ValidationException("Phone number is already registered.");
+            }
+        }
+
         var emailVerified = false;
         if (!string.IsNullOrWhiteSpace(request.Otp))
         {

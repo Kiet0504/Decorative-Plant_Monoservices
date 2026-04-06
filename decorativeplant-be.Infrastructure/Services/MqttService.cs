@@ -6,6 +6,7 @@ using MQTTnet;
 using MQTTnet.Client;
 using MQTTnet.Extensions.ManagedClient;
 using System.Text;
+using System.Text.Json;
 
 namespace decorativeplant_be.Infrastructure.Services;
 
@@ -88,5 +89,28 @@ public class MqttService : IHostedService, IMqttService
 
         await _mqttClient.EnqueueAsync(message);
         _logger.LogInformation($"[MQTT] Published updated rules to {topic}");
+    }
+
+    public async Task PublishCommandAsync(string deviceSecret, string command, object payload, CancellationToken cancellationToken)
+    {
+        if (_mqttClient == null || !_mqttClient.IsStarted)
+        {
+            _logger.LogWarning("MQTT Client not started, cannot publish command.");
+            return;
+        }
+
+        var topic = $"decorativeplant/device/{deviceSecret}/commands";
+        var payloadObj = new { command = command, data = payload, timestamp = DateTime.UtcNow };
+        var jsonPayload = JsonSerializer.Serialize(payloadObj);
+
+        var message = new MqttApplicationMessageBuilder()
+            .WithTopic(topic)
+            .WithPayload(jsonPayload)
+            .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+            .WithRetainFlag(false)
+            .Build();
+
+        await _mqttClient.EnqueueAsync(message);
+        _logger.LogInformation($"[MQTT] Published command '{command}' to {topic}");
     }
 }

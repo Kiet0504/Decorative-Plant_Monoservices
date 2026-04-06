@@ -35,16 +35,25 @@ public class CompleteProfileCommandValidator : AbstractValidator<CompleteProfile
             .WithMessage($"WateringFrequency must be one of: {string.Join(", ", ValidWateringFrequency)}");
 
         RuleFor(x => x.PlacementLocation)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidPlacementLocation.Contains(value))
-            .WithMessage($"PlacementLocation must be one of: {string.Join(", ", ValidPlacementLocation)}");
+            .Must(locations => locations == null || locations.All(loc => ValidPlacementLocation.Contains(loc)))
+            .WithMessage($"PlacementLocation must only contain values from: {string.Join(", ", ValidPlacementLocation)}")
+            .Must(locations => locations == null || locations.Count > 0)
+            .When(x => x.PlacementLocation != null)
+            .WithMessage("PlacementLocation must contain at least one value if provided.");
 
         RuleFor(x => x.SpaceSize)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidSpaceSize.Contains(value))
-            .WithMessage($"SpaceSize must be one of: {string.Join(", ", ValidSpaceSize)}");
+            .Must(sizes => sizes == null || sizes.All(size => ValidSpaceSize.Contains(size)))
+            .WithMessage($"SpaceSize must only contain values from: {string.Join(", ", ValidSpaceSize)}")
+            .Must(sizes => sizes == null || sizes.Count > 0)
+            .When(x => x.SpaceSize != null)
+            .WithMessage("SpaceSize must contain at least one value if provided.");
 
         RuleFor(x => x.PreferredStyle)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidPreferredStyle.Contains(value))
-            .WithMessage($"PreferredStyle must be one of: {string.Join(", ", ValidPreferredStyle)}");
+            .Must(styles => styles == null || styles.All(style => ValidPreferredStyle.Contains(style)))
+            .WithMessage($"PreferredStyle must only contain values from: {string.Join(", ", ValidPreferredStyle)}")
+            .Must(styles => styles == null || styles.Count > 0)
+            .When(x => x.PreferredStyle != null)
+            .WithMessage("PreferredStyle must contain at least one value if provided.");
 
         RuleFor(x => x.BudgetRange)
             .Must(value => string.IsNullOrWhiteSpace(value) || ValidBudgetRange.Contains(value))
