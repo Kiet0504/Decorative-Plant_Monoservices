@@ -32,6 +32,16 @@ public class SendRegistrationOtpCommandHandler : IRequestHandler<SendRegistratio
         if (existing != null)
             throw new ValidationException("Email is already registered.");
 
+        // Check if phone number already exists (including inactive)
+        if (!string.IsNullOrWhiteSpace(request.PhoneNumber))
+        {
+            var existingPhoneUser = await _userAccountService.FindByPhoneAsync(request.PhoneNumber, true, cancellationToken);
+            if (existingPhoneUser != null)
+            {
+                throw new ValidationException("Phone number is already registered.");
+            }
+        }
+
         const int expiresInMinutes = 10;
         var code = await _otpService.CreateOtpAsync(email, "Registration", expiresInMinutes, cancellationToken);
 
