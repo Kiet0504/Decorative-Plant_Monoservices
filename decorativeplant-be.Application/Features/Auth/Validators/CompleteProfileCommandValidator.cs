@@ -18,57 +18,83 @@ public class CompleteProfileCommandValidator : AbstractValidator<CompleteProfile
 
     public CompleteProfileCommandValidator()
     {
+        // Onboarding completion requires all fields (aligned with React zod onboardingSchema)
+        RuleFor(x => x.ExperienceLevel)
+            .NotEmpty()
+            .WithMessage("ExperienceLevel is required.")
+            .Must(value => ValidExperienceLevel.Contains(value))
+            .WithMessage($"ExperienceLevel must be one of: {string.Join(", ", ValidExperienceLevel)}");
+
         RuleFor(x => x.SunlightExposure)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidSunlightExposure.Contains(value))
+            .NotEmpty()
+            .WithMessage("SunlightExposure is required.")
+            .Must(value => ValidSunlightExposure.Contains(value))
             .WithMessage($"SunlightExposure must be one of: {string.Join(", ", ValidSunlightExposure)}");
 
         RuleFor(x => x.RoomTemperatureRange)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidRoomTemperatureRange.Contains(value))
+            .NotEmpty()
+            .WithMessage("RoomTemperatureRange is required.")
+            .Must(value => ValidRoomTemperatureRange.Contains(value))
             .WithMessage($"RoomTemperatureRange must be one of: {string.Join(", ", ValidRoomTemperatureRange)}");
 
         RuleFor(x => x.HumidityLevel)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidHumidityLevel.Contains(value))
+            .NotEmpty()
+            .WithMessage("HumidityLevel is required.")
+            .Must(value => ValidHumidityLevel.Contains(value))
             .WithMessage($"HumidityLevel must be one of: {string.Join(", ", ValidHumidityLevel)}");
 
         RuleFor(x => x.WateringFrequency)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidWateringFrequency.Contains(value))
+            .NotEmpty()
+            .WithMessage("WateringFrequency is required.")
+            .Must(value => ValidWateringFrequency.Contains(value))
             .WithMessage($"WateringFrequency must be one of: {string.Join(", ", ValidWateringFrequency)}");
 
         RuleFor(x => x.PlacementLocation)
-            .Must(locations => locations == null || locations.All(loc => ValidPlacementLocation.Contains(loc)))
-            .WithMessage($"PlacementLocation must only contain values from: {string.Join(", ", ValidPlacementLocation)}")
-            .Must(locations => locations == null || locations.Count > 0)
-            .When(x => x.PlacementLocation != null)
-            .WithMessage("PlacementLocation must contain at least one value if provided.");
+            .NotNull()
+            .WithMessage("PlacementLocation is required.")
+            .Must(locations => locations!.Count > 0)
+            .WithMessage("PlacementLocation must contain at least one value.")
+            .Must(locations => locations!.All(loc => ValidPlacementLocation.Contains(loc)))
+            .WithMessage($"PlacementLocation must only contain values from: {string.Join(", ", ValidPlacementLocation)}");
 
         RuleFor(x => x.SpaceSize)
-            .Must(sizes => sizes == null || sizes.All(size => ValidSpaceSize.Contains(size)))
-            .WithMessage($"SpaceSize must only contain values from: {string.Join(", ", ValidSpaceSize)}")
-            .Must(sizes => sizes == null || sizes.Count > 0)
-            .When(x => x.SpaceSize != null)
-            .WithMessage("SpaceSize must contain at least one value if provided.");
+            .NotNull()
+            .WithMessage("SpaceSize is required.")
+            .Must(sizes => sizes!.Count > 0)
+            .WithMessage("SpaceSize must contain at least one value.")
+            .Must(sizes => sizes!.All(size => ValidSpaceSize.Contains(size)))
+            .WithMessage($"SpaceSize must only contain values from: {string.Join(", ", ValidSpaceSize)}");
 
         RuleFor(x => x.PreferredStyle)
-            .Must(styles => styles == null || styles.All(style => ValidPreferredStyle.Contains(style)))
-            .WithMessage($"PreferredStyle must only contain values from: {string.Join(", ", ValidPreferredStyle)}")
-            .Must(styles => styles == null || styles.Count > 0)
-            .When(x => x.PreferredStyle != null)
-            .WithMessage("PreferredStyle must contain at least one value if provided.");
+            .NotNull()
+            .WithMessage("PreferredStyle is required.")
+            .Must(styles => styles!.Count > 0)
+            .WithMessage("PreferredStyle must contain at least one value.")
+            .Must(styles => styles!.All(style => ValidPreferredStyle.Contains(style)))
+            .WithMessage($"PreferredStyle must only contain values from: {string.Join(", ", ValidPreferredStyle)}");
 
         RuleFor(x => x.BudgetRange)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidBudgetRange.Contains(value))
+            .NotEmpty()
+            .WithMessage("BudgetRange is required.")
+            .Must(value => ValidBudgetRange.Contains(value))
             .WithMessage($"BudgetRange must be one of: {string.Join(", ", ValidBudgetRange)}");
 
-        RuleFor(x => x.ExperienceLevel)
-            .Must(value => string.IsNullOrWhiteSpace(value) || ValidExperienceLevel.Contains(value))
-            .WithMessage($"ExperienceLevel must be one of: {string.Join(", ", ValidExperienceLevel)}");
-
         RuleFor(x => x.PlantGoals)
-            .Must(goals => goals == null || goals.All(g => ValidPlantGoals.Contains(g)))
+            .NotNull()
+            .WithMessage("PlantGoals is required.")
+            .Must(goals => goals!.Count > 0)
+            .WithMessage("PlantGoals must contain at least one value.")
+            .Must(goals => goals!.All(g => ValidPlantGoals.Contains(g)))
             .WithMessage($"PlantGoals must only contain values from: {string.Join(", ", ValidPlantGoals)}");
 
         RuleFor(x => x.LocationCity)
+            .NotEmpty()
+            .WithMessage("LocationCity is required.")
             .MaximumLength(100)
             .WithMessage("LocationCity must not exceed 100 characters.");
+
+        RuleFor(x => x.HasChildrenOrPets)
+            .NotNull()
+            .WithMessage("HasChildrenOrPets is required.");
     }
 }
