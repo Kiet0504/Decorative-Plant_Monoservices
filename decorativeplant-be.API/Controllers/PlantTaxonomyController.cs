@@ -17,7 +17,7 @@ public class PlantTaxonomyController : BaseController
     /// Create a new plant taxonomy (species).
     /// </summary>
     [HttpPost]
-    [Authorize(Roles = "Admin,Manager")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantTaxonomyDto>>> Create([FromBody] CreatePlantTaxonomyCommand command)
     {
         var result = await Mediator.Send(command);
@@ -28,7 +28,7 @@ public class PlantTaxonomyController : BaseController
     /// Update an existing plant taxonomy.
     /// </summary>
     [HttpPut("{id}")]
-    [Authorize(Roles = "Admin,Manager")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantTaxonomyDto>>> Update(Guid id, [FromBody] UpdatePlantTaxonomyCommand command)
     {
         if (id != command.Id)
@@ -44,7 +44,7 @@ public class PlantTaxonomyController : BaseController
     /// Delete a plant taxonomy.
     /// </summary>
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin,Manager")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<object>>> Delete(Guid id)
     {
         await Mediator.Send(new DeletePlantTaxonomyCommand { Id = id });
