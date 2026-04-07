@@ -104,6 +104,11 @@ services:
       - S3__PresignedUrlExpiresMinutes=${S3__PresignedUrlExpiresMinutes:-60}
       - AWS_REGION=${AWS_REGION:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+      # Google OAuth — must be listed here or Compose never forwards Infisical/host env into the container
+      - GOOGLE__ClientId=${GOOGLE__ClientId:-}
+      - GOOGLE__ClientSecret=${GOOGLE__ClientSecret:-}
+      - GOOGLE__BaseUrl=${GOOGLE__BaseUrl:-http://localhost:8080/api}
+      - FRONTEND__BaseUrl=${FRONTEND__BaseUrl:-http://localhost:5173}
     ports:
       - "8080:8080"
       - "8081:8081"

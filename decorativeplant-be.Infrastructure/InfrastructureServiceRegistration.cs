@@ -16,6 +16,7 @@ using decorativeplant_be.Infrastructure.Email;
 using decorativeplant_be.Infrastructure.Services;
 using decorativeplant_be.Infrastructure.Ghn;
 using decorativeplant_be.Infrastructure.Storage.S3;
+using decorativeplant_be.Infrastructure.Auth;
 using Amazon.S3;
 using Amazon.Runtime;
 using Amazon;
@@ -66,6 +67,11 @@ public static class InfrastructureServiceRegistration
 
         // Register Analytics Service
         services.AddScoped<IAnalyticsService, AnalyticsService>();
+
+        // Google OAuth / Frontend redirect settings (env-driven; Infisical friendly)
+        services.Configure<GoogleOAuthSettings>(configuration.GetSection(GoogleOAuthSettings.SectionName));
+        services.Configure<FrontendSettings>(configuration.GetSection(FrontendSettings.SectionName));
+        services.AddScoped<GoogleOAuthService>();
 
         // Configure GHN (Giao Hang Nhanh) Settings
         services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));

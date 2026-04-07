@@ -24,7 +24,7 @@ public class UserAccountService : IUserAccountService
 
     public async Task<UserAccount> CreateUserAccountAsync(
         string email,
-        string passwordHash,
+        string? passwordHash,
         string? phone,
         string role,
         string? displayName = null,
