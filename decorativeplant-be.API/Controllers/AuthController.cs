@@ -221,7 +221,7 @@ public class AuthController : BaseController
         var redirectUri = $"{_google.BaseUrl.TrimEnd('/')}/auth/google/callback";
 
         var payload = JsonSerializer.Serialize(new GoogleStatePayload(
-            ReturnTo: string.IsNullOrWhiteSpace(returnTo) ? "/auth/oauth-callback" : returnTo.Trim()));
+            ReturnTo: string.IsNullOrWhiteSpace(returnTo) ? "/oauth/callback" : returnTo.Trim()));
 
         await _cache.SetStringAsync(
             CacheKeys.GoogleState(state),
@@ -234,10 +234,27 @@ public class AuthController : BaseController
     }
 
     [HttpGet("google/callback")]
-    public async Task<IActionResult> GoogleCallback([FromQuery] string? code, [FromQuery] string? state, CancellationToken cancellationToken)
+    public async Task<IActionResult> GoogleCallback(
+        [FromQuery] string? code,
+        [FromQuery] string? state,
+        [FromQuery] string? error,
+        [FromQuery] string? error_description,
+        CancellationToken cancellationToken)
     {
+        // User cancelled or Google returned an OAuth error.
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            var fe = _frontend.BaseUrl.TrimEnd('/');
+            var err = Uri.EscapeDataString(error);
+            var desc = Uri.EscapeDataString(error_description ?? string.Empty);
+            return Redirect($"{fe}/oauth/callback?oauthError={err}&oauthErrorDescription={desc}");
+        }
+
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
-            return BadRequest(ApiResponse<object>.ErrorResponse("Missing code or state.", statusCode: 400));
+        {
+            var fe = _frontend.BaseUrl.TrimEnd('/');
+            return Redirect($"{fe}/oauth/callback?oauthError=missing_code_or_state");
+        }
 
         var stateKey = CacheKeys.GoogleState(state);
         var stateJson = await _cache.GetStringAsync(stateKey, cancellationToken);
