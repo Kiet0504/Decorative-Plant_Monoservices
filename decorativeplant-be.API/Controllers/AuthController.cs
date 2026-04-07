@@ -1,10 +1,16 @@
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Options;
+using System.Security.Claims;
+using System.Text.Json;
 using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Auth.Commands;
+using decorativeplant_be.Application.Services;
+using decorativeplant_be.Infrastructure.Auth;
 
 namespace decorativeplant_be.API.Controllers;
 
@@ -13,10 +19,38 @@ namespace decorativeplant_be.API.Controllers;
 public class AuthController : BaseController
 {
     private readonly IApplicationDbContext _context;
+    private readonly IUserAccountService _userAccountService;
+    private readonly IJwtService _jwtService;
+    private readonly IRefreshTokenService _refreshTokenService;
+    private readonly ISubscriptionService _subscriptionService;
+    private readonly IQuotaService _quotaService;
+    private readonly GoogleOAuthService _googleOAuthService;
+    private readonly IDistributedCache _cache;
+    private readonly GoogleOAuthSettings _google;
+    private readonly FrontendSettings _frontend;
 
-    public AuthController(IApplicationDbContext context)
+    public AuthController(
+        IApplicationDbContext context,
+        IUserAccountService userAccountService,
+        IJwtService jwtService,
+        IRefreshTokenService refreshTokenService,
+        ISubscriptionService subscriptionService,
+        IQuotaService quotaService,
+        GoogleOAuthService googleOAuthService,
+        IDistributedCache cache,
+        IOptions<GoogleOAuthSettings> google,
+        IOptions<FrontendSettings> frontend)
     {
         _context = context;
+        _userAccountService = userAccountService;
+        _jwtService = jwtService;
+        _refreshTokenService = refreshTokenService;
+        _subscriptionService = subscriptionService;
+        _quotaService = quotaService;
+        _googleOAuthService = googleOAuthService;
+        _cache = cache;
+        _google = google.Value;
+        _frontend = frontend.Value;
     }
 
     [HttpPost("register")]
@@ -167,4 +201,168 @@ public class AuthController : BaseController
 
         return Ok(ApiResponse<object>.SuccessResponse(userData, "User profile retrieved successfully."));
     }
+
+    // ==================== Google OAuth (Authorization Code) ====================
+
+    [HttpGet("google/start")]
+    public async Task<IActionResult> GoogleStart([FromQuery] string? returnTo, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_google.ClientId) ||
+            string.IsNullOrWhiteSpace(_google.ClientSecret) ||
+            string.IsNullOrWhiteSpace(_google.BaseUrl) ||
+            string.IsNullOrWhiteSpace(_frontend.BaseUrl))
+        {
+            return BadRequest(ApiResponse<object>.ErrorResponse(
+                "Google OAuth is not configured. Set GOOGLE__ClientId, GOOGLE__ClientSecret, GOOGLE__BaseUrl, and FRONTEND__BaseUrl.",
+                statusCode: 400));
+        }
+
+        var state = Guid.NewGuid().ToString("N");
+        var redirectUri = $"{_google.BaseUrl.TrimEnd('/')}/auth/google/callback";
+
+        var payload = JsonSerializer.Serialize(new GoogleStatePayload(
+            ReturnTo: string.IsNullOrWhiteSpace(returnTo) ? "/auth/oauth-callback" : returnTo.Trim()));
+
+        await _cache.SetStringAsync(
+            CacheKeys.GoogleState(state),
+            payload,
+            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10) },
+            cancellationToken);
+
+        var url = _googleOAuthService.BuildAuthorizeUrl(redirectUri, state);
+        return Redirect(url);
+    }
+
+    [HttpGet("google/callback")]
+    public async Task<IActionResult> GoogleCallback([FromQuery] string? code, [FromQuery] string? state, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
+            return BadRequest(ApiResponse<object>.ErrorResponse("Missing code or state.", statusCode: 400));
+
+        var stateKey = CacheKeys.GoogleState(state);
+        var stateJson = await _cache.GetStringAsync(stateKey, cancellationToken);
+        if (string.IsNullOrWhiteSpace(stateJson))
+            return BadRequest(ApiResponse<object>.ErrorResponse("Invalid or expired state.", statusCode: 400));
+
+        await _cache.RemoveAsync(stateKey, cancellationToken);
+
+        GoogleStatePayload? statePayload;
+        try { statePayload = JsonSerializer.Deserialize<GoogleStatePayload>(stateJson); }
+        catch { statePayload = null; }
+
+        var redirectUri = $"{_google.BaseUrl.TrimEnd('/')}/auth/google/callback";
+        var googleUser = await _googleOAuthService.ExchangeCodeAndVerifyAsync(code, redirectUri, cancellationToken);
+
+        var email = googleUser.Email.Trim();
+        var displayName = string.IsNullOrWhiteSpace(googleUser.Name) ? null : googleUser.Name.Trim();
+
+        var existing = await _userAccountService.FindByEmailAsync(email, includeInactive: true, cancellationToken: cancellationToken);
+
+        Guid userId;
+        string role;
+        string? finalDisplayName;
+
+        if (existing == null)
+        {
+            var created = await _userAccountService.CreateUserAccountAsync(
+                email: email,
+                passwordHash: null,
+                phone: null,
+                role: "customer",
+                displayName: displayName,
+                emailVerified: true,
+                cancellationToken: cancellationToken);
+
+            await _subscriptionService.CreateFreeSubscriptionAsync(created.Id, cancellationToken);
+            await _quotaService.SeedDefaultQuotaForUserAsync(created.Id, "Free", cancellationToken);
+
+            userId = created.Id;
+            role = created.Role;
+            finalDisplayName = created.DisplayName;
+        }
+        else
+        {
+            if (!existing.EmailVerified || !existing.IsActive)
+            {
+                var verified = await _userAccountService.VerifyEmailAsync(existing.Email, cancellationToken);
+                userId = verified.Id;
+                role = verified.Role;
+                finalDisplayName = verified.DisplayName;
+            }
+            else
+            {
+                userId = existing.Id;
+                role = existing.Role;
+                finalDisplayName = existing.DisplayName;
+            }
+        }
+
+        var claims = new List<Claim>
+        {
+            new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+            new Claim(ClaimTypes.Email, email),
+            new Claim(ClaimTypes.Role, role)
+        };
+        if (!string.IsNullOrWhiteSpace(finalDisplayName))
+            claims.Add(new Claim(ClaimTypes.Name, finalDisplayName));
+
+        var accessToken = _jwtService.GenerateAccessToken(claims);
+        var refreshToken = _jwtService.GenerateRefreshToken();
+        var expiration = _jwtService.GetRefreshTokenExpiration() - DateTime.UtcNow;
+        await _refreshTokenService.StoreRefreshTokenAsync(userId.ToString(), refreshToken, expiration);
+
+        var tokenResponse = new TokenResponse
+        {
+            AccessToken = accessToken,
+            RefreshToken = refreshToken,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(30)
+        };
+
+        var exchangeCode = Guid.NewGuid().ToString("N");
+        await _cache.SetStringAsync(
+            CacheKeys.GoogleExchange(exchangeCode),
+            JsonSerializer.Serialize(tokenResponse),
+            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(2) },
+            cancellationToken);
+
+        var returnPath = statePayload?.ReturnTo;
+        if (string.IsNullOrWhiteSpace(returnPath) || !returnPath.StartsWith("/", StringComparison.Ordinal))
+            returnPath = "/auth/oauth-callback";
+
+        var redirectTo = $"{_frontend.BaseUrl.TrimEnd('/')}{returnPath}?exchangeCode={Uri.EscapeDataString(exchangeCode)}";
+        return Redirect(redirectTo);
+    }
+
+    public sealed record GoogleExchangeRequest(string ExchangeCode);
+
+    [HttpPost("google/exchange")]
+    public async Task<ActionResult<ApiResponse<TokenResponse>>> GoogleExchange([FromBody] GoogleExchangeRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.ExchangeCode))
+            return BadRequest(ApiResponse<TokenResponse>.ErrorResponse("ExchangeCode is required.", statusCode: 400));
+
+        var key = CacheKeys.GoogleExchange(request.ExchangeCode.Trim());
+        var json = await _cache.GetStringAsync(key, cancellationToken);
+        if (string.IsNullOrWhiteSpace(json))
+            return Unauthorized(ApiResponse<TokenResponse>.ErrorResponse("Invalid or expired exchange code.", statusCode: 401));
+
+        await _cache.RemoveAsync(key, cancellationToken);
+
+        TokenResponse? tokens;
+        try { tokens = JsonSerializer.Deserialize<TokenResponse>(json); }
+        catch { tokens = null; }
+
+        if (tokens == null || string.IsNullOrWhiteSpace(tokens.AccessToken) || string.IsNullOrWhiteSpace(tokens.RefreshToken))
+            return Unauthorized(ApiResponse<TokenResponse>.ErrorResponse("Invalid exchange payload.", statusCode: 401));
+
+        return Ok(ApiResponse<TokenResponse>.SuccessResponse(tokens, "Google sign-in completed."));
+    }
+
+    private static class CacheKeys
+    {
+        public static string GoogleState(string state) => $"google_oauth_state:{state}";
+        public static string GoogleExchange(string code) => $"google_oauth_exchange:{code}";
+    }
+
+    private sealed record GoogleStatePayload(string ReturnTo);
 }
