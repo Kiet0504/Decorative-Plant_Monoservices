@@ -161,6 +161,70 @@ public class GhnService : IShippingService
         }
     }
 
+    // ── GHN Tracking ──
+
+    public async Task<GhnTrackingResponse?> TrackOrderAsync(string ghnOrderCode)
+    {
+        if (!_isConfigured) return null;
+        try
+        {
+            var content = new StringContent(
+                JsonSerializer.Serialize(new { order_code = ghnOrderCode }, JsonOptions),
+                System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/detail", content);
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var c) && c.GetInt32() == 200 && root.TryGetProperty("data", out var data))
+            {
+                var result = new GhnTrackingResponse
+                {
+                    GhnOrderCode = ghnOrderCode,
+                    Status = data.TryGetProperty("status", out var s) ? s.GetString() : null,
+                    ExpectedDeliveryTime = data.TryGetProperty("leadtime", out var lt) ? lt.GetString() : null,
+                };
+                if (data.TryGetProperty("log", out var logs) && logs.ValueKind == JsonValueKind.Array)
+                {
+                    result.Logs = logs.EnumerateArray().Select(l => new GhnTrackingLog
+                    {
+                        Status = l.TryGetProperty("status", out var ls) ? ls.GetString() : null,
+                        UpdatedDate = l.TryGetProperty("updated_date", out var ud) ? ud.GetString() : null,
+                    }).ToList();
+                }
+                return result;
+            }
+            var msg = root.TryGetProperty("message", out var m) ? m.GetString() : "Unknown error";
+            _logger.LogWarning("GHN tracking failed for {OrderCode}: {Message}", ghnOrderCode, msg);
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Error tracking GHN order {OrderCode}", ghnOrderCode); }
+        return null;
+    }
+
+    // ── GHN Switch Status (Sandbox/Dev only) ──
+
+    public async Task<bool> SwitchGhnStatusAsync(string ghnOrderCode, string targetStatus)
+    {
+        if (!_isConfigured) return false;
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { order_codes = new[] { ghnOrderCode } }, JsonOptions);
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync($"/shiip/public-api/v2/switch-status/{targetStatus}", content);
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var code) && code.GetInt32() == 200) return true;
+            var msg = root.TryGetProperty("message", out var m) ? m.GetString() : "Unknown error";
+            _logger.LogWarning("GHN switch-status failed for {OrderCode} → {Status}: {Message}", ghnOrderCode, targetStatus, msg);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error switching GHN status for {OrderCode} → {Status}", ghnOrderCode, targetStatus);
+            return false;
+        }
+    }
+
     // ── GHN Master Data (Location) ──
 
     public async Task<List<GhnProvince>> GetProvincesAsync()

@@ -1,8 +1,10 @@
-using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
+using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
 using Microsoft.AspNetCore.RateLimiting;
@@ -17,7 +19,9 @@ public class OrdersController : BaseController
     [Authorize]
     public async Task<IActionResult> GetOrders([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {
-        var result = await Mediator.Send(new GetOrdersQuery { UserId = GetUserId(), BranchId = branchId, Status = status, Page = page, PageSize = pageSize });
+        var isAdmin = User.IsInRole("admin");
+        var userId = isAdmin ? null : GetUserId();
+        var result = await Mediator.Send(new GetOrdersQuery { UserId = userId, BranchId = branchId, Status = status, Page = page, PageSize = pageSize });
         return Ok(ApiResponse<PagedResult<OrderResponse>>.SuccessResponse(result));
     }
 
@@ -66,6 +70,138 @@ public class OrdersController : BaseController
     {
         var result = await shipping.GetWardsAsync(districtId);
         return Ok(ApiResponse<List<GhnWard>>.SuccessResponse(result));
+    }
+
+    [HttpGet("{id:guid}/tracking")]
+    [Authorize]
+    public async Task<IActionResult> GetTracking(
+        Guid id,
+        [FromServices] IApplicationDbContext context,
+        [FromServices] IShippingService shipping)
+    {
+        var order = await context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+
+        var userId = GetUserId();
+        var isAdmin = User.IsInRole("admin");
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager");
+
+        Guid? staffBranchId = null;
+
+        if (!isAdmin)
+        {
+            if (isStaff)
+            {
+                staffBranchId = await context.StaffAssignments
+                    .Where(s => s.StaffId == userId && s.IsPrimary)
+                    .Select(s => (Guid?)s.BranchId)
+                    .FirstOrDefaultAsync();
+
+                var hasItemsFromBranch = staffBranchId.HasValue
+                    && order.OrderItems.Any(oi => oi.BranchId == staffBranchId);
+
+                if (!hasItemsFromBranch) return Forbid();
+            }
+            else
+            {
+                if (order.UserId != userId) return Forbid();
+            }
+        }
+
+        var results = new List<GhnTrackingResponse>();
+
+        if (order.Notes?.RootElement.TryGetProperty("shipments", out var shipments) == true
+            && shipments.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var shipment in shipments.EnumerateArray())
+            {
+                if (!shipment.TryGetProperty("tracking_code", out var tc)) continue;
+                var code = tc.GetString();
+                if (string.IsNullOrEmpty(code)) continue;
+
+                // Staff only sees shipments belonging to their branch
+                if (isStaff)
+                {
+                    var shipmentBranchId = shipment.TryGetProperty("branch_id", out var bid)
+                        ? bid.GetString() : null;
+                    if (shipmentBranchId != staffBranchId?.ToString()) continue;
+                }
+
+                var tracking = await shipping.TrackOrderAsync(code);
+                if (tracking != null)
+                {
+                    tracking.Carrier = shipment.TryGetProperty("carrier", out var c) ? c.GetString() : "GHN";
+                    tracking.BranchId = shipment.TryGetProperty("branch_id", out var b) ? b.GetString() : null;
+                    results.Add(tracking);
+                }
+            }
+        }
+
+        return Ok(ApiResponse<List<GhnTrackingResponse>>.SuccessResponse(results));
+    }
+
+    [HttpPost("{id:guid}/tracking/switch-status")]
+    [Authorize(Roles = "store_staff,branch_manager,admin")]
+    public async Task<IActionResult> SwitchGhnStatus(
+        Guid id,
+        [FromBody] SwitchGhnStatusRequest request,
+        [FromServices] IApplicationDbContext context,
+        [FromServices] IShippingService shipping)
+    {
+        var validStatuses = new HashSet<string> { "picking", "cancel", "storing", "transporting", "sorting", "delivering", "delivered", "return" };
+        if (!validStatuses.Contains(request.TargetStatus))
+            return BadRequest(ApiResponse<object>.ErrorResponse("Invalid target status"));
+
+        var order = await context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+
+        var userId = GetUserId();
+        var isAdmin = User.IsInRole("admin");
+
+        Guid? staffBranchId = null;
+        if (!isAdmin)
+        {
+            staffBranchId = await context.StaffAssignments
+                .Where(s => s.StaffId == userId && s.IsPrimary)
+                .Select(s => (Guid?)s.BranchId)
+                .FirstOrDefaultAsync();
+
+            var hasItemsFromBranch = staffBranchId.HasValue
+                && order.OrderItems.Any(oi => oi.BranchId == staffBranchId);
+            if (!hasItemsFromBranch) return Forbid();
+        }
+
+        if (order.Notes?.RootElement.TryGetProperty("shipments", out var shipments) != true
+            || shipments.ValueKind != JsonValueKind.Array)
+            return BadRequest(ApiResponse<object>.ErrorResponse("No GHN shipments found for this order"));
+
+        var switched = new List<string>();
+        foreach (var shipment in shipments.EnumerateArray())
+        {
+            if (!shipment.TryGetProperty("tracking_code", out var tc)) continue;
+            var code = tc.GetString();
+            if (string.IsNullOrEmpty(code)) continue;
+
+            if (!isAdmin)
+            {
+                var shipmentBranchId = shipment.TryGetProperty("branch_id", out var bid) ? bid.GetString() : null;
+                if (shipmentBranchId != staffBranchId?.ToString()) continue;
+            }
+
+            var ok = await shipping.SwitchGhnStatusAsync(code, request.TargetStatus);
+            if (ok) switched.Add(code);
+        }
+
+        if (switched.Count == 0)
+            return BadRequest(ApiResponse<object>.ErrorResponse("Failed to switch status on GHN"));
+
+        return Ok(ApiResponse<object>.SuccessResponse(new { switched }, $"Switched {switched.Count} shipment(s) to '{request.TargetStatus}'"));
     }
 
     [HttpPost]

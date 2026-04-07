@@ -34,6 +34,11 @@ public class CancelOrderRequest
     public string? CancellationReason { get; set; }
 }
 
+public class SwitchGhnStatusRequest
+{
+    public string TargetStatus { get; set; } = string.Empty;
+}
+
 public class CreateOfflineBopisRequest
 {
     public Guid PickupBranchId { get; set; }
