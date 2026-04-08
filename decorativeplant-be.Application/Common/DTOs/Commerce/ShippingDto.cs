@@ -37,6 +37,23 @@ public class ShippingEventDto
     public string? EventTime { get; set; }
 }
 
+// ── GHN Tracking DTOs ──
+public class GhnTrackingResponse
+{
+    public string? GhnOrderCode { get; set; }
+    public string? Carrier { get; set; }
+    public string? BranchId { get; set; }
+    public string? Status { get; set; }
+    public string? ExpectedDeliveryTime { get; set; }
+    public List<GhnTrackingLog> Logs { get; set; } = new();
+}
+
+public class GhnTrackingLog
+{
+    public string? Status { get; set; }
+    public string? UpdatedDate { get; set; }
+}
+
 // ── ShippingZone DTOs ──
 public class CreateShippingZoneRequest
 {
