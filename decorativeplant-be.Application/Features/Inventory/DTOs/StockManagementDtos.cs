@@ -30,6 +30,9 @@ public class LowStockItemDto
 
     [JsonPropertyName("batchCode")]
     public string BatchCode { get; set; } = string.Empty;
+
+    [JsonPropertyName("taxonomyId")]
+    public Guid? TaxonomyId { get; set; }
 }
 
 public class ProductAvailabilityDto

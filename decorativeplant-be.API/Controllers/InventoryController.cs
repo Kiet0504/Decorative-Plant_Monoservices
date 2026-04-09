@@ -3,7 +3,9 @@ using decorativeplant_be.Application.Common.DTOs.Garden;
 using decorativeplant_be.Application.Features.Inventory.Commands;
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
-using decorativeplant_be.Application.Features.PlantLibrary.DTOs; // For SupplierDto if needed later, but standard DTOs ok
+using decorativeplant_be.Application.Features.PlantLibrary.DTOs;
+using decorativeplant_be.Application.Features.Branch.Queries;
+using decorativeplant_be.Application.Features.Branch.DTOs;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -107,5 +109,15 @@ public class InventoryController : BaseController
         var query = new GetProductAvailabilityQuery { ProductListingId = productListingId };
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<ProductAvailabilityDto>.SuccessResponse(result));
+    }
+
+    /// <summary>
+    /// Get all branches for inventory selection.
+    /// </summary>
+    [HttpGet("branches")]
+    public async Task<ActionResult<ApiResponse<List<BranchDto>>>> GetBranches()
+    {
+        var result = await Mediator.Send(new GetAllBranchesQuery());
+        return Ok(ApiResponse<List<BranchDto>>.SuccessResponse(result));
     }
 }
