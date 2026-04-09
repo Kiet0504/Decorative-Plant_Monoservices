@@ -1,4 +1,5 @@
 using System.Text.Json;
+using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using MediatR;
 
@@ -21,6 +22,25 @@ public class UpdateIotDeviceCommandHandler : IRequestHandler<UpdateIotDeviceComm
         if (device == null)
         {
             return false; // Not Found
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.Device.Name))
+        {
+            var existingDevices = await _iotRepository.GetIotDevicesAsync(cancellationToken);
+            foreach (var d in existingDevices.Where(x => x.Id != request.Id))
+            {
+                if (d.DeviceInfo != null)
+                {
+                    if (d.DeviceInfo.RootElement.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String)
+                    {
+                        var existingName = nameProp.GetString();
+                        if (string.Equals(existingName, request.Device.Name, StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new BadRequestException("Tên thiết bị cảm biến đã tồn tại. Vui lòng chọn một tên khác.");
+                        }
+                    }
+                }
+            }
         }
 
         // Pack Name and Type into DeviceInfo
