@@ -67,6 +67,18 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
             userAccount.LocationCity = request.LocationCity;
         }
 
+        // Update FullName (DisplayName) if provided
+        if (!string.IsNullOrWhiteSpace(request.FullName))
+        {
+            userAccount.DisplayName = request.FullName;
+        }
+
+        // Update Phone if provided
+        if (!string.IsNullOrWhiteSpace(request.Phone))
+        {
+            userAccount.Phone = request.Phone;
+        }
+
         // Convert PlantGoals list to JsonDocument (following the same pattern as Addresses)
         if (request.PlantGoals != null && request.PlantGoals.Count > 0)
         {
