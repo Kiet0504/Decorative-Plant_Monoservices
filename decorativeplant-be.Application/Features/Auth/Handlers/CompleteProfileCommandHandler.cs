@@ -32,28 +32,42 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
             throw new NotFoundException("User account not found.");
         }
 
-        // Update AI consultation profile fields
-        userAccount.SunlightExposure = request.SunlightExposure;
-        userAccount.RoomTemperatureRange = request.RoomTemperatureRange;
-        userAccount.HumidityLevel = request.HumidityLevel;
-        userAccount.WateringFrequency = request.WateringFrequency;
+        // Update AI consultation profile fields only if provided
+        if (!string.IsNullOrWhiteSpace(request.SunlightExposure))
+            userAccount.SunlightExposure = request.SunlightExposure;
+            
+        if (!string.IsNullOrWhiteSpace(request.RoomTemperatureRange))
+            userAccount.RoomTemperatureRange = request.RoomTemperatureRange;
+            
+        if (!string.IsNullOrWhiteSpace(request.HumidityLevel))
+            userAccount.HumidityLevel = request.HumidityLevel;
+            
+        if (!string.IsNullOrWhiteSpace(request.WateringFrequency))
+            userAccount.WateringFrequency = request.WateringFrequency;
 
-        // Concatenate multiple selections into comma-separated strings
-        userAccount.PlacementLocation = request.PlacementLocation != null && request.PlacementLocation.Count > 0
-            ? string.Join(", ", request.PlacementLocation)
-            : null;
+        // Concatenate multiple selections into comma-separated strings only if provided
+        if (request.PlacementLocation != null && request.PlacementLocation.Count > 0)
+        {
+            userAccount.PlacementLocation = string.Join(", ", request.PlacementLocation);
+        }
 
-        userAccount.SpaceSize = request.SpaceSize != null && request.SpaceSize.Count > 0
-            ? string.Join(", ", request.SpaceSize)
-            : null;
+        if (request.SpaceSize != null && request.SpaceSize.Count > 0)
+        {
+            userAccount.SpaceSize = string.Join(", ", request.SpaceSize);
+        }
 
-        userAccount.HasChildrenOrPets = request.HasChildrenOrPets;
+        if (request.HasChildrenOrPets.HasValue)
+        {
+            userAccount.HasChildrenOrPets = request.HasChildrenOrPets.Value;
+        }
 
-        userAccount.PreferredStyle = request.PreferredStyle != null && request.PreferredStyle.Count > 0
-            ? string.Join(", ", request.PreferredStyle)
-            : null;
+        if (request.PreferredStyle != null && request.PreferredStyle.Count > 0)
+        {
+            userAccount.PreferredStyle = string.Join(", ", request.PreferredStyle);
+        }
 
-        userAccount.BudgetRange = request.BudgetRange;
+        if (!string.IsNullOrWhiteSpace(request.BudgetRange))
+            userAccount.BudgetRange = request.BudgetRange;
 
         // Update ExperienceLevel if provided
         if (!string.IsNullOrWhiteSpace(request.ExperienceLevel))
@@ -79,15 +93,13 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
             userAccount.Phone = request.Phone;
         }
 
-        // Convert PlantGoals list to JsonDocument (following the same pattern as Addresses)
+        // Convert PlantGoals list to JsonDocument only if provided
         if (request.PlantGoals != null && request.PlantGoals.Count > 0)
         {
             var plantGoalsJson = JsonSerializer.Serialize(request.PlantGoals);
             userAccount.PlantGoals = JsonDocument.Parse(plantGoalsJson);
         }
 
-        // Mark profile as completed
-        userAccount.IsProfileCompleted = true;
         userAccount.UpdatedAt = DateTime.UtcNow;
 
         // Save changes
