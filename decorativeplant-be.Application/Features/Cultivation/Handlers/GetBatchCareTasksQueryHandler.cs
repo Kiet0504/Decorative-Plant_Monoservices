@@ -48,8 +48,16 @@ public class GetBatchCareTasksQueryHandler : IRequestHandler<GetBatchCareTasksQu
         var totalCount = await query.CountAsync(cancellationToken);
 
         // 3. Sorting and Pagination
+        if (request.SortOrder?.ToLower() == "asc")
+        {
+            query = query.OrderBy(c => c.PerformedAt ?? DateTime.MaxValue);
+        }
+        else
+        {
+            query = query.OrderByDescending(c => c.PerformedAt ?? DateTime.MaxValue);
+        }
+
         var items = await query
-            .OrderByDescending(c => c.PerformedAt ?? DateTime.MaxValue)
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
             .ToListAsync(cancellationToken);
