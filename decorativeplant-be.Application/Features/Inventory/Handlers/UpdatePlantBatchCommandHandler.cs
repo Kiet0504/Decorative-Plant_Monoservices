@@ -28,6 +28,18 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
             throw new NotFoundException(nameof(PlantBatch), request.Id);
         }
 
+        if (request.BatchCode != null)
+            entity.BatchCode = request.BatchCode;
+            
+        if (request.BranchId.HasValue)
+            entity.BranchId = request.BranchId;
+            
+        if (request.TaxonomyId.HasValue)
+            entity.TaxonomyId = request.TaxonomyId;
+            
+        if (request.CurrentTotalQuantity.HasValue)
+            entity.CurrentTotalQuantity = request.CurrentTotalQuantity;
+
         if (request.SourceInfo != null)
             entity.SourceInfo = PlantBatchMapper.BuildJson(request.SourceInfo);
             

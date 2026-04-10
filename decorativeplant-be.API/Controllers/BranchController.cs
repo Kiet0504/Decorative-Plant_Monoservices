@@ -11,24 +11,17 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace decorativeplant_be.API.Controllers;
 
-[ApiController]
 [Route("api/branches")]
 [Authorize]
-public class BranchController : ControllerBase
+public class BranchController : BaseController
 {
-    private readonly IMediator _mediator;
-
-    public BranchController(IMediator mediator)
-    {
-        _mediator = mediator;
-    }
 
     [HttpGet("company/{companyId:guid}")]
     public async Task<ActionResult<List<BranchDto>>> GetByCompany(Guid companyId, [FromQuery] bool? onlyActive)
     {
         try
         {
-            var result = await _mediator.Send(new GetBranchesByCompanyQuery
+            var result = await Mediator.Send(new GetBranchesByCompanyQuery
             {
                 CompanyId = companyId,
                 OnlyActive = onlyActive
@@ -58,7 +51,7 @@ public class BranchController : ControllerBase
     {
         try
         {
-            var result = await _mediator.Send(new GetBranchByIdQuery { Id = id });
+            var result = await Mediator.Send(new GetBranchByIdQuery { Id = id });
             return Ok(result);
         }
         catch (NotFoundException ex)
@@ -84,7 +77,7 @@ public class BranchController : ControllerBase
     {
         try
         {
-            var result = await _mediator.Send(new GetStaffAssignmentsByBranchQuery { BranchId = branchId });
+            var result = await Mediator.Send(new GetStaffAssignmentsByBranchQuery { BranchId = branchId });
             return Ok(result);
         }
         catch (NotFoundException ex)
@@ -110,7 +103,7 @@ public class BranchController : ControllerBase
     {
         try
         {
-            var result = await _mediator.Send(new GetBranchesByStaffQuery { StaffId = staffId });
+            var result = await Mediator.Send(new GetBranchesByStaffQuery { StaffId = staffId });
             return Ok(result);
         }
         catch (NotFoundException ex)
@@ -137,7 +130,14 @@ public class BranchController : ControllerBase
     {
         try
         {
-            var result = await _mediator.Send(command);
+            var userId = GetUserId();
+            if (userId == null)
+            {
+                return Unauthorized(Problem(detail: "User ID not found in token", statusCode: 401));
+            }
+
+            var updatedCommand = command with { CurrentUserId = userId.Value };
+            var result = await Mediator.Send(updatedCommand);
             return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
         }
         catch (NotFoundException ex)
@@ -165,7 +165,7 @@ public class BranchController : ControllerBase
         try
         {
             var updatedCommand = command with { Id = branchId };
-            var result = await _mediator.Send(updatedCommand);
+            var result = await Mediator.Send(updatedCommand);
             return Ok(result);
         }
         catch (NotFoundException ex)
@@ -192,7 +192,7 @@ public class BranchController : ControllerBase
     {
         try
         {
-            await _mediator.Send(new DeactivateBranchCommand { Id = branchId });
+            await Mediator.Send(new DeactivateBranchCommand { Id = branchId });
             return NoContent();
         }
         catch (NotFoundException ex)
@@ -229,7 +229,7 @@ public class BranchController : ControllerBase
                 CurrentUserRole = currentUserRole,
                 CurrentUserBranchId = currentUserBranchId
             };
-            var result = await _mediator.Send(updatedCommand);
+            var result = await Mediator.Send(updatedCommand);
             return CreatedAtAction(nameof(GetStaffByBranch), new { branchId }, result);
         }
         catch (NotFoundException ex)
@@ -266,7 +266,7 @@ public class BranchController : ControllerBase
                 CurrentUserRole = currentUserRole,
                 CurrentUserBranchId = currentUserBranchId
             };
-            var result = await _mediator.Send(updatedCommand);
+            var result = await Mediator.Send(updatedCommand);
             return Ok(result);
         }
         catch (NotFoundException ex)
@@ -297,7 +297,7 @@ public class BranchController : ControllerBase
             var currentUserRole = HttpContext.Items["CurrentRole"]?.ToString() ?? string.Empty;
             var currentUserId = HttpContext.Items["CurrentUserId"] as Guid?;
 
-            await _mediator.Send(new UnassignStaffFromBranchCommand
+            await Mediator.Send(new UnassignStaffFromBranchCommand
             {
                 StaffAssignmentId = assignmentId,
                 CurrentUserRole = currentUserRole,

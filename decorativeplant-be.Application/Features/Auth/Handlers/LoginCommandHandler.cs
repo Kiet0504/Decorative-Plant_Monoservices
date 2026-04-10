@@ -61,6 +61,12 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
             claims.Add(new Claim(ClaimTypes.Name, user.DisplayName));
         }
 
+        // Add company_id claim for admin users
+        if (user.Role == "admin" && user.CompanyId.HasValue)
+        {
+            claims.Add(new Claim("company_id", user.CompanyId.Value.ToString()));
+        }
+
         // Add branch_id claim for staff roles (branchManager and staff)
         if (user.Role != "admin" && user.Role != "customer")
         {

@@ -67,7 +67,8 @@ public class GetLowStockQueryHandler : IRequestHandler<GetLowStockQuery, List<Lo
                 Threshold = 10,
                 BranchName = batch.Branch?.Name ?? "Global",
                 BatchId = batch.Id,
-                BatchCode = batch.BatchCode ?? "N/A"
+                BatchCode = batch.BatchCode ?? "N/A",
+                TaxonomyId = batch.TaxonomyId
             });
         }
 

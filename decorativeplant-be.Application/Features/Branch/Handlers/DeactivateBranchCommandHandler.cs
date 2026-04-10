@@ -28,6 +28,7 @@ public class DeactivateBranchCommandHandler : IRequestHandler<DeactivateBranchCo
         }
 
         branch.IsActive = false;
+        branch.IsDeleted = true;
         branch.UpdatedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync(cancellationToken);

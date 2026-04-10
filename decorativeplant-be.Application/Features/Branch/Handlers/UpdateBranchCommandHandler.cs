@@ -31,22 +31,31 @@ public class UpdateBranchCommandHandler : IRequestHandler<UpdateBranchCommand, B
             throw new NotFoundException(nameof(Domain.Entities.Branch), request.Id);
         }
 
-        // Update scalar fields
-        branch.Code = request.Code;
+        // Update scalar fields (Code cannot be changed)
         branch.Name = request.Name;
         branch.Slug = request.Slug;
         branch.BranchType = request.BranchType;
+        branch.Lat = request.Lat;
+        branch.Long = request.Long;
 
-        // Rebuild all 3 JSONB documents
-        branch.ContactInfo = JsonSerializer.SerializeToDocument(new
-        {
-            phone = request.ContactPhone,
-            email = request.ContactEmail,
-            full_address = request.FullAddress,
-            city = request.City,
-            lat = request.Lat,
-            @long = request.Long
-        });
+        // Rebuild ContactInfo JSONB - exclude null lat/long to prevent parsing errors
+        var contactInfo = new Dictionary<string, object?>();
+        if (!string.IsNullOrEmpty(request.ContactPhone))
+            contactInfo["phone"] = request.ContactPhone;
+        if (!string.IsNullOrEmpty(request.ContactEmail))
+            contactInfo["email"] = request.ContactEmail;
+        if (!string.IsNullOrEmpty(request.FullAddress))
+            contactInfo["full_address"] = request.FullAddress;
+        if (!string.IsNullOrEmpty(request.City))
+            contactInfo["city"] = request.City;
+        if (request.Lat.HasValue)
+            contactInfo["lat"] = request.Lat.Value;
+        if (request.Long.HasValue)
+            contactInfo["long"] = request.Long.Value;
+
+        branch.ContactInfo = contactInfo.Count > 0
+            ? JsonSerializer.SerializeToDocument(contactInfo)
+            : null;
 
         branch.OperatingHours = request.OperatingHours;
 

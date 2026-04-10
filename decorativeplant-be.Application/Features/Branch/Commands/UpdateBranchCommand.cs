@@ -9,7 +9,7 @@ namespace decorativeplant_be.Application.Features.Branch.Commands;
 public record UpdateBranchCommand : IRequest<BranchDto>
 {
     public Guid Id { get; init; }
-    public string Code { get; init; } = string.Empty;
+    // Code cannot be changed after creation
     public string Name { get; init; } = string.Empty;
     public string Slug { get; init; } = string.Empty;
     public string? BranchType { get; init; }
