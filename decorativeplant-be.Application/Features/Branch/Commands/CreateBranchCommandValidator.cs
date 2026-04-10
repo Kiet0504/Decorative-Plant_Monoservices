@@ -8,11 +8,10 @@ public class CreateBranchCommandValidator : AbstractValidator<CreateBranchComman
 {
     public CreateBranchCommandValidator()
     {
-        RuleFor(x => x.CompanyId)
-            .NotEmpty().WithMessage("Company ID is required.");
+        // CompanyId and Code are auto-generated, no longer validated here
 
-        RuleFor(x => x.Code)
-            .NotEmpty().WithMessage("Branch code is required.");
+        RuleFor(x => x.CurrentUserId)
+            .NotEmpty().WithMessage("User ID is required.");
 
         RuleFor(x => x.Name)
             .NotEmpty().WithMessage("Branch name is required.");

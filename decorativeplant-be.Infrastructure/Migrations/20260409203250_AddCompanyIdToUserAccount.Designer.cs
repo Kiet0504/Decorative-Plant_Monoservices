@@ -3,6 +3,7 @@ using System;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using decorativeplant_be.Infrastructure.Data;
@@ -12,9 +13,11 @@ using decorativeplant_be.Infrastructure.Data;
 namespace decorativeplant_be.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260409203250_AddCompanyIdToUserAccount")]
+    partial class AddCompanyIdToUserAccount
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -180,12 +183,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
 
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
-
-                    b.Property<double?>("Lat")
-                        .HasColumnType("double precision");
-
-                    b.Property<double?>("Long")
-                        .HasColumnType("double precision");
 
                     b.Property<string>("Name")
                         .IsRequired()

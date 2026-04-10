@@ -11,8 +11,7 @@ public class UpdateBranchCommandValidator : AbstractValidator<UpdateBranchComman
         RuleFor(x => x.Id)
             .NotEmpty().WithMessage("Branch ID is required.");
 
-        RuleFor(x => x.Code)
-            .NotEmpty().WithMessage("Branch code is required.");
+        // Code cannot be changed after creation, so no validation needed
 
         RuleFor(x => x.Name)
             .NotEmpty().WithMessage("Branch name is required.");

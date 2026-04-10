@@ -8,8 +8,8 @@ namespace decorativeplant_be.Application.Features.Branch.Commands;
 
 public record CreateBranchCommand : IRequest<BranchDto>
 {
-    public Guid CompanyId { get; init; }
-    public string Code { get; init; } = string.Empty;
+    // CompanyId and Code are auto-generated from current user context
+    public Guid CurrentUserId { get; init; } // Set by controller
     public string Name { get; init; } = string.Empty;
     public string Slug { get; init; } = string.Empty;
     public string? BranchType { get; init; }

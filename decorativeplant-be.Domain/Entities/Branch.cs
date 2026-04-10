@@ -13,6 +13,8 @@ public class Branch : BaseEntity
     public string Name { get; set; } = string.Empty;
     public string Slug { get; set; } = string.Empty;
     public string? BranchType { get; set; }
+    public double? Lat { get; set; }
+    public double? Long { get; set; }
     public JsonDocument? ContactInfo { get; set; }
     public JsonDocument? OperatingHours { get; set; }
     public JsonDocument? Settings { get; set; }

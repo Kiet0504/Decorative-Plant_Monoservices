@@ -173,6 +173,7 @@ public class AuthController : BaseController
             fullName = u.DisplayName ?? "Anonymous",
             email = u.Email,
             role = u.Role,
+            companyId = u.CompanyId,
             phone = u.Phone ?? "",
             biography = u.Bio ?? "",
             avatar = u.AvatarUrl ?? "https://ui-avatars.com/api/?name=" + (u.DisplayName ?? u.Email),
