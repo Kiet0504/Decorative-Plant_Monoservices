@@ -1,5 +1,4 @@
-// decorativeplant-be.Application/Features/Branch/BranchMapper.cs
-
+using System.Text.Json;
 using decorativeplant_be.Application.Features.Branch.DTOs;
 using decorativeplant_be.Domain.Entities;
 
@@ -17,32 +16,21 @@ public static class BranchMapper
         Slug = b.Slug,
         BranchType = b.BranchType,
         IsActive = b.IsActive,
+        IsDeleted = b.IsDeleted,
         CreatedAt = b.CreatedAt,
 
-        // ContactInfo jsonb
-        ContactPhone = b.ContactInfo?.RootElement.TryGetProperty("phone", out var phone) == true
-            ? phone.GetString() : null,
-        ContactEmail = b.ContactInfo?.RootElement.TryGetProperty("email", out var email) == true
-            ? email.GetString() : null,
-        FullAddress = b.ContactInfo?.RootElement.TryGetProperty("full_address", out var address) == true
-            ? address.GetString() : null,
-        City = b.ContactInfo?.RootElement.TryGetProperty("city", out var city) == true
-            ? city.GetString() : null,
-        Lat = b.ContactInfo?.RootElement.TryGetProperty("lat", out var lat) == true && lat.TryGetDouble(out var latVal)
-            ? latVal : null,
-        Long = b.ContactInfo?.RootElement.TryGetProperty("long", out var lng) == true && lng.TryGetDouble(out var lngVal)
-            ? lngVal : null,
+        ContactPhone = b.ContactInfo?.RootElement.TryGetProperty("phone", out var phone) == true && phone.ValueKind == JsonValueKind.String ? phone.GetString() : null,
+        ContactEmail = b.ContactInfo?.RootElement.TryGetProperty("email", out var email) == true && email.ValueKind == JsonValueKind.String ? email.GetString() : null,
+        FullAddress = b.ContactInfo?.RootElement.TryGetProperty("full_address", out var address) == true && address.ValueKind == JsonValueKind.String ? address.GetString() : null,
+        City = b.ContactInfo?.RootElement.TryGetProperty("city", out var city) == true && city.ValueKind == JsonValueKind.String ? city.GetString() : null,
+        Lat = b.Lat,
+        Long = b.Long,
 
-        // OperatingHours (raw JsonDocument)
         OperatingHours = b.OperatingHours,
 
-        // Settings jsonb
-        SupportsOnlineOrder = b.Settings?.RootElement.TryGetProperty("supports_online_order", out var online) == true
-            && online.GetBoolean(),
-        SupportsPickup = b.Settings?.RootElement.TryGetProperty("supports_pickup", out var pickup) == true
-            && pickup.GetBoolean(),
-        SupportsShipping = b.Settings?.RootElement.TryGetProperty("supports_shipping", out var shipping) == true
-            && shipping.GetBoolean()
+        SupportsOnlineOrder = b.Settings?.RootElement.TryGetProperty("supports_online_order", out var online) == true && online.ValueKind == JsonValueKind.True,
+        SupportsPickup = b.Settings?.RootElement.TryGetProperty("supports_pickup", out var pickup) == true && pickup.ValueKind == JsonValueKind.True,
+        SupportsShipping = b.Settings?.RootElement.TryGetProperty("supports_shipping", out var shipping) == true && shipping.ValueKind == JsonValueKind.True
     };
 
     public static StaffAssignmentDto ToDto(
@@ -59,14 +47,9 @@ public static class BranchMapper
         IsPrimary = sa.IsPrimary,
         AssignedAt = sa.AssignedAt,
 
-        // Permissions jsonb
-        CanManageInventory = sa.Permissions?.RootElement.TryGetProperty("can_manage_inventory", out var inv) == true
-            && inv.GetBoolean(),
-        CanManageOrders = sa.Permissions?.RootElement.TryGetProperty("can_manage_orders", out var orders) == true
-            && orders.GetBoolean(),
-        CanManageStaff = sa.Permissions?.RootElement.TryGetProperty("can_manage_staff", out var staff) == true
-            && staff.GetBoolean(),
-        CanViewOtherBranches = sa.Permissions?.RootElement.TryGetProperty("can_view_other_branches", out var branches) == true
-            && branches.GetBoolean()
+        CanManageInventory = sa.Permissions?.RootElement.TryGetProperty("can_manage_inventory", out var inv) == true && inv.ValueKind == JsonValueKind.True,
+        CanManageOrders = sa.Permissions?.RootElement.TryGetProperty("can_manage_orders", out var orders) == true && orders.ValueKind == JsonValueKind.True,
+        CanManageStaff = sa.Permissions?.RootElement.TryGetProperty("can_manage_staff", out var staff) == true && staff.ValueKind == JsonValueKind.True,
+        CanViewOtherBranches = sa.Permissions?.RootElement.TryGetProperty("can_view_other_branches", out var branches) == true && branches.ValueKind == JsonValueKind.True
     };
 }

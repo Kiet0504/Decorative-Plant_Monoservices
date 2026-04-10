@@ -2,10 +2,6 @@ using System.Text.Json;
 
 namespace decorativeplant_be.Domain.Entities;
 
-/// <summary>
-/// Centralized user account (staff + customers). Profile and addresses merged.
-/// JSONB: addresses — see docs/JSONB_SCHEMA_REFERENCE.md § user_account.addresses
-/// </summary>
 public class UserAccount : BaseEntity
 {
     public string Email { get; set; } = string.Empty;
@@ -88,6 +84,9 @@ public class UserAccount : BaseEntity
     public DateTime? LastLoginAt { get; set; }
 
     // Navigation
+    public Guid? CompanyId { get; set; }
+    public Company? Company { get; set; }
+
     public ICollection<Notification> Notifications { get; set; } = new List<Notification>();
     public ICollection<StaffAssignment> StaffAssignments { get; set; } = new List<StaffAssignment>();
     public ICollection<ShoppingCart> ShoppingCarts { get; set; } = new List<ShoppingCart>();

@@ -73,6 +73,12 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
             claims.Add(new Claim(ClaimTypes.Name, userAccount.DisplayName));
         }
 
+        // Add company_id claim for admin users
+        if (userAccount.Role == "admin" && userAccount.CompanyId.HasValue)
+        {
+            claims.Add(new Claim("company_id", userAccount.CompanyId.Value.ToString()));
+        }
+
         // Add branch_id claim for staff roles (branchManager and staff)
         if (userAccount.Role != "admin" && userAccount.Role != "customer")
         {
