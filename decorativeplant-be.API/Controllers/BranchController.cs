@@ -159,7 +159,7 @@ public class BranchController : BaseController
     }
 
     [HttpPut("{branchId:guid}")]
-    [Authorize(Roles = "admin,branchManager")]
+    [Authorize(Roles = "admin,branchManager,branch_manager")]
     public async Task<ActionResult<BranchDto>> Update(Guid branchId, [FromBody] UpdateBranchCommand command)
     {
         try
@@ -214,7 +214,7 @@ public class BranchController : BaseController
     }
 
     [HttpPost("{branchId:guid}/staff")]
-    [Authorize(Roles = "admin,branchManager")]
+    [Authorize(Roles = "admin,branchManager,branch_manager")]
     public async Task<ActionResult<StaffAssignmentDto>> AssignStaff(Guid branchId, [FromBody] AssignStaffToBranchCommand command)
     {
         try
@@ -251,7 +251,7 @@ public class BranchController : BaseController
     }
 
     [HttpPut("{branchId:guid}/staff/{assignmentId:guid}")]
-    [Authorize(Roles = "admin,branchManager")]
+    [Authorize(Roles = "admin,branchManager,branch_manager")]
     public async Task<ActionResult<StaffAssignmentDto>> UpdateStaffAssignment(Guid branchId, Guid assignmentId, [FromBody] UpdateStaffAssignmentCommand command)
     {
         try
@@ -288,7 +288,7 @@ public class BranchController : BaseController
     }
 
     [HttpDelete("{branchId:guid}/staff/{assignmentId:guid}")]
-    [Authorize(Roles = "admin,branchManager")]
+    [Authorize(Roles = "admin,branchManager,branch_manager")]
     public async Task<ActionResult> UnassignStaff(Guid branchId, Guid assignmentId)
     {
         try

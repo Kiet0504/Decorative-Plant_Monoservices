@@ -1,5 +1,6 @@
 // decorativeplant-be.Application/Features/Branch/Commands/UpdateStaffAssignmentCommandValidator.cs
 
+using decorativeplant_be.Application.Common;
 using FluentValidation;
 
 namespace decorativeplant_be.Application.Features.Branch.Commands;
@@ -13,7 +14,8 @@ public class UpdateStaffAssignmentCommandValidator : AbstractValidator<UpdateSta
 
         RuleFor(x => x.Role)
             .NotEmpty().WithMessage("Role is required.")
-            .Must(role => new[] { "branchManager", "cultivationStaff", "storeStaff", "fulfillmentStaff" }.Contains(role))
-            .WithMessage("Role must be one of: branchManager, cultivationStaff, storeStaff, fulfillmentStaff.");
+            .Must(role => StaffRoleNormalizer.BranchAssignableRoles.Contains(StaffRoleNormalizer.Normalize(role)))
+            .WithMessage(
+                "Role must be one of: branch_manager, store_staff, cultivation_staff, fulfillment_staff (camelCase variants are accepted).");
     }
 }

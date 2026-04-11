@@ -1,23 +1,33 @@
 // decorativeplant-be.Application/Features/Branch/Handlers/AssignStaffToBranchCommandHandler.cs
 
 using System.Text.Json;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Branch.Commands;
 using decorativeplant_be.Application.Features.Branch.DTOs;
+using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace decorativeplant_be.Application.Features.Branch.Handlers;
 
 public class AssignStaffToBranchCommandHandler : IRequestHandler<AssignStaffToBranchCommand, StaffAssignmentDto>
 {
     private readonly IApplicationDbContext _context;
+    private readonly IEmailService _emailService;
+    private readonly ILogger<AssignStaffToBranchCommandHandler> _logger;
 
-    public AssignStaffToBranchCommandHandler(IApplicationDbContext context)
+    public AssignStaffToBranchCommandHandler(
+        IApplicationDbContext context,
+        IEmailService emailService,
+        ILogger<AssignStaffToBranchCommandHandler> logger)
     {
         _context = context;
+        _emailService = emailService;
+        _logger = logger;
     }
 
     public async Task<StaffAssignmentDto> Handle(AssignStaffToBranchCommand request, CancellationToken cancellationToken)
@@ -45,8 +55,8 @@ public class AssignStaffToBranchCommandHandler : IRequestHandler<AssignStaffToBr
             throw new NotFoundException(nameof(UserAccount), request.StaffId);
         }
 
-        // 2b. Validate branchManager can only assign staff to their own branch
-        if (request.CurrentUserRole == "branchManager")
+        // 2b. Validate branch_manager can only assign staff to their own branch
+        if (StaffRoleNormalizer.IsBranchManager(request.CurrentUserRole))
         {
             if (!request.CurrentUserBranchId.HasValue || branch.Id != request.CurrentUserBranchId.Value)
             {
@@ -55,11 +65,14 @@ public class AssignStaffToBranchCommandHandler : IRequestHandler<AssignStaffToBr
             }
         }
 
+        var roleToStore = StaffRoleNormalizer.Normalize(request.Role);
+        var currentUserRoleNorm = StaffRoleNormalizer.Normalize(request.CurrentUserRole);
+
         // 2c. Validate role assignment permissions
-        ValidateRoleAssignmentPermissions(request.CurrentUserRole, request.Role);
+        ValidateRoleAssignmentPermissions(currentUserRoleNorm, roleToStore);
 
         // Update UserAccount.Role
-        staff.Role = request.Role;
+        staff.Role = roleToStore;
         staff.UpdatedAt = DateTime.UtcNow;
 
         // 3. Check duplicate StaffId+BranchId
@@ -105,35 +118,46 @@ public class AssignStaffToBranchCommandHandler : IRequestHandler<AssignStaffToBr
         _context.StaffAssignments.Add(staffAssignment);
         await _context.SaveChangesAsync(cancellationToken);
 
+        try
+        {
+            await StaffAssignmentEmailNotifier.SendStaffAssignedAsync(
+                _emailService,
+                staff.Email,
+                staff.DisplayName,
+                branch.Name,
+                roleToStore,
+                temporaryPasswordPlaintext: null,
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send staff assignment email to {Email}", staff.Email);
+        }
+
         // 6. Return ToDto
         return staffAssignment.ToDto(staff.Email, branch.Name);
     }
 
-    private static void ValidateRoleAssignmentPermissions(string currentUserRole, string roleToAssign)
+    private static void ValidateRoleAssignmentPermissions(string currentUserRoleNorm, string roleToAssignNorm)
     {
-        // Admin can assign ALL roles
-        if (currentUserRole == "admin")
-        {
-            return; // Admin has full permissions
-        }
+        if (currentUserRoleNorm == "admin")
+            return;
 
-        // BranchManager can assign ONLY staff roles (NOT branchManager)
-        if (currentUserRole == "branchManager")
+        if (StaffRoleNormalizer.IsBranchManager(currentUserRoleNorm))
         {
-            var allowedRoles = new[] { "cultivationStaff", "storeStaff", "fulfillmentStaff" };
+            var allowed = new[] { "cultivation_staff", "store_staff", "fulfillment_staff" };
 
-            if (!allowedRoles.Contains(roleToAssign))
+            if (!allowed.Contains(roleToAssignNorm))
             {
                 throw new InvalidOperationException(
-                    $"Branch managers can only assign staff roles (cultivationStaff, storeStaff, fulfillmentStaff). " +
-                    $"Cannot assign role '{roleToAssign}'.");
+                    "Branch managers can only assign cultivation_staff, store_staff, or fulfillment_staff. " +
+                    $"Cannot assign role '{roleToAssignNorm}'.");
             }
 
-            return; // BranchManager has permission for staff roles
+            return;
         }
 
-        // Any other role cannot assign staff
         throw new InvalidOperationException(
-            $"Role '{currentUserRole}' does not have permission to assign staff to branches.");
+            $"Role '{currentUserRoleNorm}' does not have permission to assign staff to branches.");
     }
 }
