@@ -59,64 +59,96 @@ public class PendingOrderCleanupJob : BackgroundService
             return;
         }
 
-        _logger.LogInformation($"Found {expiredOrders.Count} pending orders to expire.");
+        _logger.LogInformation("Found {Count} pending orders to expire.", expiredOrders.Count);
 
+        int successCount = 0;
+
+        // Process each order in its own transaction for isolation
         foreach (var order in expiredOrders)
         {
-            order.Status = "expired";
-            
-            // Add note about expiration
-            var notes = new Dictionary<string, object?>();
-            if (order.Notes != null)
+            var strategy = context.Database.CreateExecutionStrategy();
+            try
             {
-                foreach (var p in order.Notes.RootElement.EnumerateObject())
+                await strategy.ExecuteAsync(async () =>
                 {
-                    notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
-                }
-            }
-            notes["cancellation_reason"] = "Auto-expired due to payment timeout.";
-            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
-
-            // Restore Stock
-            if (order.OrderItems != null)
-            {
-                foreach (var item in order.OrderItems)
-                {
-                    if (item.BatchId.HasValue)
+                    using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+                    try
                     {
-                        var stock = await context.BatchStocks
-                            .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, cancellationToken);
-                        
-                        if (stock != null && stock.Quantities != null)
-                        {
-                            var root = stock.Quantities.RootElement;
-                            var total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
-                            var reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
-                            var available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
-                            
-                            // Deduct from reserved and add back to available
-                            var q = item.Quantity;
-                            reserved -= q;
-                            if (reserved < 0) reserved = 0;
-                            available += q;
-                            
-                            stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-                            {
-                                quantity = total,
-                                reserved_quantity = reserved,
-                                available_quantity = available
-                            }));
+                        order.Status = "expired";
 
-                            _logger.LogInformation(
-                                "Restored {Qty} units for Order {OrderCode}, BatchId {BatchId}, BranchId {BranchId}",
-                                q, order.OrderCode, item.BatchId, item.BranchId);
+                        // Add note about expiration
+                        var notes = new Dictionary<string, object?>();
+                        if (order.Notes != null)
+                        {
+                            foreach (var p in order.Notes.RootElement.EnumerateObject())
+                            {
+                                notes[p.Name] = p.Value.ValueKind == JsonValueKind.String
+                                    ? p.Value.GetString()
+                                    : p.Value.GetRawText();
+                            }
                         }
+                        notes["cancellation_reason"] = "Auto-expired due to payment timeout.";
+                        notes["expired_at"] = DateTime.UtcNow.ToString("o");
+                        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+
+                        // Restore stock with pessimistic locking
+                        if (order.OrderItems != null)
+                        {
+                            foreach (var item in order.OrderItems)
+                            {
+                                if (item.BatchId.HasValue)
+                                {
+                                    // Lock the row first to prevent concurrent stock modification
+                                    await context.AcquireStockLockAsync(item.BatchId.Value, cancellationToken);
+
+                                    var stock = await context.BatchStocks
+                                        .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, cancellationToken);
+
+                                    if (stock != null && stock.Quantities != null)
+                                    {
+                                        var root = stock.Quantities.RootElement;
+                                        var total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
+                                        var reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
+                                        var available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
+
+                                        var q = item.Quantity;
+                                        reserved -= q;
+                                        if (reserved < 0) reserved = 0;
+                                        available += q;
+                                        if (available > total) available = total;
+
+                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                                        {
+                                            quantity = total,
+                                            reserved_quantity = reserved,
+                                            available_quantity = available
+                                        }));
+
+                                        _logger.LogInformation(
+                                            "Restored {Qty} units for Order {OrderCode}, BatchId {BatchId}",
+                                            q, order.OrderCode, item.BatchId);
+                                    }
+                                }
+                            }
+                        }
+
+                        await context.SaveChangesAsync(cancellationToken);
+                        await transaction.CommitAsync(cancellationToken);
+                        successCount++;
                     }
-                }
+                    catch
+                    {
+                        await transaction.RollbackAsync(cancellationToken);
+                        throw;
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to expire order {OrderCode}.", order.OrderCode);
             }
         }
 
-        await context.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation($"Successfully expired {expiredOrders.Count} orders and restored stock.");
+        _logger.LogInformation("Successfully expired {Count}/{Total} orders and restored stock.", successCount, expiredOrders.Count);
     }
 }
