@@ -73,6 +73,7 @@ public class ProductListingResponse
     // Unified Product fields (Chain Store model)
     public int TotalSystemStock { get; set; }
     public int AvailableBranches { get; set; }
+
 }
 
 public class ProductImageDto

@@ -28,20 +28,45 @@ public class UpdatePlantTaxonomyCommandHandler : IRequestHandler<UpdatePlantTaxo
             throw new NotFoundException(nameof(PlantTaxonomy), request.Id);
         }
 
+        // Category Resolution
+        Guid? finalCategoryId = request.CategoryId;
+        if (!string.IsNullOrEmpty(request.CategoryName))
+        {
+            var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
+            // Load all categories to perform robust in-memory matching
+            var allCategories = await categoryRepo.FindAsync(c => true, cancellationToken);
+            var searchName = request.CategoryName.Trim().ToLower().Replace(" ", "_");
+            
+            var category = allCategories.FirstOrDefault(c => 
+                (c.Slug != null && c.Slug.ToLower() == searchName) ||
+                (c.Name != null && c.Name.Trim().ToLower() == request.CategoryName.Trim().ToLower()) ||
+                (c.Name != null && c.Name.Replace(" ", "").Equals(request.CategoryName.Replace(" ", ""), StringComparison.OrdinalIgnoreCase)));
+            
+            if (category != null)
+            {
+                finalCategoryId = category.Id;
+            }
+        }
+        
+        if (finalCategoryId.HasValue)
+        {
+            entity.CategoryId = finalCategoryId;
+        }
+
         entity.ScientificName = request.ScientificName;
         entity.CommonNames = PlantTaxonomyMapper.BuildCommonNames(request.CommonNameEn, request.CommonNameVi);
         entity.TaxonomyInfo = PlantTaxonomyMapper.BuildJson(request.TaxonomyInfo);
         entity.CareInfo = PlantTaxonomyMapper.BuildJson(request.CareInfo);
         entity.GrowthInfo = PlantTaxonomyMapper.BuildJson(request.GrowthInfo);
         entity.ImageUrl = request.ImageUrl;
-        entity.CategoryId = request.CategoryId;
 
         await repo.UpdateAsync(entity, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
-        var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
+        // Include category for DTO response
         if (entity.CategoryId.HasValue)
         {
+            var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
             entity.Category = await categoryRepo.GetByIdAsync(entity.CategoryId.Value, cancellationToken);
         }
 

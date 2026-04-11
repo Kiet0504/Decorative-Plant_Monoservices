@@ -67,6 +67,7 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         // Automatic Batch Creation if StockQuantity is provided
         if (req.StockQuantity > 0)
         {
+            
             var batch = new PlantBatch
             {
                 Id = Guid.NewGuid(),
@@ -142,8 +143,10 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             }).ToList();
         }
 
+
         return response;
     }
+
 }
 
 public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingCommand, ProductListingResponse>
@@ -350,6 +353,6 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
         var entity = await _context.ProductListings
             .Include(x => x.Batch)
             .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
-        return entity == null ? null : CreateProductListingHandler.MapToResponse(entity);
+return entity == null ? null : CreateProductListingHandler.MapToResponse(entity);
     }
 }
