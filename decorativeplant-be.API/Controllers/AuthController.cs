@@ -166,6 +166,15 @@ public class AuthController : BaseController
         if (u == null)
             return NotFound(ApiResponse<object>.ErrorResponse("User not found.", statusCode: 404));
 
+        Guid? branchId = null;
+        if (u.Role != "admin" && u.Role != "customer")
+        {
+            branchId = await _context.StaffAssignments
+                .Where(sa => sa.StaffId == u.Id && sa.IsPrimary)
+                .Select(sa => (Guid?)sa.BranchId)
+                .FirstOrDefaultAsync();
+        }
+
         var userData = new
         {
             // ===== BASIC USER INFO =====
@@ -174,6 +183,7 @@ public class AuthController : BaseController
             email = u.Email,
             role = u.Role,
             companyId = u.CompanyId,
+            branchId = branchId, // Added this field
             phone = u.Phone ?? "",
             biography = u.Bio ?? "",
             avatar = u.AvatarUrl ?? "https://ui-avatars.com/api/?name=" + (u.DisplayName ?? u.Email),

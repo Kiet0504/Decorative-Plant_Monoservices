@@ -230,6 +230,10 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         if (req.MinOrder.HasValue) productInfo["min_order"] = req.MinOrder.Value;
         if (req.MaxOrder.HasValue) productInfo["max_order"] = req.MaxOrder.Value;
         if (req.StockQuantity.HasValue) productInfo["stock_quantity"] = req.StockQuantity.Value;
+        if (req.CareInfo != null) productInfo["care_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.CareInfo));
+        if (req.GrowthInfo != null) productInfo["growth_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.GrowthInfo));
+        if (req.TaxonomyInfo != null) productInfo["taxonomy_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.TaxonomyInfo));
+        
         entity.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(productInfo));
 
         // Merge status_info
@@ -259,7 +263,7 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null => null,
-        _ => element.GetRawText()
+        _ => element
     };
 }
 
