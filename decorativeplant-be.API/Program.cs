@@ -53,32 +53,13 @@ try
     // Add services to the container
     builder.Services.AddControllers();
 
-    // Add CORS policy for React frontend and Flutter web
+    // Add CORS policy for React frontend
     builder.Services.AddCors(options =>
     {
         options.AddPolicy("AllowFrontend", policy =>
         {
-            policy.WithOrigins(
-                    "http://localhost:5173",  // React Vite
-                    "http://localhost:3000",  // React dev server
-                    "http://localhost:4173"   // React preview
-                )
             policy.SetIsOriginAllowed(origin =>
                     new Uri(origin).Host == "localhost")
-                .AllowAnyHeader()
-                .AllowAnyMethod()
-                .AllowCredentials();
-        });
-
-        // Add policy for Flutter web (allows any localhost port for development)
-        options.AddPolicy("AllowFlutterWeb", policy =>
-        {
-            policy.SetIsOriginAllowed(origin =>
-                {
-                    if (string.IsNullOrEmpty(origin)) return false;
-                    var uri = new Uri(origin);
-                    return uri.Host == "localhost" || uri.Host == "127.0.0.1";
-                })
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials();
@@ -163,8 +144,7 @@ try
     app.UseHttpsRedirection();
 
     app.UseRouting();
-    // Use the more permissive Flutter web policy in development
-    app.UseCors(app.Environment.IsDevelopment() ? "AllowFlutterWeb" : "AllowFrontend");
+    app.UseCors("AllowFrontend");
     app.UseAuthentication();
     app.UseMiddleware<BranchScopedAccessMiddleware>(); // Branch-scoped access control - after UseAuthentication, before UseAuthorization
     app.UseMiddleware<SoftPaywallMiddleware>();
