@@ -1,6 +1,7 @@
 // decorativeplant-be.API/Middleware/BranchScopedAccessMiddleware.cs
 
 using System.Security.Claims;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -34,8 +35,10 @@ public class BranchScopedAccessMiddleware
         context.Items["CurrentRole"] = role;
         context.Items["CurrentBranchId"] = branchClaim != null ? Guid.Parse(branchClaim) : (Guid?)null;
 
+        var roleNorm = StaffRoleNormalizer.Normalize(role);
+
         // Step 2 — Admin bypass
-        if (role == "admin")
+        if (roleNorm == "admin")
         {
             await _next(context);
             return;
@@ -63,7 +66,7 @@ public class BranchScopedAccessMiddleware
 
         // Step 4 — Staff GET guard
         if (HttpMethods.IsGet(context.Request.Method) &&
-            (role == "cultivationStaff" || role == "storeStaff" || role == "fulfillmentStaff"))
+            roleNorm is "cultivation_staff" or "store_staff" or "fulfillment_staff")
         {
             var routeBranchId = TryGetBranchIdFromRoute(context);
 
