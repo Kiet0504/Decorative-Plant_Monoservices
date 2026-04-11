@@ -1,5 +1,6 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.Auth;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Features.Auth.Commands;
@@ -61,11 +62,13 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
 
         await _refreshTokenService.RevokeRefreshTokenAsync(userIdString, request.RefreshToken);
 
+        var roleNorm = StaffRoleNormalizer.Normalize(userAccount.Role);
+
         var claims = new List<Claim>
         {
             new Claim(ClaimTypes.NameIdentifier, userAccount.Id.ToString()),
             new Claim(ClaimTypes.Email, userAccount.Email),
-            new Claim(ClaimTypes.Role, userAccount.Role)
+            new Claim(ClaimTypes.Role, roleNorm)
         };
 
         if (!string.IsNullOrWhiteSpace(userAccount.DisplayName))
@@ -74,13 +77,13 @@ public class RefreshTokenCommandHandler : IRequestHandler<RefreshTokenCommand, T
         }
 
         // Add company_id claim for admin users
-        if (userAccount.Role == "admin" && userAccount.CompanyId.HasValue)
+        if (roleNorm == "admin" && userAccount.CompanyId.HasValue)
         {
             claims.Add(new Claim("company_id", userAccount.CompanyId.Value.ToString()));
         }
 
-        // Add branch_id claim for staff roles (branchManager and staff)
-        if (userAccount.Role != "admin" && userAccount.Role != "customer")
+        // Add branch_id claim for staff roles
+        if (roleNorm != "admin" && roleNorm != "customer")
         {
             var primaryAssignment = await _context.StaffAssignments
                 .Where(sa => sa.StaffId == userAccount.Id && sa.IsPrimary)
