@@ -11,9 +11,24 @@ namespace decorativeplant_be.API.Controllers;
 public class ProductListingsController : BaseController
 {
     [HttpGet]
-    public async Task<IActionResult> GetAll([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public async Task<IActionResult> GetAll(
+        [FromQuery] Guid? branchId, 
+        [FromQuery] string? status, 
+        [FromQuery] string? search, 
+        [FromQuery] string? sortBy,
+        [FromQuery] string? sortOrder,
+        [FromQuery] int page = 1, 
+        [FromQuery] int pageSize = 20)
     {
-        var result = await Mediator.Send(new GetProductListingsQuery { BranchId = branchId, Status = status, Search = search, Page = page, PageSize = pageSize });
+        var result = await Mediator.Send(new GetProductListingsQuery { 
+            BranchId = branchId, 
+            Status = status, 
+            Search = search, 
+            SortBy = sortBy,
+            SortOrder = sortOrder,
+            Page = page, 
+            PageSize = pageSize 
+        });
         return Ok(ApiResponse<PagedResult<ProductListingResponse>>.SuccessResponse(result));
     }
 
