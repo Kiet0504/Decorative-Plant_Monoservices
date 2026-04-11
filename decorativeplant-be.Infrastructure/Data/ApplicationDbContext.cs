@@ -71,6 +71,16 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<SystemConfig> SystemConfigs { get; set; } = null!;
     public DbSet<RecommendationLog> RecommendationLogs { get; set; } = null!;
 
+    // ── Pessimistic Locking ──
+
+    public async Task AcquireStockLockAsync(Guid batchId, CancellationToken ct = default)
+    {
+
+        await Database.ExecuteSqlRawAsync(
+            "SELECT 1 FROM \"BatchStocks\" WHERE \"BatchId\" = {0} FOR UPDATE",
+            new object[] { batchId }, ct);
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
