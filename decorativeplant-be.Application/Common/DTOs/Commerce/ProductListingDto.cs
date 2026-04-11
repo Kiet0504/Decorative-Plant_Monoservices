@@ -74,15 +74,6 @@ public class ProductListingResponse
     public int TotalSystemStock { get; set; }
     public int AvailableBranches { get; set; }
 
-    // Plant Taxonomy Care & Growth Info (Flattened from JSONB)
-    public string? Light { get; set; }
-    public string? Water { get; set; }
-    public string? Humidity { get; set; }
-    public int? TempMin { get; set; }
-    public int? TempMax { get; set; }
-    public string? GrowthRate { get; set; }
-    public int? MaxHeight { get; set; }
-    public bool? IsToxic { get; set; }
 }
 
 public class ProductImageDto

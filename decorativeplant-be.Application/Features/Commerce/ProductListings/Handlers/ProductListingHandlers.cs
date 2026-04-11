@@ -2,7 +2,6 @@ using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using System.Text.RegularExpressions;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
@@ -68,21 +67,12 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         // Automatic Batch Creation if StockQuantity is provided
         if (req.StockQuantity > 0)
         {
-            // Try to resolve TaxonomyId from ScientificName
-            Guid? taxonomyId = null;
-            if (!string.IsNullOrEmpty(req.ScientificName))
-            {
-                var tax = await _context.PlantTaxonomies
-                    .FirstOrDefaultAsync(t => t.ScientificName == req.ScientificName, ct);
-                taxonomyId = tax?.Id;
-            }
-
+            
             var batch = new PlantBatch
             {
                 Id = Guid.NewGuid(),
                 BatchCode = $"AUTO-{entity.Id.ToString().Substring(0, 8).ToUpper()}",
                 BranchId = entity.BranchId,
-                TaxonomyId = taxonomyId,
                 InitialQuantity = req.StockQuantity,
                 CurrentTotalQuantity = req.StockQuantity,
                 CreatedAt = DateTime.UtcNow
@@ -90,8 +80,8 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             _context.PlantBatches.Add(batch);
             entity.BatchId = batch.Id;
             entity.Batch = batch;
-            _logger.LogInformation("Automatically created Batch {BatchId} with taxonomy {TaxonomyId} for new Product {ProductId}", 
-                batch.Id, taxonomyId, entity.Id);
+            _logger.LogInformation("Automatically created Batch {BatchId} with quantity {Quantity} for new Product {ProductId}", 
+                batch.Id, req.StockQuantity, entity.Id);
         }
 
         _context.ProductListings.Add(entity);
@@ -153,63 +143,10 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             }).ToList();
         }
 
-        // Map Taxonomy Care & Growth Info if available
-        if (e.Batch?.Taxonomy != null)
-        {
-            var tax = e.Batch.Taxonomy;
-            MapTaxonomyToResponse(tax, response);
-        }
 
         return response;
     }
 
-    internal static void MapTaxonomyToResponse(PlantTaxonomy tax, ProductListingResponse response)
-    {
-        if (tax.CareInfo != null)
-        {
-            var care = tax.CareInfo.RootElement;
-            if (care.TryGetProperty("light", out var l)) response.Light = l.GetString();
-            if (care.TryGetProperty("water", out var w)) response.Water = w.GetString();
-            if (care.TryGetProperty("humidity", out var h)) response.Humidity = h.GetString();
-            
-            // Temperature Parsing (Flexible)
-            if (care.TryGetProperty("temp_min", out var tmin)) 
-                response.TempMin = tmin.ValueKind == JsonValueKind.Number ? tmin.GetInt32() : (int.TryParse(tmin.GetString(), out var ti) ? ti : null);
-            if (care.TryGetProperty("temp_max", out var tmax)) 
-                response.TempMax = tmax.ValueKind == JsonValueKind.Number ? tmax.GetInt32() : (int.TryParse(tmax.GetString(), out var ta) ? ta : null);
-
-            // Fallback to "temperature" or "Temperature" string parsing
-            if (response.TempMin == null || response.TempMax == null)
-            {
-                if (care.TryGetProperty("temperature", out var tProp) || care.TryGetProperty("Temperature", out tProp))
-                {
-                    var tVal = tProp.GetString();
-                    if (!string.IsNullOrEmpty(tVal))
-                    {
-                        var matches = Regex.Matches(tVal, @"\d+");
-                        if (matches.Count >= 2)
-                        {
-                            if (response.TempMin == null && int.TryParse(matches[0].Value, out var v1)) response.TempMin = v1;
-                            if (response.TempMax == null && int.TryParse(matches[1].Value, out var v2)) response.TempMax = v2;
-                        }
-                        else if (matches.Count == 1 && response.TempMin == null && int.TryParse(matches[0].Value, out var vSingle))
-                        {
-                            response.TempMin = vSingle;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (tax.GrowthInfo != null)
-        {
-            var growth = tax.GrowthInfo.RootElement;
-            if (growth.TryGetProperty("growth_rate", out var gr)) response.GrowthRate = gr.GetString();
-            if (growth.TryGetProperty("max_height", out var mh)) 
-                response.MaxHeight = mh.ValueKind == JsonValueKind.Number ? mh.GetInt32() : (int.TryParse(mh.GetString(), out var mhi) ? mhi : null);
-            if (growth.TryGetProperty("is_toxic", out var it)) response.IsToxic = it.ValueKind == JsonValueKind.True || it.ValueKind == JsonValueKind.False ? it.GetBoolean() : (bool.TryParse(it.GetString(), out var b) ? b : null);
-        }
-    }
 }
 
 public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingCommand, ProductListingResponse>
@@ -415,25 +352,7 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
     {
         var entity = await _context.ProductListings
             .Include(x => x.Batch)
-                .ThenInclude(b => b!.Taxonomy)
             .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
-
-        if (entity == null) return null;
-
-        var response = CreateProductListingHandler.MapToResponse(entity);
-
-        // Fallback: If direct taxonomy link is missing but we have a ScientificName, try to find it
-        if ((entity.Batch == null || entity.Batch.Taxonomy == null) && !string.IsNullOrEmpty(response.ScientificName))
-        {
-            var tax = await _context.PlantTaxonomies
-                .FirstOrDefaultAsync(t => t.ScientificName == response.ScientificName, ct);
-            
-            if (tax != null)
-            {
-                CreateProductListingHandler.MapTaxonomyToResponse(tax, response);
-            }
-        }
-
-        return response;
+return entity == null ? null : CreateProductListingHandler.MapToResponse(entity);
     }
 }
