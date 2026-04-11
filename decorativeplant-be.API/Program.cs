@@ -58,8 +58,11 @@ try
     {
         options.AddPolicy("AllowFrontend", policy =>
         {
-            policy.SetIsOriginAllowed(origin =>
-                    new Uri(origin).Host == "localhost")
+            policy.WithOrigins(
+                    "http://localhost:5173",  
+                    "http://localhost:3000", 
+                    "http://localhost:4173"  
+                )
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials();

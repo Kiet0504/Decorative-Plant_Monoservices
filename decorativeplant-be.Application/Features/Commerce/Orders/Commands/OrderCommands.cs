@@ -22,12 +22,6 @@ public class CancelOrderCommand : IRequest<OrderResponse>
     public CancelOrderRequest Request { get; set; } = null!;
 }
 
-public class ConfirmReceiptCommand : IRequest<OrderResponse>
-{
-    public Guid OrderId { get; set; }
-    public Guid UserId { get; set; }
-}
-
 public class CreateOfflineBopisOrderCommand : IRequest<OrderResponse>
 {
     public Guid BrandManagerId { get; set; }
