@@ -35,6 +35,8 @@ public interface IApplicationDbContext
     DbSet<PlantBatch> PlantBatches { get; }
     DbSet<PlantTaxonomy> PlantTaxonomies { get; }
     DbSet<StockTransfer> StockTransfers { get; }
+    DbSet<CultivationLog> CultivationLogs { get; }
+    DbSet<HealthIncident> HealthIncidents { get; }
     
     // Admin / Core
     DbSet<Company> Companies { get; }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.DTOs.IoT;
 using decorativeplant_be.Domain.Entities;
@@ -19,6 +20,25 @@ public class CreateIotDeviceCommandHandler : IRequestHandler<CreateIotDeviceComm
 
     public async Task<IotDeviceDto> Handle(CreateIotDeviceCommand request, CancellationToken cancellationToken)
     {
+        if (!string.IsNullOrWhiteSpace(request.Device.Name))
+        {
+            var existingDevices = await _iotRepository.GetIotDevicesAsync(cancellationToken);
+            foreach (var d in existingDevices)
+            {
+                if (d.DeviceInfo != null)
+                {
+                    if (d.DeviceInfo.RootElement.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String)
+                    {
+                        var existingName = nameProp.GetString();
+                        if (string.Equals(existingName, request.Device.Name, StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new BadRequestException("Tên thiết bị cảm biến đã tồn tại. Vui lòng chọn một tên khác.");
+                        }
+                    }
+                }
+            }
+        }
+
         var generatedSecret = Guid.NewGuid().ToString("N");
 
         var deviceInfoDict = new Dictionary<string, object>();
