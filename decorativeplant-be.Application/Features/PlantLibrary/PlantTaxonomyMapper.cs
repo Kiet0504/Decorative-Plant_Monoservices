@@ -56,31 +56,49 @@ public static class PlantTaxonomyMapper
             GrowthInfo = growthInfo,
             ImageUrl = entity.ImageUrl,
             CategoryId = entity.CategoryId,
-            CategoryName = entity.Category?.Name
+            CategoryName = entity.Category?.Slug ?? entity.Category?.Name
         };
     }
 
     public static PlantTaxonomySummaryDto ToSummaryDto(PlantTaxonomy entity)
     {
-        string? commonName = null;
+        string? commonNameEn = null;
+        string? commonNameVi = null;
+
         if (entity.CommonNames != null)
         {
-            // Default to EN, fallback to VI
             try 
             {
-                if (entity.CommonNames.RootElement.TryGetProperty("en", out var enProp)) commonName = enProp.GetString();
-                if (string.IsNullOrEmpty(commonName) && entity.CommonNames.RootElement.TryGetProperty("vi", out var viProp)) commonName = viProp.GetString();
+                if (entity.CommonNames.RootElement.TryGetProperty("en", out var enProp)) commonNameEn = enProp.GetString();
+                if (entity.CommonNames.RootElement.TryGetProperty("vi", out var viProp)) commonNameVi = viProp.GetString();
             }
             catch { }
+        }
+
+        // Map Care & Growth for badges in list view
+        object? careInfo = null;
+        if (entity.CareInfo != null)
+        {
+            try { careInfo = JsonSerializer.Deserialize<object>(entity.CareInfo.RootElement.GetRawText(), JsonOptions); } catch {}
+        }
+
+        object? growthInfo = null;
+        if (entity.GrowthInfo != null)
+        {
+            try { growthInfo = JsonSerializer.Deserialize<object>(entity.GrowthInfo.RootElement.GetRawText(), JsonOptions); } catch {}
         }
 
         return new PlantTaxonomySummaryDto
         {
             Id = entity.Id,
             ScientificName = entity.ScientificName,
-            CommonName = commonName,
+            CommonName = commonNameEn ?? commonNameVi,
+            CommonNameEn = commonNameEn,
+            CommonNameVi = commonNameVi,
+            CareInfo = careInfo,
+            GrowthInfo = growthInfo,
             ImageUrl = entity.ImageUrl,
-            CategoryName = entity.Category?.Name
+            CategoryName = entity.Category?.Slug ?? entity.Category?.Name
         };
     }
 

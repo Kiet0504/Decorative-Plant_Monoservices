@@ -20,6 +20,25 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
 
     public async Task<PlantTaxonomyDto> Handle(CreatePlantTaxonomyCommand request, CancellationToken cancellationToken)
     {
+        Guid? finalCategoryId = request.CategoryId;
+        if (!finalCategoryId.HasValue && !string.IsNullOrEmpty(request.CategoryName))
+        {
+            var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
+            // Load all categories to perform robust in-memory matching
+            var allCategories = await categoryRepo.FindAsync(c => true, cancellationToken);
+            var searchName = request.CategoryName.Trim().ToLower().Replace(" ", "_");
+            
+            var category = allCategories.FirstOrDefault(c => 
+                (c.Slug != null && c.Slug.ToLower() == searchName) ||
+                (c.Name != null && c.Name.Trim().ToLower() == request.CategoryName.Trim().ToLower()) ||
+                (c.Name != null && c.Name.Replace(" ", "").Equals(request.CategoryName.Replace(" ", ""), StringComparison.OrdinalIgnoreCase)));
+            
+            if (category != null)
+            {
+                finalCategoryId = category.Id;
+            }
+        }
+
         var commonNamesJson = PlantTaxonomyMapper.BuildCommonNames(request.CommonNameEn, request.CommonNameVi);
         var taxonomyInfoJson = PlantTaxonomyMapper.BuildJson(request.TaxonomyInfo);
         var careInfoJson = PlantTaxonomyMapper.BuildJson(request.CareInfo);
@@ -34,7 +53,7 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
             CareInfo = careInfoJson,
             GrowthInfo = growthInfoJson,
             ImageUrl = request.ImageUrl,
-            CategoryId = request.CategoryId
+            CategoryId = finalCategoryId
         };
 
         var repo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
@@ -42,9 +61,9 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 
         // Fetch again to include category name if needed, or structured response
-        var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
         if (entity.CategoryId.HasValue)
         {
+            var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
             entity.Category = await categoryRepo.GetByIdAsync(entity.CategoryId.Value, cancellationToken);
         }
 

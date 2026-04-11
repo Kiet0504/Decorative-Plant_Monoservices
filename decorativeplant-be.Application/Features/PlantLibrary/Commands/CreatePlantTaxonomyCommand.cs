@@ -15,4 +15,5 @@ public class CreatePlantTaxonomyCommand : IRequest<PlantTaxonomyDto>
     
     public string? ImageUrl { get; set; }
     public Guid? CategoryId { get; set; }
+    public string? CategoryName { get; set; }
 }

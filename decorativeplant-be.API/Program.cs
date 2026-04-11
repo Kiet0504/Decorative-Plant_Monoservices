@@ -123,6 +123,7 @@ try
 
     var applyMigrations = app.Environment.IsDevelopment()
         || app.Configuration.GetValue("Database:ApplyMigrationsOnStartup", false);
+    
     if (applyMigrations)
     {
         using var scope = app.Services.CreateScope();
@@ -137,6 +138,22 @@ try
         {
             Log.Error(ex, "An error occurred while migrating the database");
             throw;
+        }
+    }
+
+    // Always ensure seed data is present in development or as configured
+    using (var scope = app.Services.CreateScope())
+    {
+        var services = scope.ServiceProvider;
+        try
+        {
+            var context = services.GetRequiredService<ApplicationDbContext>();
+            await DbInitializer.Seed(context);
+            Log.Information("Database seeding checked/completed successfully");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "An error occurred while seeding the database");
         }
     }
 
