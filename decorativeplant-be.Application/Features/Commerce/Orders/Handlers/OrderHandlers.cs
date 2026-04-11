@@ -409,6 +409,37 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
     }
 }
 
+public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    public ConfirmReceiptHandler(IApplicationDbContext context) => _context = context;
+
+    public async Task<OrderResponse> Handle(ConfirmReceiptCommand cmd, CancellationToken ct)
+    {
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.OrderId, ct)
+            ?? throw new NotFoundException($"Order {cmd.OrderId} not found.");
+
+        if (order.UserId != cmd.UserId)
+            throw new BadRequestException("You can only confirm receipt for your own orders.");
+
+        if (order.Status != "delivered")
+            throw new BadRequestException("Only delivered orders can be confirmed as received.");
+
+        order.Status = "completed";
+
+        var notesDict = new Dictionary<string, object?>();
+        if (order.Notes != null)
+            foreach (var p in order.Notes.RootElement.EnumerateObject())
+                notesDict[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+        notesDict["completed_at"] = DateTime.UtcNow.ToString("o");
+
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+
+        await _context.SaveChangesAsync(ct);
+        return CreateOrderHandler.MapToResponse(order);
+    }
+}
+
 public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<OrderResponse>>
 {
     private readonly IApplicationDbContext _context;
