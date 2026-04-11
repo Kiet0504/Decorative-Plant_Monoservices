@@ -34,7 +34,7 @@ public static class PlantBatchMapper
             ParentBatchCode = entity.ParentBatch?.BatchCode,
             BranchId = entity.BranchId,
             TaxonomyId = entity.TaxonomyId,
-            SpeciesName = entity.Taxonomy?.ScientificName, // Or common name if available/preferred
+            SpeciesName = GetSpeciesDisplayName(entity.Taxonomy),
             SupplierId = entity.SupplierId,
             SupplierName = entity.Supplier?.Name,
             SourceInfo = sourceInfo,
@@ -51,10 +51,38 @@ public static class PlantBatchMapper
         {
             Id = entity.Id,
             BatchCode = entity.BatchCode,
-            SpeciesName = entity.Taxonomy?.ScientificName,
+            SpeciesName = GetSpeciesDisplayName(entity.Taxonomy),
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             CreatedAt = entity.CreatedAt
         };
+    }
+
+    private static string? GetSpeciesDisplayName(PlantTaxonomy? taxonomy)
+    {
+        if (taxonomy == null) return null;
+        
+        if (taxonomy.CommonNames != null)
+        {
+            try
+            {
+                if (taxonomy.CommonNames.RootElement.TryGetProperty("en", out var enProp))
+                {
+                    var enName = enProp.GetString();
+                    if (!string.IsNullOrEmpty(enName)) return enName;
+                }
+                if (taxonomy.CommonNames.RootElement.TryGetProperty("vi", out var viProp))
+                {
+                    if (viProp.ValueKind == JsonValueKind.Array && viProp.GetArrayLength() > 0)
+                        return viProp.EnumerateArray().First().GetString();
+                    
+                    var viName = viProp.GetString();
+                    if (!string.IsNullOrEmpty(viName)) return viName;
+                }
+            }
+            catch { }
+        }
+
+        return taxonomy.ScientificName;
     }
 
     public static JsonDocument? BuildJson(object? data)
