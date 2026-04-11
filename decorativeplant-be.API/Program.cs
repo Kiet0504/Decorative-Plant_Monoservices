@@ -63,6 +63,8 @@ try
                     "http://localhost:3000",  // React dev server
                     "http://localhost:4173"   // React preview
                 )
+            policy.SetIsOriginAllowed(origin =>
+                    new Uri(origin).Host == "localhost")
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials();

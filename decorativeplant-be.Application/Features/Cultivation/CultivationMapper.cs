@@ -36,6 +36,56 @@ public static class CultivationMapper
         };
     }
 
+    public static BatchCareTaskDto ToTaskDto(CultivationLog entity)
+    {
+        if (entity == null) return new BatchCareTaskDto { Id = Guid.Empty, ProductName = "Null Entity", Status = "Error" };
+
+        var dueDate = ExtractValue(entity.Details, "due_date") ?? entity.PerformedAt?.ToString("yyyy-MM-dd") ?? "N/A";
+        var frequency = ExtractValue(entity.Details, "frequency") ?? "Once";
+        var repeatEvery = ExtractValue(entity.Details, "repeat_every") ?? "7 Days";
+        var status = ExtractValue(entity.Details, "status") ?? (entity.PerformedAt.HasValue ? "Done" : "Pending");
+
+        return new BatchCareTaskDto
+        {
+            Id = entity.Id,
+            ProductName = entity.Batch?.Taxonomy?.ScientificName ?? ExtractValue(entity.Details, "product_name") ?? "Unknown Plant",
+            Activity = entity.ActivityType ?? "General Care",
+            Batch = entity.Batch?.BatchCode ?? ExtractValue(entity.Details, "batch") ?? "Unknown Batch",
+            Frequency = frequency,
+            Date = dueDate,
+            Status = status,
+            RepeatEvery = repeatEvery
+        };
+    }
+
+    public static BatchCareTaskDetailDto ToTaskDetailDto(CultivationLog entity)
+    {
+        var baseDto = ToTaskDto(entity);
+        return new BatchCareTaskDetailDto
+        {
+            Id = baseDto.Id,
+            ProductName = baseDto.ProductName,
+            Activity = baseDto.Activity,
+            Batch = baseDto.Batch,
+            Frequency = baseDto.Frequency,
+            Date = baseDto.Date,
+            Status = baseDto.Status,
+            RepeatEvery = baseDto.RepeatEvery,
+            Description = entity.Description ?? string.Empty,
+            CareRequirement = ExtractValue(entity.Details, "care_requirement") ?? string.Empty
+        };
+    }
+
+    private static string? ExtractValue(JsonDocument? doc, string propertyName)
+    {
+        if (doc == null) return null;
+        if (doc.RootElement.TryGetProperty(propertyName, out var prop))
+        {
+            return prop.GetString();
+        }
+        return null;
+    }
+
     public static JsonDocument? BuildJson(object? data)
     {
         if (data == null) return null;

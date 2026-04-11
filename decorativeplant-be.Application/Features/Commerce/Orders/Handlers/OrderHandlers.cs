@@ -66,9 +66,14 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 var itemSubtotal = decimal.Parse(e.unitPrice) * e.reqItem.Quantity;
                 cartSubtotal += itemSubtotal;
 
-                // Reserve stock
+                // Reserve stock with pessimistic locking (SELECT ... FOR UPDATE)
+                // This prevents race conditions: if two users order the last item(s)
+                // concurrently, the second transaction will BLOCK here until the first
+                // commits, then read the updated (correct) available_quantity.
                 if (e.listing.BatchId.HasValue)
                 {
+                    // Acquire row-level lock (blocks concurrent transactions)
+                    await _context.AcquireStockLockAsync(e.listing.BatchId.Value, ct);
                     var stock = await _context.BatchStocks
                         .FirstOrDefaultAsync(s => s.BatchId == e.listing.BatchId, ct);
                     if (stock?.Quantities != null)
@@ -357,6 +362,12 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
 
     public async Task<OrderResponse> Handle(CancelOrderCommand cmd, CancellationToken ct)
     {
+        var strategy = _context.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+        using var transaction = await _context.Database.BeginTransactionAsync(ct);
+        try
+        {
         var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"Order {cmd.Id} not found.");
 
@@ -371,13 +382,15 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
         notes["cancellation_reason"] = cmd.Request.CancellationReason;
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
         
-        // Restore stock — must use BatchId (matching CreateOrderHandler which reserves by BatchId)
+        // Restore stock with pessimistic locking to prevent race conditions
         if (order.OrderItems != null)
         {
             foreach (var item in order.OrderItems)
             {
                 if (item.BatchId.HasValue)
                 {
+                    // Acquire row-level lock (blocks concurrent transactions)
+                    await _context.AcquireStockLockAsync(item.BatchId.Value, ct);
                     var stock = await _context.BatchStocks
                         .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
                     if (stock != null && stock.Quantities != null)
@@ -403,6 +416,45 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
                 }
             }
         }
+
+        await _context.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        return CreateOrderHandler.MapToResponse(order);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(ct);
+            throw;
+        }
+        }); // end strategy.ExecuteAsync
+    }
+}
+
+public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    public ConfirmReceiptHandler(IApplicationDbContext context) => _context = context;
+
+    public async Task<OrderResponse> Handle(ConfirmReceiptCommand cmd, CancellationToken ct)
+    {
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.OrderId, ct)
+            ?? throw new NotFoundException($"Order {cmd.OrderId} not found.");
+
+        if (order.UserId != cmd.UserId)
+            throw new BadRequestException("You can only confirm receipt for your own orders.");
+
+        if (order.Status != "delivered")
+            throw new BadRequestException("Only delivered orders can be confirmed as received.");
+
+        order.Status = "completed";
+
+        var notesDict = new Dictionary<string, object?>();
+        if (order.Notes != null)
+            foreach (var p in order.Notes.RootElement.EnumerateObject())
+                notesDict[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+        notesDict["completed_at"] = DateTime.UtcNow.ToString("o");
+
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
 
         await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);
