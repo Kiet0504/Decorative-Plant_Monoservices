@@ -15,6 +15,20 @@ namespace decorativeplant_be.API.Controllers;
 [Authorize]
 public class BranchController : BaseController
 {
+    [HttpGet]
+    [AllowAnonymous]
+    public async Task<ActionResult<List<BranchDto>>> GetAll([FromQuery] bool? onlyActive)
+    {
+        try
+        {
+            var result = await Mediator.Send(new GetAllBranchesQuery { OnlyActive = onlyActive ?? true });
+            return Ok(result);
+        }
+        catch (Exception)
+        {
+            return StatusCode(500, Problem("Unexpected error", statusCode: 500));
+        }
+    }
 
     [HttpGet("company/{companyId:guid}")]
     public async Task<ActionResult<List<BranchDto>>> GetByCompany(Guid companyId, [FromQuery] bool? onlyActive)
