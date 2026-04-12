@@ -68,7 +68,8 @@ public class OrdersController : BaseController
     public async Task<IActionResult> GetById(Guid id)
     {
         var isAdmin = User.IsInRole("admin");
-        var userId = isAdmin ? (Guid?)null : GetUserId();
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
+        var userId = (isAdmin || isStaff) ? (Guid?)null : GetUserId();
         var result = await Mediator.Send(new GetOrderByIdQuery { Id = id, UserId = userId });
         if (result == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
@@ -184,7 +185,7 @@ public class OrdersController : BaseController
     }
 
     [HttpPost("{id:guid}/tracking/switch-status")]
-    [Authorize(Roles = "store_staff,branch_manager,admin")]
+    [Authorize(Roles = "store_staff,branch_manager,fulfillment_staff,admin")]
     public async Task<IActionResult> SwitchGhnStatus(
         Guid id,
         [FromBody] SwitchGhnStatusRequest request,
@@ -289,7 +290,7 @@ public class OrdersController : BaseController
     }
 
     [HttpPatch("{id:guid}/status")]
-    [Authorize(Roles = "admin,store_staff,branch_manager")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateOrderStatusRequest request)
     {
         var result = await Mediator.Send(new UpdateOrderStatusCommand { Id = id, Request = request });
