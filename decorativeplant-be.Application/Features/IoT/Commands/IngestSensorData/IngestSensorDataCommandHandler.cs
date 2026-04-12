@@ -10,11 +10,13 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
 {
     private readonly IIotRepository _iotRepository;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IPublisher _publisher;
 
-    public IngestSensorDataCommandHandler(IIotRepository iotRepository, IUnitOfWork unitOfWork)
+    public IngestSensorDataCommandHandler(IIotRepository iotRepository, IUnitOfWork unitOfWork, IPublisher publisher)
     {
         _iotRepository = iotRepository;
         _unitOfWork = unitOfWork;
+        _publisher = publisher;
     }
 
     public async Task<bool> Handle(IngestSensorDataCommand request, CancellationToken cancellationToken)
@@ -55,8 +57,21 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
                     if (compKey != request.ComponentKey) continue;
 
                     var op = condition.GetProperty("operator").GetString();
-                    var thresholdStr = condition.GetProperty("threshold").GetRawText();
-                    if (!decimal.TryParse(thresholdStr, out decimal threshold)) continue;
+
+                    decimal threshold = 0;
+                    var thresholdProp = condition.GetProperty("threshold");
+                    if (thresholdProp.ValueKind == JsonValueKind.Number)
+                    {
+                        threshold = thresholdProp.GetDecimal();
+                    }
+                    else if (thresholdProp.ValueKind == JsonValueKind.String)
+                    {
+                        if (!decimal.TryParse(thresholdProp.GetString(), out threshold)) continue;
+                    }
+                    else
+                    {
+                        continue;
+                    }
 
                     bool triggered = op switch
                     {
@@ -77,15 +92,27 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
                             ComponentKey = request.ComponentKey,
                             AlertInfo = JsonSerializer.SerializeToDocument(new
                             {
+                                type = "RULE VIOLATION",
                                 message = $"Threshold Breached: {rule.Name}",
                                 ruleId = rule.Id,
                                 observedValue = request.Value,
                                 threshold = threshold,
-                                operatorUsed = op
+                                operatorUsed = op,
+                                sensor = request.ComponentKey,
+                                description = $"The sensor reported a value of {request.Value}, which violates the '{rule.Name}' rule ({op} {threshold}).",
+                                solution = "Inspect area and adjust environment."
                             }),
                             CreatedAt = DateTime.UtcNow
                         };
                         await _iotRepository.CreateIotAlertAsync(alert, cancellationToken);
+
+                        // Broadcast Domain Event into the background to handle asynchronous tasks like dispatching Emails
+                        await _publisher.Publish(new decorativeplant_be.Application.Features.IoT.Events.IotAlertTriggeredNotification
+                        {
+                            Device = device,
+                            Alert = alert,
+                            RuleName = rule.Name
+                        }, cancellationToken);
                     }
                 }
             }

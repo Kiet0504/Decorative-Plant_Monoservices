@@ -1,5 +1,6 @@
 // decorativeplant-be.Application/Features/Branch/Handlers/UnassignStaffFromBranchCommandHandler.cs
 
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Branch.Commands;
@@ -29,18 +30,16 @@ public class UnassignStaffFromBranchCommandHandler : IRequestHandler<UnassignSta
             throw new NotFoundException(nameof(Domain.Entities.StaffAssignment), request.StaffAssignmentId);
         }
 
-        // 1b. Prevent branchManager from deleting themselves
-        if (request.CurrentUserRole == "branchManager")
+        // 1b. Prevent branch_manager from deleting themselves or other branch managers
+        if (StaffRoleNormalizer.IsBranchManager(request.CurrentUserRole))
         {
-            // BranchManager cannot delete their own assignment
             if (request.CurrentUserId.HasValue && staffAssignment.StaffId == request.CurrentUserId.Value)
             {
                 throw new InvalidOperationException(
                     "Branch managers cannot delete their own staff assignment. Only administrators can remove branch managers.");
             }
 
-            // BranchManager cannot delete other branchManagers
-            if (staffAssignment.Staff.Role == "branchManager")
+            if (StaffRoleNormalizer.IsBranchManager(staffAssignment.Staff.Role))
             {
                 throw new InvalidOperationException(
                     "Branch managers cannot delete other branch managers. Only administrators can remove branch managers.");

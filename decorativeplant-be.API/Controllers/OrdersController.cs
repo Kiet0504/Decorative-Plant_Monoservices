@@ -228,6 +228,16 @@ public class OrdersController : BaseController
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
 
+    [HttpPost("{id:guid}/confirm-receipt")]
+    [Authorize]
+    public async Task<IActionResult> ConfirmReceipt(Guid id)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await Mediator.Send(new ConfirmReceiptCommand { OrderId = id, UserId = userId.Value });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order confirmed as received"));
+    }
+
     [HttpPost("offline-bopis-request")]
     [Authorize(Roles = "BrandManager,Admin")]
     public async Task<IActionResult> CreateOfflineBopis([FromBody] CreateOfflineBopisRequest request)

@@ -35,6 +35,8 @@ public interface IApplicationDbContext
     DbSet<PlantBatch> PlantBatches { get; }
     DbSet<PlantTaxonomy> PlantTaxonomies { get; }
     DbSet<StockTransfer> StockTransfers { get; }
+    DbSet<CultivationLog> CultivationLogs { get; }
+    DbSet<HealthIncident> HealthIncidents { get; }
     
     // Admin / Core
     DbSet<Company> Companies { get; }
@@ -56,6 +58,13 @@ public interface IApplicationDbContext
     DbSet<RecommendationLog> RecommendationLogs { get; }
 
     Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
+    
+    /// <summary>
+    /// Acquires a PostgreSQL row-level lock (FOR UPDATE) on the BatchStock row 
+    /// for the given batchId. Must be called within a transaction scope.
+    /// This prevents race conditions during concurrent stock reservations.
+    /// </summary>
+    Task AcquireStockLockAsync(Guid batchId, CancellationToken ct = default);
     
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

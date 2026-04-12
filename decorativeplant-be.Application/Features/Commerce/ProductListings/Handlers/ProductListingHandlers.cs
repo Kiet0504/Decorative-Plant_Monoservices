@@ -43,7 +43,10 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
                 price = req.Price,
                 stock_quantity = req.StockQuantity,
                 min_order = req.MinOrder,
-                max_order = req.MaxOrder
+                max_order = req.MaxOrder,
+                care_info = req.CareInfo != null ? JsonDocument.Parse(JsonSerializer.Serialize(req.CareInfo)) : null,
+                growth_info = req.GrowthInfo != null ? JsonDocument.Parse(JsonSerializer.Serialize(req.GrowthInfo)) : null,
+                taxonomy_info = req.TaxonomyInfo != null ? JsonDocument.Parse(JsonSerializer.Serialize(req.TaxonomyInfo)) : null
             })),
             StatusInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
@@ -67,6 +70,7 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         // Automatic Batch Creation if StockQuantity is provided
         if (req.StockQuantity > 0)
         {
+            
             var batch = new PlantBatch
             {
                 Id = Guid.NewGuid(),
@@ -111,6 +115,11 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             response.MinOrder = root.TryGetProperty("min_order", out var mn) ? mn.GetInt32() : 1;
             response.MaxOrder = root.TryGetProperty("max_order", out var mx) ? mx.GetInt32() : 10;
             response.StockQuantity = root.TryGetProperty("stock_quantity", out var sq) ? sq.GetInt32() : 0;
+            
+            // Map botanical info if it exists
+            if (root.TryGetProperty("care_info", out var ci) && ci.ValueKind != JsonValueKind.Null) response.CareInfo = JsonDocument.Parse(ci.GetRawText());
+            if (root.TryGetProperty("growth_info", out var gi) && gi.ValueKind != JsonValueKind.Null) response.GrowthInfo = JsonDocument.Parse(gi.GetRawText());
+            if (root.TryGetProperty("taxonomy_info", out var ti) && ti.ValueKind != JsonValueKind.Null) response.TaxonomyInfo = JsonDocument.Parse(ti.GetRawText());
         }
 
         // Override with real stock from linked batch if available
@@ -141,9 +150,24 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
                 SortOrder = img.TryGetProperty("sort_order", out var so) ? so.GetInt32() : 0
             }).ToList();
         }
+        
+        // Single branch stock entry if loaded
+        if (e.Branch != null)
+        {
+            response.BranchStocks.Add(new BranchStockDto
+            {
+                ListingId = e.Id,
+                BranchId = e.Branch.Id,
+                BranchName = e.Branch.Name,
+                Price = response.Price,
+                StockQuantity = response.StockQuantity
+            });
+        }
+
 
         return response;
     }
+
 }
 
 public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingCommand, ProductListingResponse>
@@ -206,6 +230,10 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         if (req.MinOrder.HasValue) productInfo["min_order"] = req.MinOrder.Value;
         if (req.MaxOrder.HasValue) productInfo["max_order"] = req.MaxOrder.Value;
         if (req.StockQuantity.HasValue) productInfo["stock_quantity"] = req.StockQuantity.Value;
+        if (req.CareInfo != null) productInfo["care_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.CareInfo));
+        if (req.GrowthInfo != null) productInfo["growth_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.GrowthInfo));
+        if (req.TaxonomyInfo != null) productInfo["taxonomy_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.TaxonomyInfo));
+        
         entity.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(productInfo));
 
         // Merge status_info
@@ -235,7 +263,7 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null => null,
-        _ => element.GetRawText()
+        _ => element
     };
 }
 
@@ -259,8 +287,14 @@ public class DeleteProductListingHandler : IRequestHandler<DeleteProductListingC
 public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery, PagedResult<ProductListingResponse>>
 {
     private readonly IApplicationDbContext _context;
-
     public GetProductListingsHandler(IApplicationDbContext context) => _context = context;
+
+    private static decimal ParsePrice(string? priceStr)
+    {
+        if (string.IsNullOrEmpty(priceStr)) return 0;
+        var digits = new string(priceStr.Where(char.IsDigit).ToArray());
+        return decimal.TryParse(digits, out var val) ? val : 0;
+    }
 
     public async Task<PagedResult<ProductListingResponse>> Handle(GetProductListingsQuery query, CancellationToken ct)
     {
@@ -268,25 +302,66 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             .Include(x => x.Batch)
             .AsQueryable();
 
+        // ── Admin/Branch specific view ──
         if (query.BranchId.HasValue)
         {
-            // Admin/branch-specific view: return raw listings without grouping
             q = q.Where(x => x.BranchId == query.BranchId.Value);
-            var total = await q.CountAsync(ct);
-            var entities = await q.OrderByDescending(x => x.CreatedAt)
+            var allEntities = await q.ToListAsync(ct);
+            var mappedInstances = allEntities.Select(CreateProductListingHandler.MapToResponse).ToList();
+
+            // Apply Status Filter
+            if (!string.IsNullOrEmpty(query.Status) && query.Status != "all")
+            {
+                mappedInstances = mappedInstances.Where(x => x.Status == query.Status).ToList();
+            }
+
+            // Apply Sort
+            if (!string.IsNullOrEmpty(query.SortBy))
+            {
+                var descending = query.SortOrder?.ToLower() == "desc";
+                var sortBy = query.SortBy.ToLower();
+
+                if (sortBy == "inventory")
+                {
+                    mappedInstances = descending 
+                        ? mappedInstances.OrderByDescending(x => x.StockQuantity).ThenBy(x => x.Title).ToList()
+                        : mappedInstances.OrderBy(x => x.StockQuantity).ThenBy(x => x.Title).ToList();
+                }
+                else if (sortBy == "price")
+                {
+                    mappedInstances = descending 
+                        ? mappedInstances.OrderByDescending(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList()
+                        : mappedInstances.OrderBy(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList();
+                }
+                else if (sortBy == "status")
+                {
+                    mappedInstances = descending 
+                        ? mappedInstances.OrderByDescending(x => x.Status).ThenBy(x => x.Title).ToList()
+                        : mappedInstances.OrderBy(x => x.Status).ThenBy(x => x.Title).ToList();
+                }
+                else if (sortBy == "createdat")
+                {
+                    mappedInstances = descending ? mappedInstances.OrderByDescending(x => x.CreatedAt).ToList() : mappedInstances.OrderBy(x => x.CreatedAt).ToList();
+                }
+                else
+                {
+                    mappedInstances = mappedInstances.OrderByDescending(x => x.CreatedAt).ToList();
+                }
+            }
+            else
+            {
+                mappedInstances = mappedInstances.OrderByDescending(x => x.CreatedAt).ToList();
+            }
+
+            var total = mappedInstances.Count;
+            var paged = mappedInstances
                 .Skip((query.Page - 1) * query.PageSize)
                 .Take(query.PageSize)
-                .ToListAsync(ct);
+                .ToList();
 
             return new PagedResult<ProductListingResponse>
             {
-                Items = entities.Select(e =>
-                {
-                    var r = CreateProductListingHandler.MapToResponse(e);
-                    r.TotalSystemStock = r.StockQuantity;
-                    r.AvailableBranches = 1;
-                    return r;
-                }).ToList(),
+                Items = paged,
                 TotalCount = total,
                 Page = query.Page,
                 PageSize = query.PageSize
@@ -294,8 +369,14 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
         }
 
         // ── Chain Store model: Group listings by title, aggregate stock ──
-        var allListings = await q.OrderByDescending(x => x.CreatedAt).ToListAsync(ct);
+        var allListings = await q.ToListAsync(ct);
         var mapped = allListings.Select(CreateProductListingHandler.MapToResponse).ToList();
+
+        // Apply Status Filter
+        if (!string.IsNullOrEmpty(query.Status) && query.Status != "all")
+        {
+            mapped = mapped.Where(x => x.Status == query.Status).ToList();
+        }
 
         // Group by normalized title (case-insensitive, trimmed)
         var grouped = mapped
@@ -309,6 +390,14 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 // Aggregate sold count & view count
                 primary.SoldCount = g.Sum(p => p.SoldCount);
                 primary.ViewCount = g.Sum(p => p.ViewCount);
+
+                // Populate all branches stock
+                primary.BranchStocks = g
+                    .Where(p => p.BranchId.HasValue)
+                    .Select(p => p.BranchStocks.FirstOrDefault())
+                    .Where(bs => bs != null)
+                    .ToList()!;
+                
                 return primary;
             })
             .ToList();
@@ -321,6 +410,46 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 (p.Title ?? "").ToLowerInvariant().Contains(searchLower) ||
                 (p.ScientificName ?? "").ToLowerInvariant().Contains(searchLower)
             ).ToList();
+        }
+
+        // Apply Sort to grouped results (for 'All Branches' view)
+        if (!string.IsNullOrEmpty(query.SortBy))
+        {
+            var descending = query.SortOrder?.ToLower() == "desc";
+            var sortBy = query.SortBy.ToLower();
+
+            if (sortBy == "inventory")
+            {
+                grouped = descending 
+                    ? grouped.OrderByDescending(x => x.TotalSystemStock).ThenBy(x => x.Title).ToList() 
+                    : grouped.OrderBy(x => x.TotalSystemStock).ThenBy(x => x.Title).ToList();
+            }
+            else if (sortBy == "price")
+            {
+                grouped = descending 
+                    ? grouped.OrderByDescending(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList() 
+                    : grouped.OrderBy(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList();
+            }
+            else if (sortBy == "status")
+            {
+                grouped = descending 
+                    ? grouped.OrderByDescending(x => x.Status).ThenBy(x => x.Title).ToList() 
+                    : grouped.OrderBy(x => x.Status).ThenBy(x => x.Title).ToList();
+            }
+            else if (sortBy == "createdat")
+            {
+                grouped = descending 
+                    ? grouped.OrderByDescending(x => x.CreatedAt).ToList() 
+                    : grouped.OrderBy(x => x.CreatedAt).ToList();
+            }
+            else
+            {
+                grouped = grouped.OrderByDescending(x => x.CreatedAt).ToList();
+            }
+        }
+        else
+        {
+            grouped = grouped.OrderByDescending(x => x.CreatedAt).ToList();
         }
 
         var totalCount = grouped.Count;
@@ -347,9 +476,39 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
 
     public async Task<ProductListingResponse?> Handle(GetProductListingByIdQuery query, CancellationToken ct)
     {
+
         var entity = await _context.ProductListings
             .Include(x => x.Batch)
+            .Include(x => x.Branch)
             .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
-        return entity == null ? null : CreateProductListingHandler.MapToResponse(entity);
+        
+        if (entity == null) return null;
+
+        var response = CreateProductListingHandler.MapToResponse(entity);
+        var normalizedTitle = (response.Title ?? "").Trim().ToLowerInvariant();
+
+        var allOthers = await _context.ProductListings
+            .Include(x => x.Batch)
+            .Include(x => x.Branch)
+            .Where(x => x.Id != entity.Id)
+            .ToListAsync(ct);
+
+        var matchingOthers = allOthers
+            .Where(e => (GetProductTitle(e) ?? "").Trim().ToLowerInvariant() == normalizedTitle)
+            .Select(CreateProductListingHandler.MapToResponse)
+            .ToList();
+
+        response.BranchStocks.AddRange(matchingOthers.SelectMany(x => x.BranchStocks));
+        response.TotalSystemStock = response.BranchStocks.Sum(x => x.StockQuantity);
+        response.AvailableBranches = response.BranchStocks.Select(x => x.BranchId).Distinct().Count();
+
+        return response;
+    }
+
+    private static string? GetProductTitle(ProductListing e)
+    {
+        if (e.ProductInfo == null) return null;
+        return e.ProductInfo.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 }
+

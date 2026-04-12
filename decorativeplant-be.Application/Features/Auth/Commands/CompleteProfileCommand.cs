@@ -24,4 +24,7 @@ public class CompleteProfileCommand : IRequest<bool>
 
     public string? BudgetRange { get; set; }
     public string? LocationCity { get; set; }
+
+    public string? FullName { get; set; }
+    public string? Phone { get; set; }
 }

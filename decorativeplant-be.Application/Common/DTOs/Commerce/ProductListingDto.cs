@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace decorativeplant_be.Application.Common.DTOs.Commerce;
 
 // ── Request DTOs ──
@@ -19,6 +21,10 @@ public class CreateProductListingRequest
     public string Visibility { get; set; } = "public";
     public bool Featured { get; set; }
     public List<string> Tags { get; set; } = new();
+    // Botanical Overlays
+    public object? CareInfo { get; set; }
+    public object? GrowthInfo { get; set; }
+    public object? TaxonomyInfo { get; set; }
     // SeoInfo JSONB
     public string? MetaTitle { get; set; }
     public string? MetaDescription { get; set; }
@@ -41,6 +47,10 @@ public class UpdateProductListingRequest
     public string? Visibility { get; set; }
     public bool? Featured { get; set; }
     public List<string>? Tags { get; set; }
+    // Botanical Overlays
+    public object? CareInfo { get; set; }
+    public object? GrowthInfo { get; set; }
+    public object? TaxonomyInfo { get; set; }
     public string? MetaTitle { get; set; }
     public string? MetaDescription { get; set; }
     public string? MetaKeywords { get; set; }
@@ -70,9 +80,24 @@ public class ProductListingResponse
     public List<ProductImageDto> Images { get; set; } = new();
     public DateTime? CreatedAt { get; set; }
 
+    // Botanical Details
+    public JsonDocument? CareInfo { get; set; }
+    public JsonDocument? GrowthInfo { get; set; }
+    public JsonDocument? TaxonomyInfo { get; set; }
+
     // Unified Product fields (Chain Store model)
     public int TotalSystemStock { get; set; }
     public int AvailableBranches { get; set; }
+    public List<BranchStockDto> BranchStocks { get; set; } = new();
+}
+
+public class BranchStockDto
+{
+    public Guid ListingId { get; set; }
+    public Guid BranchId { get; set; }
+    public string BranchName { get; set; } = string.Empty;
+    public string Price { get; set; } = "0";
+    public int StockQuantity { get; set; }
 }
 
 public class ProductImageDto
@@ -93,6 +118,10 @@ public class ProductInfoJsonb
     public string? Price { get; set; }
     public int MinOrder { get; set; } = 1;
     public int MaxOrder { get; set; } = 10;
+    // Botanical Info (Overlays from Taxonomy)
+    public JsonDocument? CareInfo { get; set; }
+    public JsonDocument? GrowthInfo { get; set; }
+    public JsonDocument? TaxonomyInfo { get; set; }
 }
 
 public class StatusInfoJsonb

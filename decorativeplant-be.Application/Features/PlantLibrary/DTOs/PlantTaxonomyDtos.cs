@@ -23,7 +23,11 @@ public class PlantTaxonomySummaryDto
 {
     public Guid Id { get; set; }
     public string ScientificName { get; set; } = string.Empty;
-    public string? CommonName { get; set; } // Localized based on context/default
+    public string? CommonName { get; set; } // Legacy combined field
+    public string? CommonNameEn { get; set; }
+    public string? CommonNameVi { get; set; }
+    public object? CareInfo { get; set; }
+    public object? GrowthInfo { get; set; }
     public string? ImageUrl { get; set; }
     public string? CategoryName { get; set; }
 }
@@ -40,6 +44,7 @@ public class CreatePlantTaxonomyDto
     
     public string? ImageUrl { get; set; }
     public Guid? CategoryId { get; set; }
+    public string? CategoryName { get; set; }
 }
 
 public class UpdatePlantTaxonomyDto : CreatePlantTaxonomyDto
