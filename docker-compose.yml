@@ -109,6 +109,11 @@ services:
       - GOOGLE__ClientSecret=${GOOGLE__ClientSecret:-}
       - GOOGLE__BaseUrl=${GOOGLE__BaseUrl:-http://localhost:8080/api}
       - FRONTEND__BaseUrl=${FRONTEND__BaseUrl:-http://localhost:5173}
+      #Ollama
+      - Ollama__BaseUrl=${Ollama__BaseUrl:-http://host.docker.internal:11434}
+      - Ollama__Model=${Ollama__Model:-llama3.1:8b}
+      - Ollama__TimeoutSeconds=${Ollama__TimeoutSeconds:-60}
+      - AiCare__CacheTtlHours=${AiCare__CacheTtlHours:-24}
     ports:
       - "8080:8080"
       - "8081:8081"

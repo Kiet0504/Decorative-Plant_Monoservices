@@ -67,6 +67,24 @@ public class GardenController : BaseController
         return StatusCode(201, ApiResponse<IReadOnlyList<GardenPlantDto>>.SuccessResponse(result, "Plants imported successfully.", 201));
     }
 
+    /// <summary>Preview taxonomy resolved from a purchase order line (same rules as import-from-purchase).</summary>
+    [HttpGet("purchase-preview/taxonomy/{orderItemId:guid}")]
+    public async Task<ActionResult<ApiResponse<OrderItemTaxonomyPreviewDto>>> GetPurchaseTaxonomyPreview(Guid orderItemId)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<OrderItemTaxonomyPreviewDto>.ErrorResponse("User ID is required."));
+        }
+
+        var result = await Mediator.Send(new GetOrderItemTaxonomyPreviewQuery
+        {
+            UserId = userId.Value,
+            OrderItemId = orderItemId,
+        });
+        return Ok(ApiResponse<OrderItemTaxonomyPreviewDto>.SuccessResponse(result));
+    }
+
     /// <summary>List garden plants for the current user.</summary>
     [HttpGet("plants")]
     public async Task<ActionResult<ApiResponse<PagedResultDto<GardenPlantDto>>>> ListPlants(
@@ -132,6 +150,28 @@ public class GardenController : BaseController
 
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<PlantProfileDto>.SuccessResponse(result));
+    }
+
+    /// <summary>Generate or fetch cached AI care advice for a plant.</summary>
+    [HttpGet("plants/{id:guid}/ai-care")]
+    public async Task<ActionResult<ApiResponse<AiCareAdviceDto>>> GetAiCareAdvice(
+        Guid id,
+        [FromQuery] bool force = false)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<AiCareAdviceDto>.ErrorResponse("User ID is required."));
+        }
+
+        var result = await Mediator.Send(new GenerateGardenPlantAiCareAdviceQuery
+        {
+            UserId = userId.Value,
+            PlantId = id,
+            Force = force
+        });
+
+        return Ok(ApiResponse<AiCareAdviceDto>.SuccessResponse(result));
     }
 
     /// <summary>Get growth gallery (photo diary) for a plant.</summary>

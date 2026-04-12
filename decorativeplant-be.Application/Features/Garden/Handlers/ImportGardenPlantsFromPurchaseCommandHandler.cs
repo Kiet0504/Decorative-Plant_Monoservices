@@ -97,6 +97,22 @@ public class ImportGardenPlantsFromPurchaseCommandHandler : IRequestHandler<Impo
                 ["quantity"] = orderItem.Quantity
             };
 
+            string? shopProductTitle = null;
+            if (orderItem.Snapshots != null)
+            {
+                var sn = orderItem.Snapshots.RootElement;
+                if (sn.TryGetProperty("title_snapshot", out var ts))
+                {
+                    shopProductTitle = ts.GetString();
+                }
+            }
+
+            var extras = new Dictionary<string, object?> { ["purchase"] = purchaseInfo };
+            if (!string.IsNullOrWhiteSpace(shopProductTitle))
+            {
+                extras["shop_product_title"] = shopProductTitle.Trim();
+            }
+
             var createCount = request.CreateMode == PurchaseImportCreateMode.OnePerQuantity
                 ? Math.Min(Math.Max(orderItem.Quantity, 1), MaxPlantsCreatedPerOrderItem)
                 : 1;
@@ -111,7 +127,7 @@ public class ImportGardenPlantsFromPurchaseCommandHandler : IRequestHandler<Impo
                     health: request.Health,
                     size: request.Size,
                     milestones: null,
-                    extras: new Dictionary<string, object?> { ["purchase"] = purchaseInfo });
+                    extras: extras);
 
                 var plant = new GardenPlant
                 {
