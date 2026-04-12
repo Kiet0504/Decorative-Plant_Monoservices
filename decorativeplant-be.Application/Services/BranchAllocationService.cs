@@ -89,8 +89,13 @@ public class BranchAllocationService : IBranchAllocationService
                     ? aq.GetInt32() : 0;
             }
         }
-
         return 0;
+    }
+
+    private static bool IsActiveListing(ProductListing listing)
+    {
+        if (listing.StatusInfo == null) return false;
+        return listing.StatusInfo.RootElement.TryGetProperty("status", out var st) && st.GetString() == "active";
     }
 
     public async Task<List<AllocationResult>> AllocateAsync(
@@ -125,7 +130,6 @@ public class BranchAllocationService : IBranchAllocationService
             .Distinct()
             .ToList();
 
-        // Load sibling listings: same taxonomy OR same title, across all branches
         var siblingListings = await _context.ProductListings
             .Include(l => l.Batch)
             .Include(l => l.Branch)
@@ -134,7 +138,11 @@ public class BranchAllocationService : IBranchAllocationService
             ))
             .ToListAsync(ct);
 
-        var allRelevantListings = primaryListings.Concat(siblingListings).ToList();
+        // Filter out any listings that are NOT active (Draft status)
+        var allRelevantListings = primaryListings
+            .Concat(siblingListings)
+            .Where(IsActiveListing)
+            .ToList();
 
         // Batch-load all stock data in one query instead of N+1
         var allBatchIds = allRelevantListings
