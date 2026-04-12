@@ -60,36 +60,35 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
 
             foreach (var bs in stocksToUpdate)
             {
-                foreach (var bs in entity.BatchStocks)
+                if (bs.Quantities == null) continue;
+
+                var jsonStr = bs.Quantities.RootElement.GetRawText();
+                var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr) ?? new();
+                
+                // Determine the limit (Total Received)
+                int limit = 0;
+                if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
+                else if (quantities.TryGetValue("quantity", out var q)) limit = q; // Fallback for old data
+                else limit = int.MaxValue; 
+
+                if (request.CurrentTotalQuantity.Value > limit)
                 {
-                    var jsonStr = bs.Quantities.RootElement.GetRawText();
-                    var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr) ?? new();
-                    
-                    // Determine the limit (Total Received)
-                    int limit = 0;
-                    if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
-                    else if (quantities.TryGetValue("quantity", out var q)) limit = q; // Fallback for old data
-                    else limit = int.MaxValue; 
-
-                    if (request.CurrentTotalQuantity.Value > limit)
-                    {
-                        throw new BadRequestException($"Cannot update stock to {request.CurrentTotalQuantity.Value}. Maximum available from cultivation is {limit}.");
-                    }
-
-                    // Update available_quantity
-                    quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
-                    
-                    // If this is a Sales location (reserved is usually 0), sync the 'quantity' as well
-                    if (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront")
-                    {
-                        if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
-                        {
-                            quantities["quantity"] = request.CurrentTotalQuantity.Value;
-                        }
-                    }
-
-                    bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
+                    throw new BadRequestException($"Cannot update stock to {request.CurrentTotalQuantity.Value}. Maximum available from cultivation is {limit}.");
                 }
+
+                // Update available_quantity
+                quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
+                
+                // If this is a Sales location (reserved is usually 0), sync the 'quantity' as well
+                if (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront")
+                {
+                    if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
+                    {
+                        quantities["quantity"] = request.CurrentTotalQuantity.Value;
+                    }
+                }
+
+                bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
             }
             
             // Update the master total in PlantBatch only if we updating globally

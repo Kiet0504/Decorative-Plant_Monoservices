@@ -24,7 +24,7 @@ public static class InventoryMapper
             FromLocationId = transfer.FromLocationId ?? Guid.Empty,
             ToLocationId = transfer.ToLocationId ?? Guid.Empty,
             Quantity = transfer.Quantity,
-            Status = transfer.Status,
+            Status = transfer.Status ?? "requested",
             CreatedAt = transfer.CreatedAt ?? DateTime.UtcNow,
             ShippedAt = GetLogisticsDate(transfer.LogisticsInfo, "shipped_at"),
             ReceivedAt = GetLogisticsDate(transfer.LogisticsInfo, "received_at")
