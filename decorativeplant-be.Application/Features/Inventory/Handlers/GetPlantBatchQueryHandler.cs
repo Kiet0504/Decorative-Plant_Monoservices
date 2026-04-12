@@ -4,6 +4,7 @@ using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
+using System.Text.Json;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 

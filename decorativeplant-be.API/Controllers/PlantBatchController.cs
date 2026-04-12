@@ -3,6 +3,7 @@ using decorativeplant_be.Application.Common.DTOs.Garden;
 using decorativeplant_be.Application.Features.Inventory.Commands;
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
+using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -73,5 +74,16 @@ public class PlantBatchController : BaseController
         };
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<PagedResultDto<PlantBatchSummaryDto>>.SuccessResponse(result, "Plant batches retrieved."));
+    }
+
+    /// <summary>
+    /// Delete an existing plant batch.
+    /// </summary>
+    [HttpDelete("{id}")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
+    public async Task<ActionResult<ApiResponse<Unit>>> Delete(Guid id)
+    {
+        await Mediator.Send(new DeletePlantBatchCommand(id));
+        return Ok(ApiResponse<Unit>.SuccessResponse(Unit.Value, "Plant batch deleted successfully."));
     }
 }

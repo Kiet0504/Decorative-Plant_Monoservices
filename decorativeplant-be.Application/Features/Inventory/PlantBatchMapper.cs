@@ -41,6 +41,7 @@ public static class PlantBatchMapper
             Specs = specs,
             InitialQuantity = entity.InitialQuantity ?? 0,
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
+            ImageUrl = entity.Taxonomy?.ImageUrl,
             CreatedAt = entity.CreatedAt
         };
     }
@@ -52,9 +53,25 @@ public static class PlantBatchMapper
             Id = entity.Id,
             BatchCode = entity.BatchCode,
             SpeciesName = GetSpeciesDisplayName(entity.Taxonomy),
+            HealthStatus = ExtractSpec(entity.Specs, "health_status") ?? "Healthy",
+            Stage = ExtractSpec(entity.Specs, "maturity_stage") ?? "Stable",
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             CreatedAt = entity.CreatedAt
         };
+    }
+
+    private static string? ExtractSpec(JsonDocument? specs, string key)
+    {
+        if (specs == null) return null;
+        try
+        {
+            if (specs.RootElement.TryGetProperty(key, out var prop))
+            {
+                return prop.GetString();
+            }
+        }
+        catch { }
+        return null;
     }
 
     private static string? GetSpeciesDisplayName(PlantTaxonomy? taxonomy)
