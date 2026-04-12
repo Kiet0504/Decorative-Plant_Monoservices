@@ -21,9 +21,22 @@ public static class HealthIncidentMapper
         }
         
         object? evidence = null;
+        string? imageUrl = null;
         if (entity.Images != null)
         {
-            try { evidence = JsonSerializer.Deserialize<object>(entity.Images.RootElement.GetRawText(), JsonOptions); } catch {}
+            try 
+            { 
+                evidence = JsonSerializer.Deserialize<object>(entity.Images.RootElement.GetRawText(), JsonOptions);
+                if (entity.Images.RootElement.TryGetProperty("urls", out var urls) && urls.ValueKind == JsonValueKind.Array && urls.GetArrayLength() > 0)
+                {
+                    imageUrl = urls[0].GetString();
+                }
+                else if (entity.Images.RootElement.ValueKind == JsonValueKind.Array && entity.Images.RootElement.GetArrayLength() > 0)
+                {
+                    imageUrl = entity.Images.RootElement[0].GetString();
+                }
+            } 
+            catch {}
         }
 
         string status = entity.StatusInfo?.RootElement.TryGetProperty("status", out var s) == true ? s.GetString() ?? "Unknown" : "Unknown";
@@ -44,6 +57,7 @@ public static class HealthIncidentMapper
             Description = entity.Description,
             TreatmentDetails = treatment,
             EvidenceImages = evidence,
+            ImageUrl = imageUrl,
             ReportedAt = reportedAt,
             // ReportedBy and ResolvedBy fields might be in JSON or navigation, checking entity definition...
             // Entity definition doesn't have ReportedBy/ResolvedBy columns. They should be in JSON StatusInfo or audit logs.

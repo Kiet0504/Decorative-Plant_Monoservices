@@ -13,6 +13,7 @@ public class HealthIncidentDto
     public string? Description { get; set; }
     public object? TreatmentDetails { get; set; } // JSONB
     public object? EvidenceImages { get; set; } // JSONB
+    public string? ImageUrl { get; set; }
     public DateTime? ReportedAt { get; set; }
     public Guid? ReportedBy { get; set; }
     public string? ReportedByName { get; set; }
@@ -34,6 +35,7 @@ public class CreateHealthIncidentDto
 public class ResolveHealthIncidentDto
 {
     public Guid Id { get; set; }
+    public string? Status { get; set; } // New field to support InTreatment, Monitoring, etc.
     public string ResolutionNotes { get; set; } = string.Empty;
     public Dictionary<string, object>? TreatmentDetails { get; set; }
     public DateTime? ResolvedAt { get; set; }
