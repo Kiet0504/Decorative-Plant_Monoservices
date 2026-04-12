@@ -96,6 +96,8 @@ public class BranchStockDto
     public Guid ListingId { get; set; }
     public Guid BranchId { get; set; }
     public string BranchName { get; set; } = string.Empty;
+    public string BranchAddress { get; set; } = string.Empty;
+    public JsonDocument? OperatingHours { get; set; }
     public string Price { get; set; } = "0";
     public int StockQuantity { get; set; }
 }

@@ -125,12 +125,18 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         // --- NEW: Force Taxonomy name for consistency in Admin view if Batch data is available ---
         if (e.Batch?.Taxonomy != null)
         {
-            if (e.Batch.Taxonomy.CommonNames != null && 
-                e.Batch.Taxonomy.CommonNames.RootElement.TryGetProperty("en", out var enProp))
+            string taxVi = "";
+            string taxEn = "";
+            if (e.Batch.Taxonomy.CommonNames != null)
             {
-                var taxEn = enProp.GetString();
-                if (!string.IsNullOrEmpty(taxEn)) response.Title = taxEn;
+                var root = e.Batch.Taxonomy.CommonNames.RootElement;
+                if (root.TryGetProperty("vi", out var viProp)) taxVi = viProp.GetString() ?? "";
+                if (root.TryGetProperty("en", out var enProp)) taxEn = enProp.GetString() ?? "";
             }
+            
+            var targetTitle = !string.IsNullOrEmpty(taxVi) ? taxVi : (!string.IsNullOrEmpty(taxEn) ? taxEn : e.Batch.Taxonomy.ScientificName);
+            if (!string.IsNullOrEmpty(targetTitle)) response.Title = targetTitle;
+            
             response.ScientificName = e.Batch.Taxonomy.ScientificName;
         }
 
@@ -175,11 +181,20 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         // Single branch stock entry if loaded
         if (e.Branch != null)
         {
+            string address = "";
+            if (e.Branch.ContactInfo != null)
+            {
+                if (e.Branch.ContactInfo.RootElement.TryGetProperty("full_address", out var addrProp))
+                    address = addrProp.GetString() ?? "";
+            }
+
             response.BranchStocks.Add(new BranchStockDto
             {
                 ListingId = e.Id,
                 BranchId = e.Branch.Id,
                 BranchName = e.Branch.Name,
+                BranchAddress = address,
+                OperatingHours = e.Branch.OperatingHours,
                 Price = response.Price,
                 StockQuantity = response.StockQuantity
             });
@@ -378,12 +393,18 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 primary.BranchStocks = g
                     .SelectMany(p => p.BranchStocks)
                     .GroupBy(bs => bs.BranchId)
-                    .Select(bsg => new BranchStockDto 
+                    .Select(bsg => 
                     {
-                        BranchId = bsg.Key,
-                        BranchName = bsg.First().BranchName,
-                        StockQuantity = bsg.Sum(x => x.StockQuantity),
-                        Price = bsg.OrderByDescending(x => x.StockQuantity).First().Price
+                        var first = bsg.First();
+                        return new BranchStockDto 
+                        {
+                            BranchId = bsg.Key,
+                            BranchName = first.BranchName,
+                            BranchAddress = first.BranchAddress,
+                            OperatingHours = first.OperatingHours,
+                            StockQuantity = bsg.Sum(x => x.StockQuantity),
+                            Price = bsg.OrderByDescending(x => x.StockQuantity).First().Price
+                        };
                     })
                     .ToList();
 
@@ -391,6 +412,10 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             })
             // CRITICAL: Filter out items with 0 available stock in the current context
             .Where(p => p.StockQuantity > 0) 
+            // Filter out items with 0 price for customers (unless viewing all listings as staff)
+            .Where(p => query.Status == "all" || decimal.Parse(p.Price ?? "0") > 0)
+            // Filter out draft items for customers
+            .Where(p => query.Status == "all" || p.Status == "active")
             .ToList();
 
         // 6. Post-grouping Search Filter
@@ -452,10 +477,20 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
             .Include(x => x.Batch)
                 .ThenInclude(b => b!.BatchStocks)
                     .ThenInclude(bs => bs.Location)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.Taxonomy)
+                    .ThenInclude(t => t!.Category)
             .Include(x => x.Branch)
             .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
         
         if (entity == null) return null;
+
+        // CRITICAL: Block draft products from being viewed via ID (unless staff access is implemented)
+        var status = "draft";
+        if (entity.StatusInfo != null && entity.StatusInfo.RootElement.TryGetProperty("status", out var st))
+            status = st.GetString() ?? "draft";
+        
+        if (status != "active") return null;
 
         var response = CreateProductListingHandler.MapToResponse(entity);
         var normalizedTitle = (response.Title ?? "").Trim().ToLowerInvariant();
