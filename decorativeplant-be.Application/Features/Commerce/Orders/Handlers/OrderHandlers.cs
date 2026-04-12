@@ -73,11 +73,8 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 cartSubtotal += itemSubtotal;
 
                 // Reserve stock with pessimistic locking via StockService
-                if (e.listing.BatchId.HasValue)
-                {
-                    var productName = e.title ?? e.reqItem.ListingId.ToString();
-                    await _stockService.ReserveStockAsync(e.listing.BatchId.Value, e.reqItem.Quantity, productName, ct);
-                }
+                var productName = e.title ?? e.reqItem.ListingId.ToString();
+                await _stockService.ReserveStockAsync(e.listing.Id, e.listing.BranchId, e.reqItem.Quantity, productName, ct);
 
                 orderItems.Add(new OrderItem
                 {
@@ -316,17 +313,9 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
         var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"Order {cmd.Id} not found.");
 
-        var oldStatus = order.Status;
-        order.Status = cmd.Request.Status;
-        
-        // Finalize stock deduction when transitioning to delivered/completed
-        if ((cmd.Request.Status == "delivered" || cmd.Request.Status == "completed") && oldStatus != "delivered" && oldStatus != "completed")
-        {
-            if (order.OrderItems != null)
-                await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
-        }
-
-        if (cmd.Request.Status == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
+        var normalizedStatus = cmd.Request.Status?.ToLowerInvariant() ?? "";
+        order.Status = normalizedStatus;
+        if (normalizedStatus == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
 
         var notesDict = new Dictionary<string, object?>();
         if (order.Notes != null)
@@ -414,8 +403,9 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
         if (order.UserId != cmd.UserId)
             throw new BadRequestException("You can only confirm receipt for your own orders.");
 
-        if (order.Status != "delivered")
-            throw new BadRequestException("Only delivered orders can be confirmed as received.");
+        var currentStatus = order.Status?.ToLowerInvariant();
+        if (currentStatus != "delivered" && currentStatus != "shipped")
+            throw new BadRequestException("Only delivered or shipped orders can be confirmed as received.");
 
         order.Status = "completed";
 

@@ -128,7 +128,7 @@ public class OrdersController : BaseController
 
         var userId = GetUserId();
         var isAdmin = User.IsInRole("admin");
-        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager");
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
 
         Guid? staffBranchId = null;
 
@@ -164,11 +164,12 @@ public class OrdersController : BaseController
                 if (string.IsNullOrEmpty(code)) continue;
 
                 // Staff only sees shipments belonging to their branch
-                if (isStaff)
+                // If shipment has no branch_id (null), show it to all staff
+                if (isStaff && staffBranchId.HasValue)
                 {
                     var shipmentBranchId = shipment.TryGetProperty("branch_id", out var bid)
                         ? bid.GetString() : null;
-                    if (shipmentBranchId != staffBranchId?.ToString()) continue;
+                    if (shipmentBranchId != null && shipmentBranchId != staffBranchId.Value.ToString()) continue;
                 }
 
                 var tracking = await shipping.TrackOrderAsync(code);
@@ -230,19 +231,29 @@ public class OrdersController : BaseController
             return BadRequest(ApiResponse<object>.ErrorResponse("No GHN shipments found for this order"));
 
         var switched = new List<string>();
+        var logger = HttpContext.RequestServices.GetRequiredService<ILogger<OrdersController>>();
+        logger.LogInformation("SwitchGhnStatus: orderId={OrderId}, isAdmin={IsAdmin}, staffBranchId={StaffBranchId}, targetStatus={Target}, shipmentCount={Count}",
+            id, isAdmin, staffBranchId, request.TargetStatus, shipments.GetArrayLength());
+
         foreach (var shipment in shipments.EnumerateArray())
         {
-            if (!shipment.TryGetProperty("tracking_code", out var tc)) continue;
+            if (!shipment.TryGetProperty("tracking_code", out var tc)) { logger.LogWarning("Shipment missing tracking_code, skipping"); continue; }
             var code = tc.GetString();
-            if (string.IsNullOrEmpty(code)) continue;
+            if (string.IsNullOrEmpty(code)) { logger.LogWarning("Shipment has empty tracking_code, skipping"); continue; }
 
-            if (!isAdmin)
+            if (!isAdmin && staffBranchId.HasValue)
             {
                 var shipmentBranchId = shipment.TryGetProperty("branch_id", out var bid) ? bid.GetString() : null;
-                if (shipmentBranchId != staffBranchId?.ToString()) continue;
+                if (shipmentBranchId != null && shipmentBranchId != staffBranchId.Value.ToString())
+                {
+                    logger.LogWarning("Shipment {Code} branch mismatch: {ShipBranch} != {StaffBranch}, skipping", code, shipmentBranchId, staffBranchId);
+                    continue;
+                }
             }
 
+            logger.LogInformation("Calling GHN switch-status for {Code} → {Target}", code, request.TargetStatus);
             var ok = await shipping.SwitchGhnStatusAsync(code, request.TargetStatus);
+            logger.LogInformation("GHN switch-status result for {Code}: {Result}", code, ok);
             if (ok) switched.Add(code);
         }
 

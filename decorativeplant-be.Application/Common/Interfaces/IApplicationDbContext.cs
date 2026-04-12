@@ -60,11 +60,11 @@ public interface IApplicationDbContext
     Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
     
     /// <summary>
-    /// Acquires a PostgreSQL row-level lock (FOR UPDATE) on the BatchStock row 
-    /// for the given batchId. Must be called within a transaction scope.
+    /// Acquires a PostgreSQL row-level lock (FOR UPDATE) on the ProductListing row 
+    /// for the given listingId. Must be called within a transaction scope.
     /// This prevents race conditions during concurrent stock reservations.
     /// </summary>
-    Task AcquireStockLockAsync(Guid batchId, CancellationToken ct = default);
+    Task AcquireStockLockAsync(Guid listingId, CancellationToken ct = default);
     
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

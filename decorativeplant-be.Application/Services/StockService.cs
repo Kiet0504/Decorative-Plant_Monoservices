@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -19,75 +18,102 @@ public class StockService : IStockService
         _logger = logger;
     }
 
-    public async Task ReserveStockAsync(Guid batchId, int quantity, string productName, CancellationToken ct = default)
+    public async Task ReserveStockAsync(Guid listingId, Guid? branchId, int quantity, string productName, CancellationToken ct = default)
     {
-        await _context.AcquireStockLockAsync(batchId, ct);
-        var stock = await _context.BatchStocks.FirstOrDefaultAsync(s => s.BatchId == batchId, ct);
-        if (stock?.Quantities == null) return;
+        // 1. Pessimistic lock on the ProductListing row
+        await _context.AcquireStockLockAsync(listingId, ct);
 
-        var (total, reserved, available) = ReadQuantities(stock.Quantities);
+        // 2. Load ProductListing and deduct system-wide stock_quantity
+        var listing = await _context.ProductListings
+            .FirstOrDefaultAsync(l => l.Id == listingId, ct);
+        if (listing?.ProductInfo == null)
+            throw new NotFoundException($"Listing {listingId} not found.");
 
-        if (available < quantity)
-            throw new BadRequestException($"Insufficient stock for '{productName}'. Available: {available}, requested: {quantity}.");
+        var listingStock = GetListingStockQuantity(listing.ProductInfo);
+        if (listingStock < quantity)
+            throw new BadRequestException($"Insufficient stock for '{productName}'. Available (system): {listingStock}, requested: {quantity}.");
 
-        reserved += quantity;
-        available -= quantity;
+        SetListingStockQuantity(listing, listingStock - quantity);
 
-        WriteQuantities(stock, total, reserved, available);
-        _logger.LogInformation("Reserved {Qty} units for BatchId {BatchId}", quantity, batchId);
-    }
-
-    public async Task RestoreReservedStockAsync(Guid batchId, int quantity, CancellationToken ct = default)
-    {
-        await _context.AcquireStockLockAsync(batchId, ct);
-        var stock = await _context.BatchStocks.FirstOrDefaultAsync(s => s.BatchId == batchId, ct);
-        if (stock?.Quantities == null) return;
-
-        var (total, reserved, available) = ReadQuantities(stock.Quantities);
-
-        reserved -= quantity;
-        if (reserved < 0) reserved = 0;
-        available += quantity;
-        if (available > total) available = total;
-
-        WriteQuantities(stock, total, reserved, available);
-        _logger.LogInformation("Restored {Qty} reserved units for BatchId {BatchId}", quantity, batchId);
-    }
-
-    public async Task DeductStockAsync(Guid batchId, int quantity, CancellationToken ct = default)
-    {
-        await _context.AcquireStockLockAsync(batchId, ct);
-        var stock = await _context.BatchStocks.FirstOrDefaultAsync(s => s.BatchId == batchId, ct);
-        if (stock?.Quantities == null) return;
-
-        var (total, reserved, available) = ReadQuantities(stock.Quantities);
-
-        reserved -= quantity;
-        if (reserved < 0) reserved = 0;
-        total -= quantity;
-        if (total < 0) total = 0;
-
-        // Also deduct from parent PlantBatch global counter
-        if (stock.BatchId != Guid.Empty)
+        // 3. Deduct branch-level available_quantity in BatchStock
+        //    reserved_quantity is NOT touched — it represents plants not for sale (staff-managed)
+        if (listing.BatchId.HasValue && branchId.HasValue)
         {
-            var batch = await _context.PlantBatches.FirstOrDefaultAsync(b => b.Id == stock.BatchId, ct);
-            if (batch != null)
+            var batchStock = await FindBatchStockAsync(listing.BatchId.Value, branchId.Value, ct);
+            if (batchStock?.Quantities != null)
             {
-                batch.CurrentTotalQuantity = (batch.CurrentTotalQuantity ?? 0) - quantity;
-                if (batch.CurrentTotalQuantity < 0) batch.CurrentTotalQuantity = 0;
+                var quantities = ReadQuantities(batchStock.Quantities);
+
+                if (quantities.Available < quantity)
+                    throw new BadRequestException($"Insufficient stock for '{productName}' at branch. Available: {quantities.Available}, requested: {quantity}.");
+
+                quantities.Available -= quantity;
+                WriteQuantities(batchStock, quantities);
             }
         }
 
-        WriteQuantities(stock, total, reserved, available);
-        _logger.LogInformation("Deducted {Qty} units from BatchId {BatchId} (total: {Total})", quantity, batchId, total);
+        _logger.LogInformation("Reserved {Qty} units for Listing {ListingId} at Branch {BranchId}", quantity, listingId, branchId);
+    }
+
+    public async Task RestoreReservedStockAsync(Guid listingId, Guid? branchId, int quantity, CancellationToken ct = default)
+    {
+        await _context.AcquireStockLockAsync(listingId, ct);
+
+        // 1. Restore system-wide stock_quantity
+        var listing = await _context.ProductListings
+            .FirstOrDefaultAsync(l => l.Id == listingId, ct);
+        if (listing?.ProductInfo != null)
+        {
+            var listingStock = GetListingStockQuantity(listing.ProductInfo);
+            SetListingStockQuantity(listing, listingStock + quantity);
+        }
+
+        // 2. Restore branch-level available_quantity
+        if (listing?.BatchId != null && branchId.HasValue)
+        {
+            var batchStock = await FindBatchStockAsync(listing.BatchId.Value, branchId.Value, ct);
+            if (batchStock?.Quantities != null)
+            {
+                var quantities = ReadQuantities(batchStock.Quantities);
+                quantities.Available += quantity;
+                WriteQuantities(batchStock, quantities);
+            }
+        }
+
+        _logger.LogInformation("Restored {Qty} units for Listing {ListingId} at Branch {BranchId}", quantity, listingId, branchId);
+    }
+
+    public async Task DeductStockAsync(Guid listingId, Guid? branchId, int quantity, CancellationToken ct = default)
+    {
+        // Finalizes after delivery/completion: plants physically left the branch.
+        // ProductListing.stock_quantity was already decremented during reservation.
+        // Here we only reduce BatchStock.quantity (total at branch).
+        await _context.AcquireStockLockAsync(listingId, ct);
+
+        var listing = await _context.ProductListings
+            .FirstOrDefaultAsync(l => l.Id == listingId, ct);
+
+        if (listing?.BatchId != null && branchId.HasValue)
+        {
+            var batchStock = await FindBatchStockAsync(listing.BatchId.Value, branchId.Value, ct);
+            if (batchStock?.Quantities != null)
+            {
+                var quantities = ReadQuantities(batchStock.Quantities);
+                quantities.Total -= quantity;
+                if (quantities.Total < 0) quantities.Total = 0;
+                WriteQuantities(batchStock, quantities);
+            }
+        }
+
+        _logger.LogInformation("Deducted {Qty} units for Listing {ListingId} at Branch {BranchId}", quantity, listingId, branchId);
     }
 
     public async Task RestoreOrderStockAsync(ICollection<OrderItem> orderItems, CancellationToken ct = default)
     {
         foreach (var item in orderItems)
         {
-            if (item.BatchId.HasValue)
-                await RestoreReservedStockAsync(item.BatchId.Value, item.Quantity, ct);
+            if (item.ListingId.HasValue)
+                await RestoreReservedStockAsync(item.ListingId.Value, item.BranchId, item.Quantity, ct);
         }
     }
 
@@ -95,28 +121,71 @@ public class StockService : IStockService
     {
         foreach (var item in orderItems)
         {
-            if (item.BatchId.HasValue)
-                await DeductStockAsync(item.BatchId.Value, item.Quantity, ct);
+            if (item.ListingId.HasValue)
+                await DeductStockAsync(item.ListingId.Value, item.BranchId, item.Quantity, ct);
         }
     }
 
-    private static (int total, int reserved, int available) ReadQuantities(JsonDocument doc)
+    // ── Helpers: BatchStock ──
+
+    private async Task<BatchStock?> FindBatchStockAsync(Guid batchId, Guid branchId, CancellationToken ct)
     {
-        var root = doc.RootElement;
-        var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
-        var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
-        var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
-        return (total, reserved, available);
+        return await _context.BatchStocks
+            .Include(bs => bs.Location)
+            .Where(bs => bs.BatchId == batchId && bs.Location != null && bs.Location.BranchId == branchId)
+            .FirstOrDefaultAsync(ct);
     }
 
-    private static void WriteQuantities(BatchStock stock, int total, int reserved, int available)
+    // Struct to hold parsed BatchStock quantities
+    private class StockQuantities
     {
-        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+        public int Total { get; set; }
+        public int Reserved { get; set; }
+        public int Available { get; set; }
+        public int? TotalReceived { get; set; }
+    }
+
+    private static StockQuantities ReadQuantities(JsonDocument doc)
+    {
+        var root = doc.RootElement;
+        return new StockQuantities
         {
-            quantity = total,
-            reserved_quantity = reserved,
-            available_quantity = available
-        }));
+            Total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0,
+            Reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0,
+            Available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0,
+            TotalReceived = root.TryGetProperty("total_received", out var tr) ? tr.GetInt32() : null
+        };
+    }
+
+    private static void WriteQuantities(BatchStock stock, StockQuantities quantities)
+    {
+        var dict = new Dictionary<string, int>
+        {
+            ["quantity"] = quantities.Total,
+            ["reserved_quantity"] = quantities.Reserved,  // preserved as-is (staff-managed)
+            ["available_quantity"] = quantities.Available
+        };
+        if (quantities.TotalReceived.HasValue)
+            dict["total_received"] = quantities.TotalReceived.Value;
+
+        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(dict));
         stock.UpdatedAt = DateTime.UtcNow;
+    }
+
+    // ── Helpers: ProductListing ──
+
+    private static int GetListingStockQuantity(JsonDocument productInfo)
+    {
+        return productInfo.RootElement.TryGetProperty("stock_quantity", out var sq) ? sq.GetInt32() : 0;
+    }
+
+    private static void SetListingStockQuantity(ProductListing listing, int newStockQuantity)
+    {
+        if (listing.ProductInfo == null) return;
+
+        var info = JsonSerializer.Deserialize<Dictionary<string, object>>(
+            listing.ProductInfo.RootElement.GetRawText()) ?? new();
+        info["stock_quantity"] = newStockQuantity;
+        listing.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(info));
     }
 }
