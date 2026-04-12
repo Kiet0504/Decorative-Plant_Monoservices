@@ -26,6 +26,7 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
     {
         var entity = await _context.PlantBatches
             .Include(b => b.BatchStocks)
+                .ThenInclude(bs => bs.Location)
             .Include(b => b.ProductListings)
             .FirstOrDefaultAsync(b => b.Id == request.Id, cancellationToken);
 
@@ -49,20 +50,53 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         if (request.ParentBatchId.HasValue)
             entity.ParentBatchId = request.ParentBatchId;
             
-        // 1. Sync Quantities to BatchStock
+        // 1. Sync Quantities to BatchStock with Validation
         if (request.CurrentTotalQuantity.HasValue && entity.BatchStocks != null)
         {
-            entity.CurrentTotalQuantity = request.CurrentTotalQuantity;
-            foreach (var bs in entity.BatchStocks)
+            // Filter stocks to update: if BranchId is provided, only update that branch's sales stock
+            var stocksToUpdate = request.BranchId.HasValue 
+                ? entity.BatchStocks.Where(bs => bs.Location?.BranchId == request.BranchId && 
+                                               (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront"))
+                : entity.BatchStocks;
+
+            foreach (var bs in stocksToUpdate)
             {
                 if (bs.Quantities != null)
                 {
-                    // Update available_quantity in JSONB
                     var jsonStr = bs.Quantities.RootElement.GetRawText();
-                    var quantities = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonStr) ?? new();
+                    var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr) ?? new();
+                    
+                    // Determine the limit (Total Received)
+                    int limit = 0;
+                    if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
+                    else if (quantities.TryGetValue("quantity", out var q)) limit = q; // Fallback for old data
+                    else limit = int.MaxValue; 
+
+                    if (request.CurrentTotalQuantity.Value > limit)
+                    {
+                        throw new BadRequestException($"Cannot update stock to {request.CurrentTotalQuantity.Value}. Maximum available from cultivation is {limit}.");
+                    }
+
+                    // Update available_quantity
                     quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
+                    
+                    // If this is a Sales location (reserved is usually 0), sync the 'quantity' as well
+                    if (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront")
+                    {
+                        if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
+                        {
+                            quantities["quantity"] = request.CurrentTotalQuantity.Value;
+                        }
+                    }
+
                     bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
                 }
+            }
+            
+            // Update the master total in PlantBatch only if we updating globally
+            if (!request.BranchId.HasValue)
+            {
+                 entity.CurrentTotalQuantity = request.CurrentTotalQuantity;
             }
         }
 
