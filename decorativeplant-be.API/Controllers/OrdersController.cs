@@ -17,11 +17,49 @@ public class OrdersController : BaseController
 {
     [HttpGet]
     [Authorize]
-    public async Task<IActionResult> GetOrders([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public async Task<IActionResult> GetOrders(
+        [FromQuery] Guid? branchId,
+        [FromQuery] string? status,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromServices] IApplicationDbContext context = null!)
     {
         var isAdmin = User.IsInRole("admin");
-        var userId = isAdmin ? null : GetUserId();
-        var result = await Mediator.Send(new GetOrdersQuery { UserId = userId, BranchId = branchId, Status = status, Page = page, PageSize = pageSize });
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
+
+        Guid? userId = null;
+        Guid? effectiveBranchId = branchId;
+
+        if (isAdmin)
+        {
+            // Admin sees everything — no userId / branchId filter unless explicitly passed
+        }
+        else if (isStaff)
+        {
+            
+            if (!effectiveBranchId.HasValue)
+            {
+                var staffUserId = GetUserId();
+                effectiveBranchId = await context.StaffAssignments
+                    .Where(s => s.StaffId == staffUserId && s.IsPrimary)
+                    .Select(s => (Guid?)s.BranchId)
+                    .FirstOrDefaultAsync();
+            }
+        }
+        else
+        {
+            // Regular customer — only see their own orders
+            userId = GetUserId();
+        }
+
+        var result = await Mediator.Send(new GetOrdersQuery
+        {
+            UserId = userId,
+            BranchId = effectiveBranchId,
+            Status = status,
+            Page = page,
+            PageSize = pageSize
+        });
         return Ok(ApiResponse<PagedResult<OrderResponse>>.SuccessResponse(result));
     }
 
