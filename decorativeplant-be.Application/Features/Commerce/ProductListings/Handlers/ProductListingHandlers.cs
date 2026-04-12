@@ -122,10 +122,31 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             if (root.TryGetProperty("taxonomy_info", out var ti) && ti.ValueKind != JsonValueKind.Null) response.TaxonomyInfo = JsonDocument.Parse(ti.GetRawText());
         }
 
-        // Override with real stock from linked batch if available
-        if (e.Batch != null) 
+        // --- NEW: Force Taxonomy name for consistency in Admin view if Batch data is available ---
+        if (e.Batch?.Taxonomy != null)
         {
-            response.StockQuantity = e.Batch.CurrentTotalQuantity ?? 0;
+            if (e.Batch.Taxonomy.CommonNames != null && 
+                e.Batch.Taxonomy.CommonNames.RootElement.TryGetProperty("en", out var enProp))
+            {
+                var taxEn = enProp.GetString();
+                if (!string.IsNullOrEmpty(taxEn)) response.Title = taxEn;
+            }
+            response.ScientificName = e.Batch.Taxonomy.ScientificName;
+        }
+
+        // Strictly use real stock from linked batch inventory (BatchStock)
+        response.StockQuantity = 0;
+        if (e.Batch != null && e.Batch.BatchStocks != null)
+        {
+            // We use the available quantity at the specific branch location
+            var batchStock = e.Batch.BatchStocks.FirstOrDefault(s => s.Location?.BranchId == e.BranchId);
+            if (batchStock != null && batchStock.Quantities != null)
+            {
+                if (batchStock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+                {
+                    response.StockQuantity = aq.GetInt32();
+                }
+            }
         }
 
         if (e.StatusInfo != null)
@@ -300,6 +321,11 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
     {
         var q = _context.ProductListings
             .Include(x => x.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.Taxonomy)
+            .Where(x => x.Batch != null && x.Batch.BatchStocks.Any()) // Only show published items
             .AsQueryable();
 
         // ── Admin/Branch specific view ──
@@ -308,12 +334,18 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             q = q.Where(x => x.BranchId == query.BranchId.Value);
             var allEntities = await q.ToListAsync(ct);
             var mappedInstances = allEntities.Select(CreateProductListingHandler.MapToResponse).ToList();
+            
+            // For admin branch view, we still might want to see out of stock, 
+            // but the user said they are "extra/redundant", so let's filter 0 stock if they are not active
+            // mappedInstances = mappedInstances.Where(x => x.StockQuantity > 0).ToList();
 
             // Apply Status Filter
             if (!string.IsNullOrEmpty(query.Status) && query.Status != "all")
             {
                 mappedInstances = mappedInstances.Where(x => x.Status == query.Status).ToList();
             }
+            
+            // ... (keep sorting logic as is)
 
             // Apply Sort
             if (!string.IsNullOrEmpty(query.SortBy))
@@ -378,9 +410,9 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             mapped = mapped.Where(x => x.Status == query.Status).ToList();
         }
 
-        // Group by normalized title (case-insensitive, trimmed)
+        // Group by normalized Scientific Name (to merge different language titles)
         var grouped = mapped
-            .GroupBy(p => (p.Title ?? "").Trim().ToLowerInvariant())
+            .GroupBy(p => (p.ScientificName ?? p.Title ?? "").Trim().ToLowerInvariant())
             .Select(g =>
             {
                 // Pick the listing with the highest stock as the "primary" representative
@@ -400,6 +432,7 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 
                 return primary;
             })
+            // .Where(p => p.TotalSystemStock > 0) // Hide items that are globally out of stock
             .ToList();
 
         // Apply search filter (post-grouping, on title)
@@ -479,6 +512,8 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
 
         var entity = await _context.ProductListings
             .Include(x => x.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
             .Include(x => x.Branch)
             .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
         
@@ -489,6 +524,8 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
 
         var allOthers = await _context.ProductListings
             .Include(x => x.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
             .Include(x => x.Branch)
             .Where(x => x.Id != entity.Id)
             .ToListAsync(ct);
