@@ -300,7 +300,13 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand, OrderResponse>
 {
     private readonly IApplicationDbContext _context;
-    public UpdateOrderStatusHandler(IApplicationDbContext context) => _context = context;
+    private readonly IStockService _stockService;
+
+    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService)
+    {
+        _context = context;
+        _stockService = stockService;
+    }
 
     public async Task<OrderResponse> Handle(UpdateOrderStatusCommand cmd, CancellationToken ct)
     {
