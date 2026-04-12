@@ -1,4 +1,5 @@
 using decorativeplant_be.Application.Common.Interfaces;
+using decorativeplant_be.Application.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -91,45 +92,11 @@ public class PendingOrderCleanupJob : BackgroundService
                         notes["expired_at"] = DateTime.UtcNow.ToString("o");
                         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
 
-                        // Restore stock with pessimistic locking
+                        // Restore stock with pessimistic locking via StockService
                         if (order.OrderItems != null)
                         {
-                            foreach (var item in order.OrderItems)
-                            {
-                                if (item.BatchId.HasValue)
-                                {
-                                    // Lock the row first to prevent concurrent stock modification
-                                    await context.AcquireStockLockAsync(item.BatchId.Value, cancellationToken);
-
-                                    var stock = await context.BatchStocks
-                                        .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, cancellationToken);
-
-                                    if (stock != null && stock.Quantities != null)
-                                    {
-                                        var root = stock.Quantities.RootElement;
-                                        var total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
-                                        var reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
-                                        var available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
-
-                                        var q = item.Quantity;
-                                        reserved -= q;
-                                        if (reserved < 0) reserved = 0;
-                                        available += q;
-                                        if (available > total) available = total;
-
-                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-                                        {
-                                            quantity = total,
-                                            reserved_quantity = reserved,
-                                            available_quantity = available
-                                        }));
-
-                                        _logger.LogInformation(
-                                            "Restored {Qty} units for Order {OrderCode}, BatchId {BatchId}",
-                                            q, order.OrderCode, item.BatchId);
-                                    }
-                                }
-                            }
+                            var stockService = scope.ServiceProvider.GetRequiredService<IStockService>();
+                            await stockService.RestoreOrderStockAsync(order.OrderItems, cancellationToken);
                         }
 
                         await context.SaveChangesAsync(cancellationToken);

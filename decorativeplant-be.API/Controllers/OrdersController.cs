@@ -29,7 +29,9 @@ public class OrdersController : BaseController
     [Authorize]
     public async Task<IActionResult> GetById(Guid id)
     {
-        var result = await Mediator.Send(new GetOrderByIdQuery { Id = id });
+        var isAdmin = User.IsInRole("admin");
+        var userId = isAdmin ? (Guid?)null : GetUserId();
+        var result = await Mediator.Send(new GetOrderByIdQuery { Id = id, UserId = userId });
         if (result == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
@@ -213,7 +215,7 @@ public class OrdersController : BaseController
     }
 
     [HttpPatch("{id:guid}/status")]
-    [Authorize]
+    [Authorize(Roles = "admin,store_staff,branch_manager")]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateOrderStatusRequest request)
     {
         var result = await Mediator.Send(new UpdateOrderStatusCommand { Id = id, Request = request });

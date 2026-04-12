@@ -46,11 +46,7 @@ public class AddressesController : BaseController
         var addresses = new List<AddressDto>();
         if (user.Addresses != null)
         {
-            try
-            {
-                addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
-            }
-            catch { }
+            addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
         }
 
         return Ok(ApiResponse<List<AddressDto>>.SuccessResponse(addresses));
@@ -68,11 +64,7 @@ public class AddressesController : BaseController
         var addresses = new List<AddressDto>();
         if (user.Addresses != null)
         {
-            try
-            {
-                addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
-            }
-            catch { }
+            addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
         }
 
         if (string.IsNullOrEmpty(request.Id))
@@ -110,11 +102,7 @@ public class AddressesController : BaseController
         var addresses = new List<AddressDto>();
         if (user.Addresses != null)
         {
-            try
-            {
-                addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
-            }
-            catch { }
+            addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
         }
 
         var existing = addresses.FirstOrDefault(a => a.Id == id);
@@ -158,11 +146,7 @@ public class AddressesController : BaseController
         var addresses = new List<AddressDto>();
         if (user.Addresses != null)
         {
-            try
-            {
-                addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
-            }
-            catch { }
+            addresses = JsonSerializer.Deserialize<List<AddressDto>>(user.Addresses.RootElement.GetRawText(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new List<AddressDto>();
         }
 
         var count = addresses.RemoveAll(a => a.Id == id);

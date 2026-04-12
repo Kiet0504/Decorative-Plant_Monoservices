@@ -35,6 +35,16 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         if (orders.Count == 0)
             throw new NotFoundException($"None of the requested orders were found.");
 
+        // Validate order ownership — user can only pay for their own orders
+        foreach (var order in orders)
+        {
+            if (order.UserId != cmd.UserId)
+                throw new BadRequestException($"Order {order.OrderCode} does not belong to you.");
+
+            if (order.Status != "pending")
+                throw new BadRequestException($"Order {order.OrderCode} is not in 'pending' status (current: {order.Status}).");
+        }
+
         int totalAmount = 0;
         var payOSItems = new List<PayOSItem>();
 
@@ -126,19 +136,22 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly ILogger<HandlePayOSWebhookHandler> _logger;
     private readonly IEmailTemplateService _emailTemplateService;
     private readonly IShippingService _shippingService;
+    private readonly IStockService _stockService;
 
     public HandlePayOSWebhookHandler(
         IApplicationDbContext context,
         IPayOSService payOS,
         ILogger<HandlePayOSWebhookHandler> logger,
         IEmailTemplateService emailTemplateService,
-        IShippingService shippingService)
+        IShippingService shippingService,
+        IStockService stockService)
     {
         _context = context;
         _payOS = payOS;
         _logger = logger;
         _emailTemplateService = emailTemplateService;
         _shippingService = shippingService;
+        _stockService = stockService;
     }
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
@@ -222,174 +235,143 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         details["status"] = isSuccess ? "paid" : "failed";
         payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
 
-        if (isSuccess)
+        // Wrap stock + order mutations in a transaction with pessimistic locking
+        var strategy = _context.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            if (orderIdsList.Any())
+            using var transaction = await _context.Database.BeginTransactionAsync(ct);
+            try
             {
-                var orders = await _context.OrderHeaders
-                    .Include(o => o.User)
-                    .Include(o => o.OrderItems)
-                    .Where(o => orderIdsList.Contains(o.Id))
-                    .ToListAsync(ct);
-
-                foreach (var order in orders)
+                if (isSuccess)
                 {
-                    if (order.Status == "pending")
+                    if (orderIdsList.Any())
                     {
-                        order.Status = "confirmed";
-                        order.ConfirmedAt = DateTime.UtcNow;
+                        var orders = await _context.OrderHeaders
+                            .Include(o => o.User)
+                            .Include(o => o.OrderItems)
+                            .Where(o => orderIdsList.Contains(o.Id))
+                            .ToListAsync(ct);
 
-                        // Remove items from user's cart
-                        if (order.UserId != Guid.Empty)
+                        foreach (var order in orders)
                         {
-                            var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
-                            if (cart != null && cart.Items != null && order.OrderItems != null)
+                            if (order.Status == "pending")
                             {
-                                var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
-                                var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
+                                order.Status = "confirmed";
+                                order.ConfirmedAt = DateTime.UtcNow;
 
-                                if (purchasedListingIds.Any())
+                                // Remove items from user's cart
+                                if (order.UserId != Guid.Empty)
                                 {
-                                    cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
-                                    cart.Items = AddToCartHandler.SerializeItems(cartItems);
-                                    cart.UpdatedAt = DateTime.UtcNow;
-                                }
-                            }
-                        }
-
-                        // Deduct stock (from reserved to completed)
-                        if (order.OrderItems != null)
-                        {
-                            foreach (var item in order.OrderItems)
-                            {
-                                if (item.BatchId.HasValue)
-                                {
-                                    var stock = await _context.BatchStocks.FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
-                                    if (stock != null && stock.Quantities != null)
+                                    var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
+                                    if (cart != null && cart.Items != null && order.OrderItems != null)
                                     {
-                                        var root = stock.Quantities.RootElement;
-                                        var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
-                                        var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
-                                        var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
+                                        var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
+                                        var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
 
-                                        var q = item.Quantity;
-                                        // Finalize deduction: subtract from both total and reserved
-                                        reserved -= q;
-                                        if (reserved < 0) reserved = 0;
-                                        total -= q;
-                                        if (total < 0) total = 0;
-
-                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                                        if (purchasedListingIds.Any())
                                         {
-                                            quantity = total,
-                                            reserved_quantity = reserved,
-                                            available_quantity = available // (total-q) - (reserved-q) = same as before
-                                        }));
-                                        stock.UpdatedAt = DateTime.UtcNow;
+                                            cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
+                                            cart.Items = AddToCartHandler.SerializeItems(cartItems);
+                                            cart.UpdatedAt = DateTime.UtcNow;
+                                        }
                                     }
                                 }
-                            }
-                        }
 
-                        // Create GHN shipping order now that payment is confirmed
-                        await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+                                // Deduct stock with pessimistic locking
+                                if (order.OrderItems != null)
+                                    await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
 
-                        // Send Email Notification
-                        try
-                        {
-                            if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
-                            {
-                                var total = "0";
-                                if (order.Financials != null)
-                                {
-                                    total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
-                                }
-
-                                var model = new Dictionary<string, string>
-                                {
-                                    { "CustomerName", order.User.DisplayName ?? "Customer" },
-                                    { "OrderCode", order.OrderCode ?? "N/A" },
-                                    { "BranchName", "Decorative Plant Store" },
-                                    { "Total", total }
-                                };
-
-                                await _emailTemplateService.SendTemplateAsync(
-                                    "OrderConfirmed",
-                                    model,
-                                    order.User.Email,
-                                    $"Order Confirmed - {order.OrderCode}",
-                                    order.User.DisplayName,
-                                    ct);
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
-                            // Don't fail the whole transaction if email fails
-                        }
-                    }
-                }
-            }
-        }
-        else
-        {
-            if (orderIdsList.Any())
-            {
-                var orders = await _context.OrderHeaders
-                    .Include(o => o.OrderItems)
-                    .Where(o => orderIdsList.Contains(o.Id))
-                    .ToListAsync(ct);
-
-                foreach (var order in orders)
-                {
-                    if (order.Status == "pending")
-                    {
-                        order.Status = "cancelled";
-
-                        var notes = new Dictionary<string, object?>();
-                        if (order.Notes != null)
-                            foreach (var p in order.Notes.RootElement.EnumerateObject())
-                                notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
-
-                        notes["cancellation_reason"] = $"Payment failed or cancelled via PayOS Webhook (Code: {cmd.Webhook.Code}).";
-                        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
-
-                        // Restore stock
-                        if (order.OrderItems != null)
-                        {
-                            foreach (var item in order.OrderItems)
-                            {
-                                if (item.BatchId.HasValue)
-                                {
-                                    var stock = await _context.BatchStocks
-                                        .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
-                                    if (stock != null && stock.Quantities != null)
-                                    {
-                                        var root = stock.Quantities.RootElement;
-                                        var total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
-                                        var reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
-                                        var available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
-
-                                        var q = item.Quantity;
-                                        reserved -= q;
-                                        if (reserved < 0) reserved = 0;
-                                        available += q;
-
-                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-                                        {
-                                            quantity = total,
-                                            reserved_quantity = reserved,
-                                            available_quantity = available
-                                        }));
-                                    }
-                                }
+                                // Create GHN shipping order now that payment is confirmed
+                                await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                             }
                         }
                     }
                 }
+                else
+                {
+                    if (orderIdsList.Any())
+                    {
+                        var orders = await _context.OrderHeaders
+                            .Include(o => o.OrderItems)
+                            .Where(o => orderIdsList.Contains(o.Id))
+                            .ToListAsync(ct);
+
+                        foreach (var order in orders)
+                        {
+                            if (order.Status == "pending")
+                            {
+                                order.Status = "cancelled";
+
+                                var notes = new Dictionary<string, object?>();
+                                if (order.Notes != null)
+                                    foreach (var p in order.Notes.RootElement.EnumerateObject())
+                                        notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+
+                                notes["cancellation_reason"] = $"Payment failed or cancelled via PayOS Webhook (Code: {cmd.Webhook.Code}).";
+                                order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+
+                                // Restore stock with pessimistic locking
+                                if (order.OrderItems != null)
+                                    await _stockService.RestoreOrderStockAsync(order.OrderItems, ct);
+                            }
+                        }
+                    }
+                }
+
+                await _context.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(ct);
+                throw;
+            }
+        });
+
+        // Send email notifications outside the transaction (non-critical)
+        if (isSuccess && orderIdsList.Any())
+        {
+            var orders = await _context.OrderHeaders
+                .Include(o => o.User)
+                .Where(o => orderIdsList.Contains(o.Id))
+                .ToListAsync(ct);
+
+            foreach (var order in orders)
+            {
+                try
+                {
+                    if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
+                    {
+                        var total = "0";
+                        if (order.Financials != null)
+                        {
+                            total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
+                        }
+
+                        var model = new Dictionary<string, string>
+                        {
+                            { "CustomerName", order.User.DisplayName ?? "Customer" },
+                            { "OrderCode", order.OrderCode ?? "N/A" },
+                            { "BranchName", "Decorative Plant Store" },
+                            { "Total", total }
+                        };
+
+                        await _emailTemplateService.SendTemplateAsync(
+                            "OrderConfirmed",
+                            model,
+                            order.User.Email,
+                            $"Order Confirmed - {order.OrderCode}",
+                            order.User.DisplayName,
+                            ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
+                }
             }
         }
-        await _context.SaveChangesAsync(ct);
+
         return true;
     }
 }
@@ -418,23 +400,25 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
     private readonly IApplicationDbContext _context;
     private readonly IPayOSService _payOS;
     private readonly IShippingService _shippingService;
+    private readonly IStockService _stockService;
     private readonly ILogger<SyncPaymentCommandHandler> _logger;
 
     public SyncPaymentCommandHandler(
         IApplicationDbContext context,
         IPayOSService payOS,
         IShippingService shippingService,
+        IStockService stockService,
         ILogger<SyncPaymentCommandHandler> logger)
     {
         _context = context;
         _payOS = payOS;
         _shippingService = shippingService;
+        _stockService = stockService;
         _logger = logger;
     }
 
     public async Task<bool> Handle(SyncPaymentCommand request, CancellationToken ct)
     {
-        var targetString = request.OrderId.ToString();
         var payment = await _context.PaymentTransactions
             .OrderByDescending(p => p.CreatedAt)
             .FirstOrDefaultAsync(p => p.OrderId == request.OrderId, ct);
@@ -461,7 +445,6 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                 }
                 else
                 {
-                    // Fallback: might be stored as a string representation of an array
                     var parsed = JsonDocument.Parse(originalOrderIdsJson.GetString()!);
                     orderIds = parsed.RootElement.EnumerateArray().Select(e => e.GetGuid()).ToList();
                 }
@@ -470,7 +453,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                 foreach (var prop in payment.Details.RootElement.EnumerateObject())
                 {
                     if (prop.Name == "order_ids")
-                        details[prop.Name] = orderIds; // preserve as real array
+                        details[prop.Name] = orderIds;
                     else
                         details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
                 }
@@ -480,74 +463,61 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                 details["status"] = "paid";
                 payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
 
-                var orders = await _context.OrderHeaders
-                    .Include(o => o.OrderItems)
-                    .Where(o => orderIds.Contains(o.Id))
-                    .ToListAsync(ct);
-
-                foreach (var order in orders)
+                // Wrap stock + order mutations in a transaction with pessimistic locking
+                var strategy = _context.Database.CreateExecutionStrategy();
+                await strategy.ExecuteAsync(async () =>
                 {
-                    if (order.Status == "pending")
+                    using var transaction = await _context.Database.BeginTransactionAsync(ct);
+                    try
                     {
-                        order.Status = "confirmed";
-                        order.ConfirmedAt = DateTime.UtcNow;
+                        var orders = await _context.OrderHeaders
+                            .Include(o => o.OrderItems)
+                            .Where(o => orderIds.Contains(o.Id))
+                            .ToListAsync(ct);
 
-                        // Remove purchased items from user's cart
-                        if (order.UserId.HasValue && order.UserId != Guid.Empty)
+                        foreach (var order in orders)
                         {
-                            var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
-                            if (cart != null && cart.Items != null && order.OrderItems != null)
+                            if (order.Status == "pending")
                             {
-                                var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
-                                var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
-                                if (purchasedListingIds.Any())
-                                {
-                                    cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
-                                    cart.Items = AddToCartHandler.SerializeItems(cartItems);
-                                    cart.UpdatedAt = DateTime.UtcNow;
-                                }
-                            }
-                        }
+                                order.Status = "confirmed";
+                                order.ConfirmedAt = DateTime.UtcNow;
 
-                        // Deduct stock (from reserved to completed)
-                        if (order.OrderItems != null)
-                        {
-                            foreach (var item in order.OrderItems)
-                            {
-                                if (item.BatchId.HasValue)
+                                // Remove purchased items from user's cart
+                                if (order.UserId.HasValue && order.UserId != Guid.Empty)
                                 {
-                                    var stock = await _context.BatchStocks.FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
-                                    if (stock != null && stock.Quantities != null)
+                                    var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
+                                    if (cart != null && cart.Items != null && order.OrderItems != null)
                                     {
-                                        var root = stock.Quantities.RootElement;
-                                        var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
-                                        var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
-                                        var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
-
-                                        var q = item.Quantity;
-                                        reserved -= q;
-                                        if (reserved < 0) reserved = 0;
-                                        total -= q;
-                                        if (total < 0) total = 0;
-
-                                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                                        var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
+                                        var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
+                                        if (purchasedListingIds.Any())
                                         {
-                                            quantity = total,
-                                            reserved_quantity = reserved,
-                                            available_quantity = available
-                                        }));
-                                        stock.UpdatedAt = DateTime.UtcNow;
+                                            cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
+                                            cart.Items = AddToCartHandler.SerializeItems(cartItems);
+                                            cart.UpdatedAt = DateTime.UtcNow;
+                                        }
                                     }
                                 }
+
+                                // Deduct stock with pessimistic locking
+                                if (order.OrderItems != null)
+                                    await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
+
+                                // Create GHN shipping order now that payment is confirmed
+                                await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                             }
                         }
 
-                        // Create GHN shipping order now that payment is confirmed
-                        await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+                        await _context.SaveChangesAsync(ct);
+                        await transaction.CommitAsync(ct);
                     }
-                }
+                    catch
+                    {
+                        await transaction.RollbackAsync(ct);
+                        throw;
+                    }
+                });
 
-                await _context.SaveChangesAsync(ct);
                 return true;
             }
             else
