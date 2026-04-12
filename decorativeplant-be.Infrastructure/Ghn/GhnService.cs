@@ -209,8 +209,11 @@ public class GhnService : IShippingService
         {
             var payload = JsonSerializer.Serialize(new { order_codes = new[] { ghnOrderCode } }, JsonOptions);
             var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
-            var response = await _httpClient.PostAsync($"/shiip/public-api/v2/switch-status/{targetStatus}", content);
+            var url = $"/shiip/public-api/v2/switch-status/{targetStatus}";
+            _logger.LogInformation("GHN switch-status request: POST {Url} | payload: {Payload}", url, payload);
+            var response = await _httpClient.PostAsync(url, content);
             var body = await response.Content.ReadAsStringAsync();
+            _logger.LogInformation("GHN switch-status response ({StatusCode}): {Body}", response.StatusCode, body);
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
             if (root.TryGetProperty("code", out var code) && code.GetInt32() == 200) return true;

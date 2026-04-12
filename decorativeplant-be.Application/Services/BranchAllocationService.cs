@@ -70,9 +70,17 @@ public class BranchAllocationService : IBranchAllocationService
         return (title, unitPrice, image);
     }
 
-    // ── Helper: get available stock from pre-loaded map (no N+1 queries) ──
+    // ── Helper: get available stock — prioritize ProductListing.stock_quantity (source of truth for orders) ──
     private static int GetAvailableStockFromMap(ProductListing listing, Dictionary<Guid, BatchStock> stockMap)
     {
+        // Primary: use stock_quantity from ProductInfo (system-wide source of truth)
+        if (listing.ProductInfo != null)
+        {
+            if (listing.ProductInfo.RootElement.TryGetProperty("stock_quantity", out var sq))
+                return sq.GetInt32();
+        }
+
+        // Fallback: check BatchStock available_quantity
         if (listing.BatchId.HasValue && stockMap.TryGetValue(listing.BatchId.Value, out var stock))
         {
             if (stock.Quantities != null)
@@ -80,13 +88,6 @@ public class BranchAllocationService : IBranchAllocationService
                 return stock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq)
                     ? aq.GetInt32() : 0;
             }
-        }
-
-        // Fallback: use stock_quantity from ProductInfo
-        if (listing.ProductInfo != null)
-        {
-            return listing.ProductInfo.RootElement.TryGetProperty("stock_quantity", out var sq)
-                ? sq.GetInt32() : 0;
         }
 
         return 0;
