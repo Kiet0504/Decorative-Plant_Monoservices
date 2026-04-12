@@ -5,6 +5,7 @@ using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using System.Linq.Expressions;
+using System.Text.Json;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
@@ -65,7 +66,38 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
         var totalCount = await repo.CountAsync(filter, cancellationToken);
         var items = await repo.FindAsync(filter, cancellationToken);
         
-        var pagedItems = items
+        IEnumerable<PlantBatch> filteredItems = items;
+        
+        // Apply Health Status Filter (In-memory for JSONB field)
+        if (!string.IsNullOrEmpty(request.HealthStatus) && request.HealthStatus != "All Status")
+        {
+            var normalizedRequest = request.HealthStatus.Replace(" ", "").Replace("_", "").ToLower();
+            filteredItems = filteredItems.Where(x => 
+                x.Specs != null && 
+                x.Specs.RootElement.TryGetProperty("health_status", out var hp) && 
+                hp.GetString() != null &&
+                hp.GetString()!.Replace(" ", "").Replace("_", "").ToLower() == normalizedRequest);
+            totalCount = filteredItems.Count();
+        }
+
+        // Apply Sorting (Stable sort with secondary ID key)
+        if (!string.IsNullOrEmpty(request.SortOrder))
+        {
+            if (request.SortOrder.ToLower() == "asc")
+                filteredItems = filteredItems.OrderBy(x => x.CreatedAt ?? DateTime.MinValue).ThenBy(x => x.Id);
+            else // "desc" or default
+                filteredItems = filteredItems.OrderByDescending(x => x.CreatedAt ?? DateTime.MinValue).ThenByDescending(x => x.Id);
+        }
+        else
+        {
+            filteredItems = filteredItems.OrderByDescending(x => x.CreatedAt ?? DateTime.MinValue).ThenByDescending(x => x.Id);
+        }
+
+        // Final count after all filters
+        var finalItems = filteredItems.ToList();
+        totalCount = finalItems.Count;
+        
+        var pagedItems = finalItems
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
             .ToList();

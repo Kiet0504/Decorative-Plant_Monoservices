@@ -20,6 +20,7 @@ public class PlantBatchDto
     
     public int InitialQuantity { get; set; }
     public int CurrentTotalQuantity { get; set; }
+    public string? ImageUrl { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
 
@@ -28,6 +29,8 @@ public class PlantBatchSummaryDto
     public Guid Id { get; set; }
     public string? BatchCode { get; set; }
     public string? SpeciesName { get; set; }
+    public string? HealthStatus { get; set; }
+    public string? Stage { get; set; }
     public int CurrentTotalQuantity { get; set; }
     public DateTime? CreatedAt { get; set; }
 }

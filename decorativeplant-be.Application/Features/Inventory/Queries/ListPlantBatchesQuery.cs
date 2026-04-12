@@ -9,6 +9,8 @@ public class ListPlantBatchesQuery : IRequest<PagedResultDto<PlantBatchSummaryDt
     public string? SearchTerm { get; set; } // Batch Code or Species Name
     public Guid? TaxonomyId { get; set; }
     public Guid? SupplierId { get; set; }
+    public string? HealthStatus { get; set; }
+    public string? SortOrder { get; set; } // "newest", "oldest"
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 10;
 }
