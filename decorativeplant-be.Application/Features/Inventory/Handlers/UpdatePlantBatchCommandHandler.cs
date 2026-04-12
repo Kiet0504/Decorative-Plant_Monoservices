@@ -11,14 +11,10 @@ namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCommand, PlantBatchDto>
 {
-    private readonly IRepositoryFactory _repositoryFactory;
-    private readonly IUnitOfWork _unitOfWork;
     private readonly IApplicationDbContext _context;
 
-    public UpdatePlantBatchCommandHandler(IRepositoryFactory repositoryFactory, IUnitOfWork unitOfWork, IApplicationDbContext context)
+    public UpdatePlantBatchCommandHandler(IApplicationDbContext context)
     {
-        _repositoryFactory = repositoryFactory;
-        _unitOfWork = unitOfWork;
         _context = context;
     }
 
@@ -28,6 +24,9 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
             .Include(b => b.BatchStocks)
                 .ThenInclude(bs => bs.Location)
             .Include(b => b.ProductListings)
+            .Include(b => b.Taxonomy)
+            .Include(b => b.Branch)
+            .Include(b => b.Supplier)
             .FirstOrDefaultAsync(b => b.Id == request.Id, cancellationToken);
 
         if (entity == null)
@@ -61,36 +60,35 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
 
             foreach (var bs in stocksToUpdate)
             {
-                if (bs.Quantities != null)
+                if (bs.Quantities == null) continue;
+
+                var jsonStr = bs.Quantities.RootElement.GetRawText();
+                var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr) ?? new();
+                
+                // Determine the limit (Total Received)
+                int limit = 0;
+                if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
+                else if (quantities.TryGetValue("quantity", out var q)) limit = q; // Fallback for old data
+                else limit = int.MaxValue; 
+
+                if (request.CurrentTotalQuantity.Value > limit)
                 {
-                    var jsonStr = bs.Quantities.RootElement.GetRawText();
-                    var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr) ?? new();
-                    
-                    // Determine the limit (Total Received)
-                    int limit = 0;
-                    if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
-                    else if (quantities.TryGetValue("quantity", out var q)) limit = q; // Fallback for old data
-                    else limit = int.MaxValue; 
-
-                    if (request.CurrentTotalQuantity.Value > limit)
-                    {
-                        throw new BadRequestException($"Cannot update stock to {request.CurrentTotalQuantity.Value}. Maximum available from cultivation is {limit}.");
-                    }
-
-                    // Update available_quantity
-                    quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
-                    
-                    // If this is a Sales location (reserved is usually 0), sync the 'quantity' as well
-                    if (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront")
-                    {
-                        if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
-                        {
-                            quantities["quantity"] = request.CurrentTotalQuantity.Value;
-                        }
-                    }
-
-                    bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
+                    throw new BadRequestException($"Cannot update stock to {request.CurrentTotalQuantity.Value}. Maximum available from cultivation is {limit}.");
                 }
+
+                // Update available_quantity
+                quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
+                
+                // If this is a Sales location (reserved is usually 0), sync the 'quantity' as well
+                if (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront")
+                {
+                    if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
+                    {
+                        quantities["quantity"] = request.CurrentTotalQuantity.Value;
+                    }
+                }
+
+                bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
             }
             
             // Update the master total in PlantBatch only if we updating globally
@@ -122,20 +120,7 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         if (request.Specs != null)
             entity.Specs = PlantBatchMapper.BuildJson(request.Specs);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-        // Fetch needed relations for DTO display
-        if (entity.TaxonomyId.HasValue)
-        {
-             var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
-             entity.Taxonomy = await taxRepo.GetByIdAsync(entity.TaxonomyId.Value, cancellationToken);
-        }
-
-        if (entity.BranchId.HasValue)
-        {
-             var branchRepo = _repositoryFactory.CreateRepository<decorativeplant_be.Domain.Entities.Branch>();
-             entity.Branch = await branchRepo.GetByIdAsync(entity.BranchId.Value, cancellationToken);
-        }
+        await _context.SaveChangesAsync(cancellationToken);
 
         return PlantBatchMapper.ToDto(entity);
     }

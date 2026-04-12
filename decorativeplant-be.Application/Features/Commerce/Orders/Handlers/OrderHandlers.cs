@@ -303,14 +303,29 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand, OrderResponse>
 {
     private readonly IApplicationDbContext _context;
-    public UpdateOrderStatusHandler(IApplicationDbContext context) => _context = context;
+    private readonly IStockService _stockService;
+
+    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService)
+    {
+        _context = context;
+        _stockService = stockService;
+    }
 
     public async Task<OrderResponse> Handle(UpdateOrderStatusCommand cmd, CancellationToken ct)
     {
         var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"Order {cmd.Id} not found.");
 
+        var oldStatus = order.Status;
         order.Status = cmd.Request.Status;
+        
+        // Finalize stock deduction when transitioning to delivered/completed
+        if ((cmd.Request.Status == "delivered" || cmd.Request.Status == "completed") && oldStatus != "delivered" && oldStatus != "completed")
+        {
+            if (order.OrderItems != null)
+                await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
+        }
+
         if (cmd.Request.Status == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
 
         var notesDict = new Dictionary<string, object?>();
