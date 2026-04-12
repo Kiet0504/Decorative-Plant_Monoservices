@@ -66,46 +66,76 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
         // 2. Decrement Batch Quantity (Moving plants out of cultivation)
         batch.CurrentTotalQuantity -= request.Quantity;
 
-        // 3. Upsert BatchStock (Cumulative)
-        var stock = await _context.BatchStocks
-            .FirstOrDefaultAsync(x => x.BatchId == batch.Id && x.LocationId == location.Id, ct);
+        // 3. CONSOLIDATION LOGIC: Find all stock records for this batch at this branch
+        var allStocks = await _context.BatchStocks
+            .Include(s => s.Location)
+            .Where(x => x.BatchId == batch.Id && x.Location.BranchId == batch.BranchId)
+            .ToListAsync(ct);
 
-        int newStockQty = request.Quantity;
-        if (stock != null && stock.Quantities != null)
+        int totalAvailable = 0;
+        int totalReserved = 0;
+        int totalReceived = 0;
+
+        // Extract and sum current quantities from all existing records
+        foreach (var s in allStocks)
         {
-            if (stock.Quantities.RootElement.TryGetProperty("quantity", out var cq))
+            if (s.Quantities != null)
             {
-                newStockQty += cq.GetInt32();
+                var root = s.Quantities.RootElement;
+                if (root.TryGetProperty("available_quantity", out var aq)) totalAvailable += aq.GetInt32();
+                if (root.TryGetProperty("reserved_quantity", out var rq)) totalReserved += rq.GetInt32();
+                if (root.TryGetProperty("total_received", out var tr)) totalReceived += tr.GetInt32();
+                // Removed quantity fallback to prevent double counting initial batch
             }
         }
 
-        if (stock == null)
+        // Apply the transfer: move requested quantity from Reserved to Available
+        int moveAmount = Math.Min(request.Quantity, totalReserved);
+        // Note: we already checked batch.CurrentTotalQuantity, which is the master source of Reserved, 
+        // but here we sync within the records themselves.
+        
+        totalAvailable += request.Quantity;
+        totalReserved = Math.Max(0, totalReserved - request.Quantity);
+        totalReceived += request.Quantity;
+
+        var quantitiesJson = JsonDocument.Parse(JsonSerializer.Serialize(new
         {
-            stock = new BatchStock
+            quantity = totalAvailable + totalReserved, // Total items currently at branch
+            available_quantity = totalAvailable,
+            reserved_quantity = totalReserved,
+            total_received = totalReceived
+        }));
+
+        // Upsert into a SINGLE record at the Sales location
+        var targetStock = allStocks.FirstOrDefault(s => s.LocationId == location.Id) 
+                          ?? allStocks.FirstOrDefault(); // Prefer sales location, otherwise reuse any
+
+        if (targetStock == null)
+        {
+            targetStock = new BatchStock
             {
                 Id = Guid.NewGuid(),
                 BatchId = batch.Id,
                 LocationId = location.Id,
-                Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-                {
-                    quantity = newStockQty,
-                    available_quantity = newStockQty,
-                    reserved_quantity = 0
-                })),
+                Quantities = quantitiesJson,
                 HealthStatus = "Healthy",
                 UpdatedAt = DateTime.UtcNow
             };
-            _context.BatchStocks.Add(stock);
+            _context.BatchStocks.Add(targetStock);
         }
         else
         {
-            stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-            {
-                quantity = newStockQty,
-                available_quantity = newStockQty,
-                reserved_quantity = 0 
-            }));
-            stock.UpdatedAt = DateTime.UtcNow;
+            targetStock.LocationId = location.Id; // Ensure it moves to the sales location
+            targetStock.Quantities = quantitiesJson;
+            targetStock.UpdatedAt = DateTime.UtcNow;
+        }
+
+        // Remove any other records for this batch at this branch to enforce consolidation
+        var extraStocks = allStocks.Where(s => s.Id != targetStock.Id).ToList();
+        if (extraStocks.Any())
+        {
+            _context.BatchStocks.RemoveRange(extraStocks);
+            _logger.LogInformation("Consolidated {Count} stock records for batch {BatchId} at branch {BranchId}", extraStocks.Count + 1, batch.Id, batch.BranchId);
         }
 
         // 4. Ensure a ProductListing exists for this species at this branch
@@ -130,14 +160,14 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                     slug = $"batch-{batch.BatchCode?.ToLower() ?? batch.Id.ToString().Substring(0, 8)}",
                     description = "New stock arrival. Please update details.",
                     price = "0", // Default
-                    stock_quantity = newStockQty,
+                    stock_quantity = totalAvailable,
                     min_order = 1,
                     max_order = 10
                 })),
                 StatusInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
                 {
-                    status = "draft",
-                    visibility = "private",
+                    status = "active",
+                    visibility = "public",
                     featured = false,
                     view_count = 0,
                     sold_count = 0,
@@ -152,7 +182,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             // FORCE UPDATE THE TITLE if it's currently wrong or from old logic
             var info = JsonSerializer.Deserialize<Dictionary<string, object>>(existingListing.ProductInfo!.RootElement.GetRawText())!;
             info["title"] = targetTitle;
-            info["stock_quantity"] = newStockQty; // Also sync stock quantity in listing info
+            info["stock_quantity"] = totalAvailable; // Also sync stock quantity in listing info
             existingListing.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(info));
             _logger.LogInformation("Updated existing ProductListing title/stock for batch {BatchId}", batch.Id);
         }

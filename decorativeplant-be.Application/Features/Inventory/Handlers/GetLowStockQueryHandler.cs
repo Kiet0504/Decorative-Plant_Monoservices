@@ -25,6 +25,7 @@ public class GetLowStockQueryHandler : IRequestHandler<GetLowStockQuery, List<Lo
             .Include(b => b.Taxonomy)
             .Include(b => b.ProductListings)
             .Include(b => b.BatchStocks)
+                .ThenInclude(bs => bs.Location)
             .Where(b => b.BatchStocks.Any()); // Essential: Only shows items sent to sales
 
         if (request.BranchId.HasValue)
@@ -40,15 +41,41 @@ public class GetLowStockQueryHandler : IRequestHandler<GetLowStockQuery, List<Lo
         {
             // Calculate total stock available for sale across all locations for this batch at this branch
             int salesStock = 0;
+            int salesMax = 0;
             if (batch.BatchStocks != null)
             {
                 foreach (var s in batch.BatchStocks)
                 {
-                    if (s.Quantities != null && s.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+                    // CRITICAL FIX: Only sum stock that belongs to the branch being viewed 
+                    // AND only from Sales/Storefront locations.
+                    if (request.BranchId.HasValue && s.Location?.BranchId != request.BranchId)
+                        continue;
+
+                    if (s.Location?.Type != "Sales" && s.Location?.Type != "Storefront")
+                        continue;
+
+                    if (s.Quantities != null)
                     {
-                        salesStock += aq.GetInt32();
+                        var root = s.Quantities.RootElement;
+                        if (root.TryGetProperty("available_quantity", out var aq))
+                        {
+                            salesStock += aq.GetInt32();
+                        }
+                        
+                        // Try to get total_received, fallback to quantity (the limit)
+                        if (root.TryGetProperty("total_received", out var tr))
+                        {
+                            salesMax += tr.GetInt32();
+                        }
+                        else if (root.TryGetProperty("quantity", out var q))
+                        {
+                            salesMax += q.GetInt32();
+                        }
                     }
                 }
+                
+                // Final fallback if MaxStock is logic-less
+                if (salesMax == 0 && salesStock > 0) salesMax = salesStock; 
             }
 
             // Find associated product for price and category info
@@ -93,6 +120,7 @@ public class GetLowStockQueryHandler : IRequestHandler<GetLowStockQuery, List<Lo
                 Price = price,
                 Category = category,
                 CurrentStock = salesStock,
+                MaxStock = salesMax,
                 Threshold = 10,
                 BranchName = batch.Branch?.Name ?? "Global",
                 BatchId = batch.Id,
