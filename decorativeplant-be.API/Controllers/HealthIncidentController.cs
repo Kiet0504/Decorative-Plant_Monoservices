@@ -49,6 +49,7 @@ public class HealthIncidentController : BaseController
         var command = new ResolveHealthIncidentCommand
         {
             Id = dto.Id,
+            Status = dto.Status,
             ResolutionNotes = dto.ResolutionNotes,
             TreatmentDetails = dto.TreatmentDetails,
             ResolvedAt = dto.ResolvedAt,
@@ -69,5 +70,42 @@ public class HealthIncidentController : BaseController
         var query = new GetBatchHealthHistoryQuery { BatchId = batchId };
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<List<HealthIncidentDto>>.SuccessResponse(result, "Health history retrieved."));
+    }
+
+    /// <summary>
+    /// List health incidents with pagination and filtering.
+    /// </summary>
+    [HttpGet]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
+    public async Task<ActionResult<ApiResponse<PagedResult<HealthIncidentDto>>>> List([FromQuery] GetHealthIncidentsQuery query)
+    {
+        var result = await Mediator.Send(query);
+        return Ok(ApiResponse<PagedResult<HealthIncidentDto>>.SuccessResponse(result, "Health incidents retrieved."));
+    }
+
+    /// <summary>
+    /// Get details of a single health incident.
+    /// </summary>
+    [HttpGet("{id:guid}")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
+    public async Task<ActionResult<ApiResponse<HealthIncidentDto>>> GetById(Guid id)
+    {
+        var result = await Mediator.Send(new GetHealthIncidentByIdQuery { Id = id });
+        if (result == null)
+        {
+            return NotFound(ApiResponse<HealthIncidentDto>.ErrorResponse("Health incident not found."));
+        }
+        return Ok(ApiResponse<HealthIncidentDto>.SuccessResponse(result, "Health incident retrieved."));
+    }
+
+    /// <summary>
+    /// Get summary stats for health incidents.
+    /// </summary>
+    [HttpGet("summary")]
+    [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
+    public async Task<ActionResult<ApiResponse<HealthSummaryDto>>> GetSummary()
+    {
+        var result = await Mediator.Send(new GetHealthSummaryQuery());
+        return Ok(ApiResponse<HealthSummaryDto>.SuccessResponse(result, "Health summary retrieved."));
     }
 }

@@ -55,7 +55,7 @@ public class ResolveHealthIncidentCommandHandler : IRequestHandler<ResolveHealth
             catch { }
         }
 
-        statusDict["status"] = "Resolved";
+        statusDict["status"] = request.Status ?? "Resolved";
         statusDict["resolved_at"] = request.ResolvedAt ?? DateTime.UtcNow;
         if (request.ResolvedBy.HasValue)
         {
