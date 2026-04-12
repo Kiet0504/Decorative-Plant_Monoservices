@@ -78,7 +78,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     {
 
         await Database.ExecuteSqlRawAsync(
-            "SELECT 1 FROM \"BatchStocks\" WHERE \"BatchId\" = {0} FOR UPDATE",
+            "SELECT 1 FROM \"batch_stock\" WHERE \"BatchId\" = {0} FOR UPDATE",
             new object[] { batchId }, ct);
     }
 
