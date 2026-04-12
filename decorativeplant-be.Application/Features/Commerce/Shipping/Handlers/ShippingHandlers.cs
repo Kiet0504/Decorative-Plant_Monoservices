@@ -19,18 +19,67 @@ public class CreateShippingHandler : IRequestHandler<CreateShippingCommand, Ship
     public async Task<ShippingResponse> Handle(CreateShippingCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
-        var entity = new Domain.Entities.Shipping
+        var order = await _context.OrderHeaders
+            .FirstOrDefaultAsync(o => o.Id == req.OrderId, ct)
+            ?? throw new NotFoundException("Order not found");
+
+        if (order.Notes?.RootElement.TryGetProperty("shipments", out var shipmentsEl) != true
+            || shipmentsEl.ValueKind != JsonValueKind.Array
+            || shipmentsEl.GetArrayLength() == 0)
         {
-            Id = Guid.NewGuid(),
-            OrderId = req.OrderId,
-            TrackingCode = $"TRK-{Guid.NewGuid().ToString()[..8].ToUpper()}",
-            CarrierInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { carrier = req.Carrier, method = req.Method, fee = req.Fee })),
-            Status = "pending",
-            Events = JsonDocument.Parse(JsonSerializer.Serialize(new[] { new { status = "pending", location = "", description = "Shipping created", event_time = DateTime.UtcNow.ToString("O") } }))
-        };
-        _context.Shippings.Add(entity);
+            throw new BadRequestException("GHN shipments not created yet. Wait for payment confirmation to finish.");
+        }
+
+        var existing = await _context.Shippings
+            .Where(s => s.OrderId == req.OrderId)
+            .ToListAsync(ct);
+
+        var created = new List<Domain.Entities.Shipping>();
+        foreach (var shipmentEl in shipmentsEl.EnumerateArray())
+        {
+            if (!shipmentEl.TryGetProperty("tracking_code", out var tcEl)) continue;
+            var trackingCode = tcEl.GetString();
+            if (string.IsNullOrEmpty(trackingCode)) continue;
+            if (existing.Any(e => e.TrackingCode == trackingCode)) continue;
+
+            var entity = new Domain.Entities.Shipping
+            {
+                Id = Guid.NewGuid(),
+                OrderId = req.OrderId,
+                TrackingCode = trackingCode,
+                CarrierInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
+                {
+                    carrier = req.Carrier,
+                    method = req.Method,
+                    fee = req.Fee
+                })),
+                Status = "ready_to_pick",
+                Events = JsonDocument.Parse(JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        status = "ready_to_pick",
+                        location = "",
+                        description = "Handed to carrier",
+                        event_time = DateTime.UtcNow.ToString("O")
+                    }
+                }))
+            };
+            _context.Shippings.Add(entity);
+            created.Add(entity);
+        }
+
+        if (created.Count == 0)
+        {
+            // Idempotent: nothing new to create, return the first existing row so the
+            // UI still has a record to render (typical when staff clicks twice).
+            var first = existing.FirstOrDefault()
+                ?? throw new BadRequestException("No shipment rows found for this order.");
+            return MapToResponse(first);
+        }
+
         await _context.SaveChangesAsync(ct);
-        return MapToResponse(entity);
+        return MapToResponse(created[0]);
     }
 
     internal static ShippingResponse MapToResponse(Domain.Entities.Shipping e)
@@ -111,7 +160,9 @@ public class CreateShippingZoneHandler : IRequestHandler<CreateShippingZoneComma
         var req = cmd.Request;
         var entity = new ShippingZone
         {
-            Id = Guid.NewGuid(), BranchId = req.BranchId, Name = req.Name,
+            Id = Guid.NewGuid(),
+            BranchId = req.BranchId,
+            Name = req.Name,
             Locations = JsonDocument.Parse(JsonSerializer.Serialize(new { cities = req.Cities, districts = req.Districts })),
             FeeConfig = JsonDocument.Parse(JsonSerializer.Serialize(new { base_fee = req.BaseFee, fee_per_km = req.FeePerKm, free_threshold = req.FreeThreshold })),
             DeliveryTimeConfig = JsonDocument.Parse(JsonSerializer.Serialize(new { min_days = req.MinDays, max_days = req.MaxDays }))
@@ -188,14 +239,14 @@ public class GetShippingZonesHandler : IRequestHandler<GetShippingZonesQuery, Pa
     {
         var query = _context.ShippingZones.AsQueryable();
         if (q.BranchId.HasValue) query = query.Where(z => z.BranchId == q.BranchId);
-        
+
         var total = await query.CountAsync(ct);
-        
+
         var list = await query
             .Skip((q.Page - 1) * q.PageSize)
             .Take(q.PageSize)
             .ToListAsync(ct);
-            
+
         return new PagedResult<ShippingZoneResponse>
         {
             Items = list.Select(CreateShippingZoneHandler.MapToResponse).ToList(),
