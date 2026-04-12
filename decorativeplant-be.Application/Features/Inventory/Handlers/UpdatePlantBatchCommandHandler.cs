@@ -49,36 +49,35 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         if (request.ParentBatchId.HasValue)
             entity.ParentBatchId = request.ParentBatchId;
             
-        if (request.CurrentTotalQuantity.HasValue)
+        // 1. Sync Quantities to BatchStock
+        if (request.CurrentTotalQuantity.HasValue && entity.BatchStocks != null)
         {
             entity.CurrentTotalQuantity = request.CurrentTotalQuantity;
-            
-            // --- SYNC: Update available quantity in all associated BatchStock records ---
-            var batchStockRepo = _repositoryFactory.CreateRepository<BatchStock>();
             foreach (var bs in entity.BatchStocks)
             {
                 if (bs.Quantities != null)
                 {
-                    var quantities = JsonSerializer.Deserialize<Dictionary<string, object>>(bs.Quantities.RootElement.GetRawText()) ?? new();
+                    // Update available_quantity in JSONB
+                    var jsonStr = bs.Quantities.RootElement.GetRawText();
+                    var quantities = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonStr) ?? new();
                     quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
                     bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
-                    await batchStockRepo.UpdateAsync(bs, cancellationToken);
                 }
             }
         }
 
-        if (!string.IsNullOrEmpty(request.Price))
+        // 2. Sync Price to ProductListing
+        if (!string.IsNullOrEmpty(request.Price) && entity.ProductListings != null)
         {
-            // --- SYNC: Update price in all associated ProductListing records ---
-            var productRepo = _repositoryFactory.CreateRepository<ProductListing>();
-            foreach (var p in entity.ProductListings)
+            foreach (var pl in entity.ProductListings)
             {
-                if (p.ProductInfo != null)
+                if (pl.ProductInfo != null)
                 {
-                    var productInfo = JsonSerializer.Deserialize<Dictionary<string, object>>(p.ProductInfo.RootElement.GetRawText()) ?? new();
+                    // Update price in JSONB
+                    var jsonStr = pl.ProductInfo.RootElement.GetRawText();
+                    var productInfo = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonStr) ?? new();
                     productInfo["price"] = request.Price;
-                    p.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(productInfo));
-                    await productRepo.UpdateAsync(p, cancellationToken);
+                    pl.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(productInfo));
                 }
             }
         }

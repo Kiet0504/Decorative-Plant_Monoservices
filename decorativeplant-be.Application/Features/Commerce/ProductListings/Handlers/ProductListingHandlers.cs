@@ -337,7 +337,7 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             
             // For admin branch view, we still might want to see out of stock, 
             // but the user said they are "extra/redundant", so let's filter 0 stock if they are not active
-            mappedInstances = mappedInstances.Where(x => x.StockQuantity > 0).ToList();
+            // mappedInstances = mappedInstances.Where(x => x.StockQuantity > 0).ToList();
 
             // Apply Status Filter
             if (!string.IsNullOrEmpty(query.Status) && query.Status != "all")
@@ -432,7 +432,7 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 
                 return primary;
             })
-            .Where(p => p.TotalSystemStock > 0) // Hide items that are globally out of stock
+            // .Where(p => p.TotalSystemStock > 0) // Hide items that are globally out of stock
             .ToList();
 
         // Apply search filter (post-grouping, on title)
