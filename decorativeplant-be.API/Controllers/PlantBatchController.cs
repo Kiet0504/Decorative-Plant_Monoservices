@@ -59,6 +59,8 @@ public class PlantBatchController : BaseController
     [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PagedResultDto<PlantBatchSummaryDto>>>> List(
         [FromQuery] string? search = null,
+        [FromQuery] string? healthStatus = null,
+        [FromQuery] string? sortOrder = null,
         [FromQuery] Guid? taxonomyId = null,
         [FromQuery] Guid? supplierId = null,
         [FromQuery] int page = 1,
@@ -67,6 +69,8 @@ public class PlantBatchController : BaseController
         var query = new ListPlantBatchesQuery 
         { 
             SearchTerm = search,
+            HealthStatus = healthStatus,
+            SortOrder = sortOrder,
             TaxonomyId = taxonomyId,
             SupplierId = supplierId,
             Page = page, 

@@ -71,27 +71,33 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
         // Apply Health Status Filter (In-memory for JSONB field)
         if (!string.IsNullOrEmpty(request.HealthStatus) && request.HealthStatus != "All Status")
         {
+            var normalizedRequest = request.HealthStatus.Replace(" ", "").Replace("_", "").ToLower();
             filteredItems = filteredItems.Where(x => 
                 x.Specs != null && 
                 x.Specs.RootElement.TryGetProperty("health_status", out var hp) && 
-                hp.GetString()?.Equals(request.HealthStatus, StringComparison.OrdinalIgnoreCase) == true);
+                hp.GetString() != null &&
+                hp.GetString()!.Replace(" ", "").Replace("_", "").ToLower() == normalizedRequest);
             totalCount = filteredItems.Count();
         }
 
-        // Apply Sorting
+        // Apply Sorting (Stable sort with secondary ID key)
         if (!string.IsNullOrEmpty(request.SortOrder))
         {
-            if (request.SortOrder.ToLower() == "oldest")
-                filteredItems = filteredItems.OrderBy(x => x.CreatedAt);
-            else // "newest" or default
-                filteredItems = filteredItems.OrderByDescending(x => x.CreatedAt);
+            if (request.SortOrder.ToLower() == "asc")
+                filteredItems = filteredItems.OrderBy(x => x.CreatedAt ?? DateTime.MinValue).ThenBy(x => x.Id);
+            else // "desc" or default
+                filteredItems = filteredItems.OrderByDescending(x => x.CreatedAt ?? DateTime.MinValue).ThenByDescending(x => x.Id);
         }
         else
         {
-            filteredItems = filteredItems.OrderByDescending(x => x.CreatedAt);
+            filteredItems = filteredItems.OrderByDescending(x => x.CreatedAt ?? DateTime.MinValue).ThenByDescending(x => x.Id);
         }
 
-        var pagedItems = filteredItems
+        // Final count after all filters
+        var finalItems = filteredItems.ToList();
+        totalCount = finalItems.Count;
+        
+        var pagedItems = finalItems
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
             .ToList();
