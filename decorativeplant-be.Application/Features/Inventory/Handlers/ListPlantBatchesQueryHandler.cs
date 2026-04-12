@@ -46,6 +46,17 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
              filter = Expression.Lambda<Func<PlantBatch, bool>>(body, param);
         }
 
+        if (request.BranchId.HasValue)
+        {
+             var bid = request.BranchId.Value;
+             var param = Expression.Parameter(typeof(PlantBatch), "x");
+             var body = Expression.AndAlso(
+                 Expression.Invoke(filter, param),
+                 Expression.Equal(Expression.Property(param, nameof(PlantBatch.BranchId)), Expression.Constant(bid, typeof(Guid?)))
+             );
+             filter = Expression.Lambda<Func<PlantBatch, bool>>(body, param);
+        }
+
         if (!string.IsNullOrEmpty(request.SearchTerm))
         {
             var term = request.SearchTerm.ToLower();
@@ -109,6 +120,12 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
             if (item.TaxonomyId.HasValue && item.Taxonomy == null)
             {
                 item.Taxonomy = await taxRepo.GetByIdAsync(item.TaxonomyId.Value, cancellationToken);
+            }
+
+            if (item.BranchId.HasValue && item.Branch == null)
+            {
+                var branchRepo = _repositoryFactory.CreateRepository<decorativeplant_be.Domain.Entities.Branch>();
+                item.Branch = await branchRepo.GetByIdAsync(item.BranchId.Value, cancellationToken);
             }
         }
 

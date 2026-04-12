@@ -33,6 +33,7 @@ public static class PlantBatchMapper
             ParentBatchId = entity.ParentBatchId,
             ParentBatchCode = entity.ParentBatch?.BatchCode,
             BranchId = entity.BranchId,
+            BranchName = entity.Branch?.Name, // Added
             TaxonomyId = entity.TaxonomyId,
             SpeciesName = GetSpeciesDisplayName(entity.Taxonomy),
             SupplierId = entity.SupplierId,
@@ -53,6 +54,7 @@ public static class PlantBatchMapper
             Id = entity.Id,
             BatchCode = entity.BatchCode,
             SpeciesName = GetSpeciesDisplayName(entity.Taxonomy),
+            BranchName = entity.Branch?.Name, // Added
             HealthStatus = NormalizeValue(ExtractSpec(entity.Specs, "health_status") ?? "Healthy"),
             Stage = NormalizeValue(ExtractSpec(entity.Specs, "maturity_stage") ?? "Stable"),
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,

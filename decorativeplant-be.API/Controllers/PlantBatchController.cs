@@ -32,11 +32,7 @@ public class PlantBatchController : BaseController
     [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantBatchDto>>> Update(Guid id, [FromBody] UpdatePlantBatchCommand command)
     {
-        if (id != command.Id)
-        {
-            return BadRequest(ApiResponse<PlantBatchDto>.ErrorResponse("ID mismatch."));
-        }
-
+        command.Id = id; // Always sync with route to avoid binding mismatches
         var result = await Mediator.Send(command);
         return Ok(ApiResponse<PlantBatchDto>.SuccessResponse(result, "Plant batch updated successfully."));
     }
@@ -63,6 +59,7 @@ public class PlantBatchController : BaseController
         [FromQuery] string? sortOrder = null,
         [FromQuery] Guid? taxonomyId = null,
         [FromQuery] Guid? supplierId = null,
+        [FromQuery] Guid? branchId = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20)
     {
@@ -73,6 +70,7 @@ public class PlantBatchController : BaseController
             SortOrder = sortOrder,
             TaxonomyId = taxonomyId,
             SupplierId = supplierId,
+            BranchId = branchId,
             Page = page, 
             PageSize = pageSize 
         };
