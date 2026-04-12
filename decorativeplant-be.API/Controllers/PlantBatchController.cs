@@ -79,6 +79,18 @@ public class PlantBatchController : BaseController
     }
 
     /// <summary>
+    /// Publish a batch to sales stock (BatchStock & ProductListing).
+    /// </summary>
+    [HttpPost("{id}/publish")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
+    public async Task<ActionResult<ApiResponse<bool>>> PublishToStock(Guid id, [FromBody] PublishBatchToStockCommand command)
+    {
+        command.BatchId = id;
+        var result = await Mediator.Send(command);
+        return Ok(ApiResponse<bool>.SuccessResponse(result, "Batch published to sales stock."));
+    }
+
+    /// <summary>
     /// Delete an existing plant batch.
     /// </summary>
     [HttpDelete("{id}")]
