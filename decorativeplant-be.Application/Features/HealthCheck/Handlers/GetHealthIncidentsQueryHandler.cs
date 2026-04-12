@@ -23,6 +23,11 @@ public class GetHealthIncidentsQueryHandler : IRequestHandler<GetHealthIncidents
             .Include(i => i.Batch)
             .AsNoTracking();
 
+        if (request.BranchId.HasValue)
+        {
+            query = query.Where(i => i.Batch != null && i.Batch.BranchId == request.BranchId.Value);
+        }
+
         // Filtering
         if (!string.IsNullOrEmpty(request.Status))
         {

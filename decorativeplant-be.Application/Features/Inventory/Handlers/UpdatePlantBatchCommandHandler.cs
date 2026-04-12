@@ -36,6 +36,12 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
             
         if (request.TaxonomyId.HasValue)
             entity.TaxonomyId = request.TaxonomyId;
+
+        if (request.SupplierId.HasValue)
+            entity.SupplierId = request.SupplierId;
+
+        if (request.ParentBatchId.HasValue)
+            entity.ParentBatchId = request.ParentBatchId;
             
         if (request.CurrentTotalQuantity.HasValue)
             entity.CurrentTotalQuantity = request.CurrentTotalQuantity;
@@ -54,6 +60,12 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         {
              var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
              entity.Taxonomy = await taxRepo.GetByIdAsync(entity.TaxonomyId.Value, cancellationToken);
+        }
+
+        if (entity.BranchId.HasValue)
+        {
+             var branchRepo = _repositoryFactory.CreateRepository<decorativeplant_be.Domain.Entities.Branch>();
+             entity.Branch = await branchRepo.GetByIdAsync(entity.BranchId.Value, cancellationToken);
         }
 
         return PlantBatchMapper.ToDto(entity);
