@@ -19,6 +19,9 @@ public class LowStockItemDto
     [JsonPropertyName("currentStock")]
     public int CurrentStock { get; set; }
 
+    [JsonPropertyName("maxStock")]
+    public int MaxStock { get; set; }
+
     [JsonPropertyName("threshold")]
     public int Threshold { get; set; }
 
