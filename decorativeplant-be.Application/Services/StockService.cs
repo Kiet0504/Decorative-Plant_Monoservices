@@ -67,6 +67,17 @@ public class StockService : IStockService
         total -= quantity;
         if (total < 0) total = 0;
 
+        // Also deduct from parent PlantBatch global counter
+        if (stock.BatchId != Guid.Empty)
+        {
+            var batch = await _context.PlantBatches.FirstOrDefaultAsync(b => b.Id == stock.BatchId, ct);
+            if (batch != null)
+            {
+                batch.CurrentTotalQuantity = (batch.CurrentTotalQuantity ?? 0) - quantity;
+                if (batch.CurrentTotalQuantity < 0) batch.CurrentTotalQuantity = 0;
+            }
+        }
+
         WriteQuantities(stock, total, reserved, available);
         _logger.LogInformation("Deducted {Qty} units from BatchId {BatchId} (total: {Total})", quantity, batchId, total);
     }

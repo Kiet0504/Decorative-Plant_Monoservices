@@ -11,6 +11,7 @@ public class UpdatePlantBatchCommand : IRequest<PlantBatchDto>
     public Guid? TaxonomyId { get; set; }
     public Guid? SupplierId { get; set; }
     public Guid? ParentBatchId { get; set; }
+    public int? InitialQuantity { get; set; }
     public int? CurrentTotalQuantity { get; set; }
     public string? Price { get; set; }
     public Dictionary<string, object>? SourceInfo { get; set; }

@@ -54,6 +54,8 @@ public class UpdatePlantBatchDto
 {
     public Guid Id { get; set; }
     public Guid? BranchId { get; set; } // Added
+    public int? InitialQuantity { get; set; }
+    public int? CurrentTotalQuantity { get; set; }
     public Dictionary<string, object>? SourceInfo { get; set; }
     public Dictionary<string, object>? Specs { get; set; }
 }

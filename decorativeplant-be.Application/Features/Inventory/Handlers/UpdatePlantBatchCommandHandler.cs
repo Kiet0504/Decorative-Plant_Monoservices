@@ -11,14 +11,10 @@ namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCommand, PlantBatchDto>
 {
-    private readonly IRepositoryFactory _repositoryFactory;
-    private readonly IUnitOfWork _unitOfWork;
     private readonly IApplicationDbContext _context;
 
-    public UpdatePlantBatchCommandHandler(IRepositoryFactory repositoryFactory, IUnitOfWork unitOfWork, IApplicationDbContext context)
+    public UpdatePlantBatchCommandHandler(IApplicationDbContext context)
     {
-        _repositoryFactory = repositoryFactory;
-        _unitOfWork = unitOfWork;
         _context = context;
     }
 
@@ -27,6 +23,9 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         var entity = await _context.PlantBatches
             .Include(b => b.BatchStocks)
             .Include(b => b.ProductListings)
+            .Include(b => b.Taxonomy)
+            .Include(b => b.Branch)
+            .Include(b => b.Supplier)
             .FirstOrDefaultAsync(b => b.Id == request.Id, cancellationToken);
 
         if (entity == null)
@@ -48,20 +47,27 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
 
         if (request.ParentBatchId.HasValue)
             entity.ParentBatchId = request.ParentBatchId;
-            
+
+        if (request.InitialQuantity.HasValue)
+            entity.InitialQuantity = request.InitialQuantity;
+
         // 1. Sync Quantities to BatchStock
-        if (request.CurrentTotalQuantity.HasValue && entity.BatchStocks != null)
+        if (request.CurrentTotalQuantity.HasValue)
         {
             entity.CurrentTotalQuantity = request.CurrentTotalQuantity;
-            foreach (var bs in entity.BatchStocks)
+            
+            if (entity.BatchStocks != null)
             {
-                if (bs.Quantities != null)
+                foreach (var bs in entity.BatchStocks)
                 {
-                    // Update available_quantity in JSONB
-                    var jsonStr = bs.Quantities.RootElement.GetRawText();
-                    var quantities = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonStr) ?? new();
-                    quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
-                    bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
+                    if (bs.Quantities != null)
+                    {
+                        // Update available_quantity in JSONB
+                        var jsonStr = bs.Quantities.RootElement.GetRawText();
+                        var quantities = JsonSerializer.Deserialize<Dictionary<string, object>>(jsonStr) ?? new();
+                        quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
+                        bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
+                    }
                 }
             }
         }
@@ -88,20 +94,7 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         if (request.Specs != null)
             entity.Specs = PlantBatchMapper.BuildJson(request.Specs);
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
-
-        // Fetch needed relations for DTO display
-        if (entity.TaxonomyId.HasValue)
-        {
-             var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
-             entity.Taxonomy = await taxRepo.GetByIdAsync(entity.TaxonomyId.Value, cancellationToken);
-        }
-
-        if (entity.BranchId.HasValue)
-        {
-             var branchRepo = _repositoryFactory.CreateRepository<decorativeplant_be.Domain.Entities.Branch>();
-             entity.Branch = await branchRepo.GetByIdAsync(entity.BranchId.Value, cancellationToken);
-        }
+        await _context.SaveChangesAsync(cancellationToken);
 
         return PlantBatchMapper.ToDto(entity);
     }
