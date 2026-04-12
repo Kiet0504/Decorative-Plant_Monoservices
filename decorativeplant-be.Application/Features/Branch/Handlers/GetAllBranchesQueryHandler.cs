@@ -19,9 +19,16 @@ public class GetAllBranchesQueryHandler : IRequestHandler<GetAllBranchesQuery, L
 
     public async Task<List<BranchDto>> Handle(GetAllBranchesQuery request, CancellationToken cancellationToken)
     {
-        var branches = await _context.Branches
+        var query = _context.Branches
             .Include(b => b.Company)
-            .AsNoTracking()
+            .AsNoTracking();
+
+        if (request.OnlyActive)
+        {
+            query = query.Where(b => b.IsActive);
+        }
+
+        var branches = await query
             .OrderBy(b => b.Name)
             .ToListAsync(cancellationToken);
 
