@@ -153,7 +153,14 @@ public class OrdersController : BaseController
         [FromServices] IApplicationDbContext context,
         [FromServices] IShippingService shipping)
     {
-        var validStatuses = new HashSet<string> { "picking", "cancel", "storing", "transporting", "sorting", "delivering", "delivered", "return" };
+        var validStatuses = new HashSet<string>
+        {
+            "ready_to_pick", "picking", "picked",
+            "storing", "sorting", "transporting", "delivering",
+            "delivered",
+            "delivery_fail", "waiting_to_return", "return", "returned",
+            "cancel", "lost"
+        };
         if (!validStatuses.Contains(request.TargetStatus))
             return BadRequest(ApiResponse<object>.ErrorResponse("Invalid target status"));
 
@@ -203,8 +210,37 @@ public class OrdersController : BaseController
         if (switched.Count == 0)
             return BadRequest(ApiResponse<object>.ErrorResponse("Failed to switch status on GHN"));
 
-        return Ok(ApiResponse<object>.SuccessResponse(new { switched }, $"Switched {switched.Count} shipment(s) to '{request.TargetStatus}'"));
+        // GHN switched successfully — now mirror the change into our own DB so FE
+        // stepper/timeline reflect reality without staff having to bump PATCH /status too.
+        var shippingRows = await context.Shippings
+            .Where(s => s.OrderId == order.Id && s.TrackingCode != null && switched.Contains(s.TrackingCode))
+            .ToListAsync();
+
+        foreach (var s in shippingRows)
+            s.Status = request.TargetStatus;
+
+        var mappedOrderStatus = MapGhnStatusToOrderStatus(request.TargetStatus);
+        if (mappedOrderStatus != null)
+            order.Status = mappedOrderStatus;
+
+        await context.SaveChangesAsync(CancellationToken.None);
+
+        return Ok(ApiResponse<object>.SuccessResponse(
+            new { switched, orderStatus = order.Status },
+            $"Switched {switched.Count} shipment(s) to '{request.TargetStatus}'"));
     }
+
+    // GHN real flow: ready_to_pick → picking → picked → storing → sorting → transporting → delivering → delivered
+    private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
+    {
+        "ready_to_pick"                                  => "confirmed",
+        "picking" or "picked" or "storing" or "sorting"  => "processing",
+        "transporting" or "delivering" or "delivery_fail" => "shipping",
+        "delivered"                                      => "delivered",
+        "waiting_to_return" or "return" or "returned"    => "returned",
+        "cancel" or "lost"                               => "cancelled",
+        _                                                => null,
+    };
 
     [HttpPost]
     [Authorize]
