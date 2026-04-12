@@ -16,4 +16,9 @@ public class GetOrdersQuery : IRequest<PagedResult<OrderResponse>>
 public class GetOrderByIdQuery : IRequest<OrderResponse?>
 {
     public Guid Id { get; set; }
+    /// <summary>
+    /// If set, handler will verify the order belongs to this user.
+    /// Null means admin/staff access (no ownership check).
+    /// </summary>
+    public Guid? UserId { get; set; }
 }

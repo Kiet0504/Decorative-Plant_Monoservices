@@ -70,14 +70,12 @@ public class BranchAllocationService : IBranchAllocationService
         return (title, unitPrice, image);
     }
 
-    // ── Helper: get available stock for a listing ──
-    private async Task<int> GetAvailableStockAsync(ProductListing listing, CancellationToken ct)
+    // ── Helper: get available stock from pre-loaded map (no N+1 queries) ──
+    private static int GetAvailableStockFromMap(ProductListing listing, Dictionary<Guid, BatchStock> stockMap)
     {
-        if (listing.BatchId.HasValue)
+        if (listing.BatchId.HasValue && stockMap.TryGetValue(listing.BatchId.Value, out var stock))
         {
-            var stock = await _context.BatchStocks
-                .FirstOrDefaultAsync(s => s.BatchId == listing.BatchId, ct);
-            if (stock?.Quantities != null)
+            if (stock.Quantities != null)
             {
                 return stock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq)
                     ? aq.GetInt32() : 0;
@@ -103,24 +101,62 @@ public class BranchAllocationService : IBranchAllocationService
         //          and find all sibling listings across branches
         // ══════════════════════════════════════════════════════════
 
-        var allListings = await _context.ProductListings
+        // Load only the requested listings first (not all listings)
+        var requestedIds = requestedItems.Select(r => r.ListingId).ToList();
+        var primaryListings = await _context.ProductListings
             .Include(l => l.Batch)
             .Include(l => l.Branch)
+            .Where(l => requestedIds.Contains(l.Id))
             .ToListAsync(ct);
+
+        // Collect TaxonomyIds for sibling matching (preferred over title matching)
+        var taxonomyIds = primaryListings
+            .Where(l => l.Batch?.TaxonomyId != null)
+            .Select(l => l.Batch!.TaxonomyId!.Value)
+            .Distinct()
+            .ToList();
+
+        // Also collect titles as fallback for listings without taxonomy
+        var titles = primaryListings
+            .Select(l => ExtractProductInfo(l).title)
+            .Where(t => !string.IsNullOrEmpty(t))
+            .Select(t => t!.Trim().ToLowerInvariant())
+            .Distinct()
+            .ToList();
+
+        // Load sibling listings: same taxonomy OR same title, across all branches
+        var siblingListings = await _context.ProductListings
+            .Include(l => l.Batch)
+            .Include(l => l.Branch)
+            .Where(l => !requestedIds.Contains(l.Id) && (
+                (l.Batch != null && l.Batch.TaxonomyId != null && taxonomyIds.Contains(l.Batch.TaxonomyId.Value))
+            ))
+            .ToListAsync(ct);
+
+        var allRelevantListings = primaryListings.Concat(siblingListings).ToList();
+
+        // Batch-load all stock data in one query instead of N+1
+        var allBatchIds = allRelevantListings
+            .Where(l => l.BatchId.HasValue)
+            .Select(l => l.BatchId!.Value)
+            .Distinct()
+            .ToList();
+        var stockMap = await _context.BatchStocks
+            .Where(s => s.BatchId.HasValue && allBatchIds.Contains(s.BatchId.Value))
+            .ToDictionaryAsync(s => s.BatchId!.Value, ct);
 
         // For each requested item, collect: title, price, image, quantity needed
         var cartProducts = new List<CartProduct>();
 
         foreach (var (listingId, qty) in requestedItems)
         {
-            var primaryListing = allListings.FirstOrDefault(l => l.Id == listingId)
+            var primaryListing = primaryListings.FirstOrDefault(l => l.Id == listingId)
                 ?? throw new NotFoundException($"Listing {listingId} not found.");
 
             var (title, price, image) = ExtractProductInfo(primaryListing);
 
             if (string.IsNullOrEmpty(title))
             {
-                // No title → can't match siblings, just use this listing directly
                 cartProducts.Add(new CartProduct
                 {
                     Title = title ?? listingId.ToString(),
@@ -129,16 +165,21 @@ public class BranchAllocationService : IBranchAllocationService
                     QuantityNeeded = qty,
                     SiblingListings = new List<(ProductListing listing, int stock)>
                     {
-                        (primaryListing, qty) // assume enough
+                        (primaryListing, qty)
                     }
                 });
                 continue;
             }
 
-            // Find ALL listings with the same title
-            var siblings = allListings
+            // Find siblings by TaxonomyId (preferred) or title fallback
+            var siblings = allRelevantListings
                 .Where(l =>
                 {
+                    // Prefer TaxonomyId matching (reliable, avoids name collision)
+                    if (primaryListing.Batch?.TaxonomyId != null && l.Batch?.TaxonomyId != null)
+                        return l.Batch.TaxonomyId == primaryListing.Batch.TaxonomyId;
+
+                    // Fallback: title matching
                     if (l.ProductInfo == null) return false;
                     var t = l.ProductInfo.RootElement.TryGetProperty("title", out var tv)
                         ? tv.GetString() : null;
@@ -146,11 +187,11 @@ public class BranchAllocationService : IBranchAllocationService
                 })
                 .ToList();
 
-            // Get stock for each sibling
+            // Get stock for each sibling from pre-loaded map
             var siblingsWithStock = new List<(ProductListing listing, int stock)>();
             foreach (var s in siblings)
             {
-                var stock = await GetAvailableStockAsync(s, ct);
+                var stock = GetAvailableStockFromMap(s, stockMap);
                 if (stock > 0)
                     siblingsWithStock.Add((s, stock));
             }
