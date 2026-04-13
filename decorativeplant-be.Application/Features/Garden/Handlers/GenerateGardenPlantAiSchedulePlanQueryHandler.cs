@@ -75,35 +75,56 @@ Follow this exact schema:
   "notes": string[]
 }
 Rules:
+- Species/taxonomy care requirements are the PRIMARY source for watering and fertilizing cadence (interval_days). Home/user profile ADAPTS timing and reminders; it must not replace what the plant species needs.
 - Keep tasks minimal (2-5 items). Prefer 2-3 for beginners, 3-5 for experienced users if justified by taxonomy info.
 - Provide interval_days as an integer number of days between repeats (common values: 1, 2, 3, 7, 14, 30).
 - Provide offset_days (0..horizonDays-1). The backend will compute next_due.
-- Use user environment profile and recent care logs to avoid over-scheduling.
-- If unsure, prefer "inspect weekly" and conservative watering.
-- Only include fertilize/prune/repot when relevant; otherwise omit them.
+- Use recent care logs to avoid duplicating tasks the user just completed.
+- If taxonomy care text says water 1-2 times per week, prefer interval_days 3-4 unless logs suggest otherwise.
+- If unsure on species data, prefer "inspect weekly" and conservative watering, and set confidence to "low".
+- Only include fertilize/prune/repot when relevant to the species; otherwise omit them.
 """;
 
         var userPrompt = new StringBuilder();
-        userPrompt.AppendLine($"Plant: {taxonomyName}");
+        userPrompt.AppendLine($"Plant species (scientific): {taxonomyName}");
         userPrompt.AppendLine();
         userPrompt.AppendLine($"Planning window: startAtUtc={startAt:O}, horizonDays={horizonDays}");
         userPrompt.AppendLine();
-        userPrompt.AppendLine("User environment profile:");
+        userPrompt.AppendLine("=== SPECIES / TAXONOMY (use for watering, fertilizer, light-related task timing) ===");
+        if (!string.IsNullOrWhiteSpace(taxonomyInfoJson))
+        {
+            userPrompt.AppendLine(taxonomyInfoJson);
+        }
+
+        if (!string.IsNullOrWhiteSpace(careInfoJson))
+        {
+            userPrompt.AppendLine(FormatCareInfoForPrompt(careInfoJson));
+        }
+
+        if (!string.IsNullOrWhiteSpace(growthInfoJson))
+        {
+            userPrompt.AppendLine(growthInfoJson);
+        }
+
+        if (string.IsNullOrWhiteSpace(taxonomyInfoJson) && string.IsNullOrWhiteSpace(careInfoJson) &&
+            string.IsNullOrWhiteSpace(growthInfoJson))
+        {
+            userPrompt.AppendLine("(No taxonomy JSON stored — infer cautiously from plant name only.)");
+        }
+
+        userPrompt.AppendLine();
+        userPrompt.AppendLine("=== HOME / USER CONTEXT (adapt reminders; do not ignore species needs above) ===");
         userPrompt.AppendLine($"- sunlightExposure: {user.SunlightExposure ?? "unknown"}");
         userPrompt.AppendLine($"- roomTemperatureRange: {user.RoomTemperatureRange ?? "unknown"}");
         userPrompt.AppendLine($"- humidityLevel: {user.HumidityLevel ?? "unknown"}");
-        userPrompt.AppendLine($"- wateringFrequency: {user.WateringFrequency ?? "unknown"}");
+        userPrompt.AppendLine($"- wateringFrequency (habit): {user.WateringFrequency ?? "unknown"} — note: this is the user's typical habit, not a cap on how often THIS species may need water.");
         userPrompt.AppendLine($"- placementLocation: {user.PlacementLocation ?? "unknown"}");
         userPrompt.AppendLine($"- spaceSize: {user.SpaceSize ?? "unknown"}");
+        userPrompt.AppendLine($"- experienceLevel: {user.ExperienceLevel ?? "unknown"}");
         userPrompt.AppendLine($"- hasChildrenOrPets: {(user.HasChildrenOrPets.HasValue ? user.HasChildrenOrPets.Value.ToString() : "unknown")}");
         userPrompt.AppendLine();
         userPrompt.AppendLine("Recent care logs (most recent first):");
         userPrompt.AppendLine(recentLogsJson);
-        userPrompt.AppendLine();
-        userPrompt.AppendLine("Taxonomy info (if present):");
-        if (!string.IsNullOrWhiteSpace(taxonomyInfoJson)) userPrompt.AppendLine(taxonomyInfoJson);
-        if (!string.IsNullOrWhiteSpace(careInfoJson)) userPrompt.AppendLine(careInfoJson);
-        if (!string.IsNullOrWhiteSpace(growthInfoJson)) userPrompt.AppendLine(growthInfoJson);
         userPrompt.AppendLine();
         userPrompt.AppendLine("Generate a care schedule plan JSON for this plant.");
 
@@ -130,9 +151,76 @@ Rules:
         }
 
         var plan = ParsePlan(json.RootElement, now);
-        NormalizePlan(plan, startAt, horizonDays, user);
+        NormalizePlan(plan, startAt, horizonDays, user, request.UtcOffsetMinutes ?? 0);
         plan.GeneratedAtUtc = now;
         return plan;
+    }
+
+    /// <summary>
+    /// Makes care_info JSON easier for the model to follow (handles both compact enums and rich string sections).
+    /// </summary>
+    private static string FormatCareInfoForPrompt(string careInfoJson)
+    {
+        if (string.IsNullOrWhiteSpace(careInfoJson))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(careInfoJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return careInfoJson;
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("care_info (structured):");
+            foreach (var prop in root.EnumerateObject())
+            {
+                var key = prop.Name;
+                var el = prop.Value;
+                switch (el.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        sb.Append("- ").Append(key).Append(": ").AppendLine(el.GetString());
+                        break;
+                    case JsonValueKind.Number:
+                        sb.Append("- ").Append(key).Append(": ").AppendLine(el.ToString());
+                        break;
+                    case JsonValueKind.True:
+                    case JsonValueKind.False:
+                        sb.Append("- ").Append(key).Append(": ").AppendLine(el.GetBoolean().ToString());
+                        break;
+                    case JsonValueKind.Object:
+                        sb.Append("- ").Append(key).AppendLine(":");
+                        foreach (var nested in el.EnumerateObject())
+                        {
+                            sb.Append("  - ").Append(nested.Name).Append(": ");
+                            if (nested.Value.ValueKind == JsonValueKind.String)
+                            {
+                                sb.AppendLine(nested.Value.GetString());
+                            }
+                            else
+                            {
+                                sb.AppendLine(nested.Value.GetRawText());
+                            }
+                        }
+
+                        break;
+                    default:
+                        sb.Append("- ").Append(key).Append(": ").AppendLine(el.GetRawText());
+                        break;
+                }
+            }
+
+            return sb.ToString();
+        }
+        catch
+        {
+            return careInfoJson;
+        }
     }
 
     private static string BuildRecentLogsJson(IEnumerable<decorativeplant_be.Domain.Entities.CareLog> logs)
@@ -236,7 +324,12 @@ Rules:
         return plan;
     }
 
-    private static void NormalizePlan(AiSchedulePlanDto plan, DateTime startAtUtc, int horizonDays, decorativeplant_be.Domain.Entities.UserAccount user)
+    private static void NormalizePlan(
+        AiSchedulePlanDto plan,
+        DateTime startAtUtc,
+        int horizonDays,
+        decorativeplant_be.Domain.Entities.UserAccount user,
+        int utcOffsetMinutes)
     {
         var windowEnd = startAtUtc.AddDays(horizonDays);
         foreach (var t in plan.Tasks)
@@ -327,11 +420,11 @@ Rules:
             if (t.NextDue != null && t.NextDue <= windowEnd) usedDates.Add(DateOnly.FromDateTime(t.NextDue.Value));
         }
 
-        // Snap next_due time to time_of_day for consistent UI + saving/exporting.
+        // Snap next_due time to time_of_day in the user's local zone (utcOffsetMinutes), not raw UTC hours.
         foreach (var t in plan.Tasks)
         {
             if (t.NextDue == null) continue;
-            t.NextDue = SnapToTimeOfDayUtc(t.NextDue.Value, t.TimeOfDay);
+            t.NextDue = SnapToTimeOfDayUtc(t.NextDue.Value, t.TimeOfDay, utcOffsetMinutes);
         }
     }
 
@@ -344,32 +437,30 @@ Rules:
         var notes = plan.Notes ?? new List<string>();
         var changed = false;
 
-        // 1) Watering capacity: ensure watering interval isn't more frequent than user can handle.
+        // 1) Watering: species-first. Only stretch intervals when the user said they water "rarely"
+        //    (cannot sustain frequent checks). Do not widen watering just because profile says "weekly".
         var wateringCapacity = (user.WateringFrequency ?? "").Trim().ToLowerInvariant();
-        var minWaterInterval = wateringCapacity switch
-        {
-            "daily" => 1,
-            "every_2_3_days" => 2,
-            "weekly" => 7,
-            "rarely" => 14,
-            _ => 1
-        };
 
         foreach (var t in plan.Tasks)
         {
             if (!string.Equals(t.Type, "water", StringComparison.OrdinalIgnoreCase)) continue;
             var interval = t.IntervalDays ?? 7;
-            if (interval < minWaterInterval)
+            if (wateringCapacity == "rarely" && interval < 14)
             {
-                t.IntervalDays = minWaterInterval;
-                t.Frequency = FrequencyFromIntervalDays(minWaterInterval);
+                t.IntervalDays = 14;
+                t.Frequency = FrequencyFromIntervalDays(14);
                 changed = true;
+            }
+            else if (wateringCapacity == "weekly" && interval < 7)
+            {
+                notes.Add(
+                    $"This species may need watering about every {interval} day(s). Your profile says weekly watering — watch soil moisture and adjust if the plant dries faster.");
             }
         }
 
         if (changed)
         {
-            notes.Add($"Adjusted watering cadence to match your selected watering frequency ({user.WateringFrequency ?? "unknown"}).");
+            notes.Add($"Watering spaced to about every 14 days because your profile indicates you water rarely ({user.WateringFrequency}).");
         }
 
         // 2) Task count based on experience level.
@@ -404,19 +495,33 @@ Rules:
         return "rarely";
     }
 
-    private static DateTime SnapToTimeOfDayUtc(DateTime utc, string? timeOfDay)
+    /// <summary>
+    /// Sets local wall-clock hour (9/13/18) on the calendar day the user sees in their timezone, then stores UTC.
+    /// <paramref name="utcOffsetMinutes"/> is minutes to add to UTC to get local time (JS: <c>-getTimezoneOffset()</c>).
+    /// </summary>
+    private static DateTime SnapToTimeOfDayUtc(DateTime utc, string? timeOfDay, int utcOffsetMinutes)
     {
-        // Ensure UTC kind
         if (utc.Kind != DateTimeKind.Utc) utc = DateTime.SpecifyKind(utc, DateTimeKind.Utc);
 
         var tod = (timeOfDay ?? "").Trim().ToLowerInvariant();
-        return tod switch
+        if (tod is not ("morning" or "afternoon" or "evening"))
         {
-            "morning" => new DateTime(utc.Year, utc.Month, utc.Day, 9, 0, 0, DateTimeKind.Utc),
-            "afternoon" => new DateTime(utc.Year, utc.Month, utc.Day, 13, 0, 0, DateTimeKind.Utc),
-            "evening" => new DateTime(utc.Year, utc.Month, utc.Day, 18, 0, 0, DateTimeKind.Utc),
-            _ => utc
+            return utc;
+        }
+
+        var offset = TimeSpan.FromMinutes(utcOffsetMinutes);
+        var utcDto = new DateTimeOffset(utc, TimeSpan.Zero);
+        var local = utcDto.ToOffset(offset);
+        var hour = tod switch
+        {
+            "morning" => 9,
+            "afternoon" => 13,
+            "evening" => 18,
+            _ => local.Hour
         };
+
+        var snapped = new DateTimeOffset(local.Year, local.Month, local.Day, hour, 0, 0, offset);
+        return snapped.UtcDateTime;
     }
 }
 

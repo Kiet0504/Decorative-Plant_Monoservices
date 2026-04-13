@@ -207,7 +207,8 @@ public class GardenController : BaseController
     public async Task<ActionResult<ApiResponse<AiSchedulePlanDto>>> GetAiSchedulePlan(
         Guid id,
         [FromQuery] int horizonDays = 30,
-        [FromQuery] DateTime? startAtUtc = null)
+        [FromQuery] DateTime? startAtUtc = null,
+        [FromQuery] int? utcOffsetMinutes = null)
     {
         var userId = GetUserId(User);
         if (userId == null)
@@ -220,7 +221,8 @@ public class GardenController : BaseController
             UserId = userId.Value,
             PlantId = id,
             HorizonDays = horizonDays,
-            StartAtUtc = startAtUtc
+            StartAtUtc = startAtUtc,
+            UtcOffsetMinutes = utcOffsetMinutes
         });
 
         return Ok(ApiResponse<AiSchedulePlanDto>.SuccessResponse(result));

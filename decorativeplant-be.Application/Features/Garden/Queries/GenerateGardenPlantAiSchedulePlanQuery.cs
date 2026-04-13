@@ -13,5 +13,11 @@ public sealed class GenerateGardenPlantAiSchedulePlanQuery : IRequest<AiSchedule
 
     /// <summary>Number of days to plan ahead (e.g. 30). Defaults to 30.</summary>
     public int HorizonDays { get; set; } = 30;
+
+    /// <summary>
+    /// Minutes to add to UTC to get the user's local time (same as <c>-new Date().getTimezoneOffset()</c> in JavaScript).
+    /// Used to snap morning/afternoon/evening to the correct local wall-clock time. Omit or 0 for UTC.
+    /// </summary>
+    public int? UtcOffsetMinutes { get; set; }
 }
 

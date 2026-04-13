@@ -88,9 +88,13 @@ services:
       - PayOS__ClientId=${PayOS__ClientId:-}
       - PayOS__ApiKey=${PayOS__ApiKey:-}
       - PayOS__ChecksumKey=${PayOS__ChecksumKey:-}
+      - AiDiagnosis__Provider=${AiDiagnosis__Provider:-OpenAI}
       - AiDiagnosis__ApiKey=${AiDiagnosis__ApiKey:-}
       - AiDiagnosis__Model=${AiDiagnosis__Model:-gpt-4o}
       - AiDiagnosis__MaxTokens=${AiDiagnosis__MaxTokens:-1024}
+      - AiDiagnosis__GeminiApiKey=${AiDiagnosis__GeminiApiKey:-}
+      - AiDiagnosis__GeminiModel=${AiDiagnosis__GeminiModel:-gemini-2.5-flash}
+      - AiDiagnosis__GeminiBaseUrl=${AiDiagnosis__GeminiBaseUrl:-https://generativelanguage.googleapis.com}
       - GhnSettings__BaseUrl=${GhnSettings__BaseUrl:-https://dev-online-gateway.ghn.vn}
       - GhnSettings__Token=${GhnSettings__Token:-}
       - GhnSettings__ShopId=${GhnSettings__ShopId:-0}
@@ -113,6 +117,9 @@ services:
       - Ollama__BaseUrl=${Ollama__BaseUrl:-http://host.docker.internal:11434}
       - Ollama__Model=${Ollama__Model:-llama3.1:8b}
       - Ollama__TimeoutSeconds=${Ollama__TimeoutSeconds:-60}
+      # Optional: JSON intent routing for image+caption (empty = keyword-only). May match Ollama__Model e.g. llama3.1:8b.
+      - Ollama__IntentClassificationModel=${Ollama__IntentClassificationModel:-}
+      - Ollama__IntentClassificationTimeoutSeconds=${Ollama__IntentClassificationTimeoutSeconds:-12}
       - AiCare__CacheTtlHours=${AiCare__CacheTtlHours:-24}
     ports:
       - "8080:8080"
