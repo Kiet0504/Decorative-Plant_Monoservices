@@ -51,13 +51,12 @@ public class ArPreviewController : BaseController
     }
 
     [HttpPost("models/upload")]
-    [ApiExplorerSettings(IgnoreApi = true)]
     [Authorize(Roles = "admin,store_staff,branch_manager,cultivation_staff,fulfillment_staff,Staff,staff")]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(MaxGlbSizeBytes)]
     public async Task<IActionResult> UploadProductModel(
         [FromForm] Guid productListingId,
-        [FromForm] IFormFile file,
+        IFormFile file,
         [FromForm] decimal? defaultScale,
         [FromForm] string? boundingBoxJson,
         [FromServices] IObjectStorageService storage,
