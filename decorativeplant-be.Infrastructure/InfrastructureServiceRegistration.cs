@@ -21,6 +21,7 @@ using Amazon.S3;
 using Amazon.Runtime;
 using Amazon;
 using decorativeplant_be.Application.Common.Settings;
+using decorativeplant_be.Application.Common.Security;
 
 namespace decorativeplant_be.Infrastructure;
 
@@ -190,6 +191,10 @@ public static class InfrastructureServiceRegistration
             return new AmazonS3Client(creds, RegionEndpoint.GetBySystemName(region));
         });
         services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IMediaStorageService, S3MediaStorageService>();
+        services.AddScoped<IObjectStorageService, S3ObjectStorageService>();
+
+        // AR preview viewer token signing
+        services.AddScoped<IArPreviewTokenService, ArPreviewTokenService>();
 
         // Configure JWT Authentication
         services.AddAuthentication(options =>
