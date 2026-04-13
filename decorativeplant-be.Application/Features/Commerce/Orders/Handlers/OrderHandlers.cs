@@ -11,8 +11,10 @@ using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
+using decorativeplant_be.Application.Features.Commerce.Orders;
 
 namespace decorativeplant_be.Application.Features.Commerce.Orders.Handlers;
+
 
 public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<OrderResponse>>
 {
@@ -270,6 +272,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         {
             var root = o.Notes.RootElement;
             response.CustomerNote = root.TryGetProperty("customer_note", out var cn) ? cn.GetString() : null;
+            response.PaymentStatus = root.TryGetProperty("payment_status", out var ps) ? ps.GetString() : null;
             response.TrackingCode = root.TryGetProperty("tracking_code", out var tc) ? tc.GetString() : null;
             response.CarrierName = root.TryGetProperty("carrier_name", out var cn2) ? cn2.GetString() : null;
         }
@@ -301,11 +304,15 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
 {
     private readonly IApplicationDbContext _context;
     private readonly IStockService _stockService;
+    private readonly IShippingService _shippingService;
+    private readonly ILogger<UpdateOrderStatusHandler> _logger;
 
-    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService)
+    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService, IShippingService shippingService, ILogger<UpdateOrderStatusHandler> logger)
     {
         _context = context;
         _stockService = stockService;
+        _shippingService = shippingService;
+        _logger = logger;
     }
 
     public async Task<OrderResponse> Handle(UpdateOrderStatusCommand cmd, CancellationToken ct)
@@ -335,6 +342,12 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
         if (!string.IsNullOrEmpty(cmd.Request.CarrierName)) notesDict["carrier_name"] = cmd.Request.CarrierName;
 
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+
+        // If order is confirmed, try to create GHN shipments
+        if (normalizedStatus == "confirmed")
+        {
+            await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+        }
 
         await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);

@@ -9,17 +9,31 @@ using decorativeplant_be.Application.Features.Commerce.Shipping.Commands;
 using decorativeplant_be.Application.Features.Commerce.Shipping.Queries;
 using decorativeplant_be.Domain.Entities;
 
+using decorativeplant_be.Application.Features.Commerce.Orders;
+using decorativeplant_be.Application.Services;
+using Microsoft.Extensions.Logging;
+
 namespace decorativeplant_be.Application.Features.Commerce.Shipping.Handlers;
+
 
 public class CreateShippingHandler : IRequestHandler<CreateShippingCommand, ShippingResponse>
 {
     private readonly IApplicationDbContext _context;
-    public CreateShippingHandler(IApplicationDbContext context) => _context = context;
+    private readonly IShippingService _shippingService;
+    private readonly ILogger<CreateShippingHandler> _logger;
+
+    public CreateShippingHandler(IApplicationDbContext context, IShippingService shippingService, ILogger<CreateShippingHandler> logger)
+    {
+        _context = context;
+        _shippingService = shippingService;
+        _logger = logger;
+    }
 
     public async Task<ShippingResponse> Handle(CreateShippingCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
         var order = await _context.OrderHeaders
+            .Include(o => o.OrderItems)
             .FirstOrDefaultAsync(o => o.Id == req.OrderId, ct)
             ?? throw new NotFoundException("Order not found");
 
@@ -27,7 +41,26 @@ public class CreateShippingHandler : IRequestHandler<CreateShippingCommand, Ship
             || shipmentsEl.ValueKind != JsonValueKind.Array
             || shipmentsEl.GetArrayLength() == 0)
         {
-            throw new BadRequestException("GHN shipments not created yet. Wait for payment confirmation to finish.");
+            // Auto-heal: if order is confirmed/processing but shipments missing, try to create them now
+            if (order.Status == "confirmed" || order.Status == "processing" || order.Status == "shipped")
+            {
+                await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+                await _context.SaveChangesAsync(ct);
+                
+                // Refresh property
+                if (order.Notes != null && order.Notes.RootElement.TryGetProperty("shipments", out shipmentsEl) && shipmentsEl.ValueKind == JsonValueKind.Array && shipmentsEl.GetArrayLength() > 0)
+                {
+                    // Success, proceed
+                }
+                else
+                {
+                    throw new BadRequestException("Failed to initialize GHN shipments. Please contact support or check delivery address.");
+                }
+            }
+            else
+            {
+                throw new BadRequestException($"GHN shipments have not been initialized yet. Order status is '{order.Status}'. Ensure it is 'Confirmed' first.");
+            }
         }
 
         var existing = await _context.Shippings
