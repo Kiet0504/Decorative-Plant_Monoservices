@@ -149,6 +149,20 @@ public class AuthController : BaseController
         return Ok(ApiResponse<bool>.SuccessResponse(result, "Profile completed successfully."));
     }
 
+    /// <summary>Change password for the signed-in user (local accounts only). Revokes all refresh tokens.</summary>
+    [HttpPost("change-password")]
+    [Microsoft.AspNetCore.Authorization.Authorize]
+    public async Task<ActionResult<ApiResponse<object>>> ChangePassword([FromBody] ChangePasswordCommand command)
+    {
+        var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (!Guid.TryParse(userIdClaim, out var userId))
+            return Unauthorized();
+
+        command.UserId = userId;
+        await Mediator.Send(command);
+        return Ok(ApiResponse<object>.SuccessResponse(new { }, "Password changed successfully. Please sign in again on other devices."));
+    }
+
     /// <summary>
     /// Get the current authenticated user's profile information.
     /// Returns all user data including onboarding profile fields.

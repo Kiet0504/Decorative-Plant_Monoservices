@@ -27,4 +27,8 @@ public class CompleteProfileCommand : IRequest<bool>
 
     public string? FullName { get; set; }
     public string? Phone { get; set; }
+
+    public string? Bio { get; set; }
+    public string? AvatarUrl { get; set; }
+    public string? HardinessZone { get; set; }
 }
