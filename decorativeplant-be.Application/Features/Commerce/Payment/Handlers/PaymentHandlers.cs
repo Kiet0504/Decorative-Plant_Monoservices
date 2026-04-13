@@ -13,6 +13,9 @@ using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Features.Commerce.Payment.Handlers;
 
+using decorativeplant_be.Application.Features.Commerce.Orders;
+
+
 public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, PaymentResponse>
 {
     private readonly IApplicationDbContext _context;
@@ -82,7 +85,31 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         var desc = $"TT cho {orders.Count} don hang";
         if (desc.Length > 25) desc = desc[..25]; // PayOS max length is 25
 
-        var result = await _payOS.CreatePaymentLinkAsync(payosOrderCode, totalAmount, desc, payOSItems, cmd.Request.ReturnUrl, cmd.Request.CancelUrl, ct);
+        string? buyerName = null;
+        string? buyerPhone = null;
+        string? buyerAddress = null;
+
+        if (firstOrder.DeliveryAddress != null)
+        {
+            var da = firstOrder.DeliveryAddress.RootElement;
+            if (da.TryGetProperty("recipientName", out var nameProp)) buyerName = nameProp.GetString();
+            if (da.TryGetProperty("phone", out var phoneProp)) buyerPhone = phoneProp.GetString();
+            
+            string? line1 = null;
+            string? city = null;
+            if (da.TryGetProperty("addressLine1", out var l1Prop)) line1 = l1Prop.GetString();
+            if (da.TryGetProperty("city", out var cProp)) city = cProp.GetString();
+
+            if (!string.IsNullOrEmpty(line1) || !string.IsNullOrEmpty(city))
+            {
+                buyerAddress = $"{line1}, {city}".Trim(new char[] { ',', ' ' });
+            }
+        }
+
+        var result = await _payOS.CreatePaymentLinkAsync(
+            payosOrderCode, totalAmount, desc, payOSItems, 
+            cmd.Request.ReturnUrl, cmd.Request.CancelUrl, 
+            buyerName, null, buyerPhone, buyerAddress, ct);
 
         // We arbitrarily attach the PaymentTransaction to the first order for foreign key purposes,
         // but store ALL order ids in the Details JSON.
@@ -256,9 +283,6 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                         {
                             if (order.Status == "pending")
                             {
-                                order.Status = "confirmed";
-                                order.ConfirmedAt = DateTime.UtcNow;
-
                                 // Remove items from user's cart
                                 if (order.UserId != Guid.Empty)
                                 {
@@ -280,10 +304,20 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
-
-                                // Create GHN shipping order now that payment is confirmed
-                                await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                             }
+                            
+                            var notesObj = new Dictionary<string, object?>();
+                            if (order.Notes != null)
+                            {
+                                foreach (var prop in order.Notes.RootElement.EnumerateObject())
+                                    notesObj[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                                        ? prop.Value.GetString() : prop.Value.GetRawText();
+                            }
+                            notesObj["payment_status"] = "paid";
+                            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+
+                            // Create GHN shipments for paid orders
+                            await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                         }
                     }
                 }
@@ -479,9 +513,6 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                         {
                             if (order.Status == "pending")
                             {
-                                order.Status = "confirmed";
-                                order.ConfirmedAt = DateTime.UtcNow;
-
                                 // Remove purchased items from user's cart
                                 if (order.UserId.HasValue && order.UserId != Guid.Empty)
                                 {
@@ -502,10 +533,20 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
-
-                                // Create GHN shipping order now that payment is confirmed
-                                await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                             }
+
+                            var notesObj = new Dictionary<string, object?>();
+                            if (order.Notes != null)
+                            {
+                                foreach (var prop in order.Notes.RootElement.EnumerateObject())
+                                    notesObj[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                                        ? prop.Value.GetString() : prop.Value.GetRawText();
+                            }
+                            notesObj["payment_status"] = "paid";
+                            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+
+                            // Create GHN shipments for paid orders
+                            await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                         }
 
                         await _context.SaveChangesAsync(ct);
@@ -526,167 +567,5 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
             }
         }
         return false;
-    }
-}
-
-/// <summary>
-/// Shared helper for creating GHN shipping orders after payment confirmation.
-/// Chain Store model: groups OrderItems by branch and creates N GHN shipments for 1 order.
-/// </summary>
-internal static class GhnOrderHelper
-{
-    internal static async Task TryCreateGhnOrderAsync(OrderHeader order, IShippingService shippingService, ILogger logger)
-    {
-        logger.LogInformation("GHN: Starting shipment creation for Order {OrderCode} (ID: {OrderId})", order.OrderCode, order.Id);
-
-        if (order.DeliveryAddress == null)
-        {
-            logger.LogWarning("GHN: Skipping - DeliveryAddress is null for Order {OrderCode}", order.OrderCode);
-            return;
-        }
-        if (order.OrderItems == null || order.OrderItems.Count == 0)
-        {
-            logger.LogWarning("GHN: Skipping - No OrderItems for Order {OrderCode}", order.OrderCode);
-            return;
-        }
-
-        // Skip if shipments already created
-        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("shipments", out _))
-        {
-            logger.LogInformation("GHN: Skipping - Shipments already exist for Order {OrderCode}", order.OrderCode);
-            return;
-        }
-        // Backward compat: also skip if old tracking_code exists
-        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("tracking_code", out _))
-        {
-            logger.LogInformation("GHN: Skipping - tracking_code already exists for Order {OrderCode}", order.OrderCode);
-            return;
-        }
-
-        try
-        {
-            // Parse delivery address once
-            var toName = order.DeliveryAddress.RootElement.TryGetProperty("recipient_name", out var n)
-                ? (n.GetString() ?? "") : "";
-            var toPhone = order.DeliveryAddress.RootElement.TryGetProperty("phone", out var p)
-                ? (p.GetString() ?? "") : "";
-            var toAddress = order.DeliveryAddress.RootElement.TryGetProperty("address_line_1", out var a)
-                ? (a.GetString() ?? "") : "";
-            var toDistrict = order.DeliveryAddress.RootElement.TryGetProperty("district_id", out var d)
-                ? d.GetInt32() : 1454;
-            var toWard = order.DeliveryAddress.RootElement.TryGetProperty("ward_code", out var w)
-                ? (w.GetString() ?? "21211") : "21211";
-
-            logger.LogInformation("GHN: Delivery address for Order {OrderCode}: Name={Name}, Phone={Phone}, Address={Address}, District={District}, Ward={Ward}",
-                order.OrderCode, toName, toPhone, toAddress, toDistrict, toWard);
-
-            // Group OrderItems by BranchId (direct column on OrderItem)
-            var itemsByBranch = order.OrderItems
-                .GroupBy(oi => oi.BranchId)
-                .ToList();
-
-            var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var t) == true
-                ? (t.GetString() ?? "0") : "0";
-            var orderTotal = (int)decimal.Parse(totalStr);
-
-            var shipments = new List<object>();
-            var shipmentIndex = 0;
-
-            foreach (var branchGroup in itemsByBranch)
-            {
-                shipmentIndex++;
-                var branchItems = branchGroup.ToList();
-
-                var ghnItems = branchItems.Select(oi =>
-                {
-                    var itemName = "Decorative Plant";
-                    if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
-                        itemName = ts.GetString() ?? itemName;
-                    return new ShippingOrderItem
-                    {
-                        Name = itemName,
-                        Quantity = oi.Quantity,
-                        Weight = 1000
-                    };
-                }).ToList();
-
-                // Split insurance value proportionally
-                var branchInsurance = itemsByBranch.Count == 1 ? orderTotal :
-                    (int)(orderTotal * ((decimal)branchItems.Sum(oi => oi.Quantity) / order.OrderItems.Sum(oi => oi.Quantity)));
-
-                var clientOrderCode = itemsByBranch.Count == 1
-                    ? (order.OrderCode ?? order.Id.ToString())
-                    : $"{order.OrderCode}-S{shipmentIndex}";
-
-                logger.LogInformation("GHN: Creating shipment #{Index} for Order {OrderCode}, Branch={BranchId}, FromDist={FromDist}, FromWard={FromWard}, Items={ItemCount}, Insurance={Insurance}, ClientOrderCode={ClientOrderCode}",
-                    shipmentIndex, order.OrderCode, branchGroup.Key, shippingService.DefaultFromDistrictId, shippingService.DefaultFromWardCode, branchItems.Count, branchInsurance, clientOrderCode);
-
-                var ghnRes = await shippingService.CreateOrderAsync(new ShippingOrderRequest
-                {
-                    ToName = toName,
-                    ToPhone = toPhone,
-                    ToAddress = toAddress,
-                    ToDistrictId = toDistrict,
-                    ToWardCode = toWard,
-                    FromDistrictId = shippingService.DefaultFromDistrictId,
-                    FromWardCode = shippingService.DefaultFromWardCode,
-                    Weight = ghnItems.Sum(i => i.Quantity) * 1000,
-                    InsuranceValue = branchInsurance,
-                    ClientOrderCode = clientOrderCode,
-                    Items = ghnItems
-                });
-
-                logger.LogInformation("GHN: Response for Order {OrderCode}: Success={Success}, OrderCode={GhnOrderCode}, Message={Message}",
-                    order.OrderCode, ghnRes.Success, ghnRes.OrderCode, ghnRes.Message);
-
-                if (ghnRes.Success && !string.IsNullOrEmpty(ghnRes.OrderCode))
-                {
-                    shipments.Add(new
-                    {
-                        branch_id = branchGroup.Key?.ToString(),
-                        tracking_code = ghnRes.OrderCode,
-                        carrier = "GHN",
-                        items = branchItems.Select(oi =>
-                        {
-                            if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
-                                return ts.GetString() ?? "item";
-                            return "item";
-                        }).ToList()
-                    });
-
-                    logger.LogInformation("GHN shipment created for Order {OrderCode}, Branch {BranchId}: {TrackingCode}",
-                        order.OrderCode, branchGroup.Key, ghnRes.OrderCode);
-                }
-            }
-
-            // Save all tracking info to order.Notes
-            if (shipments.Count > 0)
-            {
-                var notesObj = new Dictionary<string, object?>();
-                if (order.Notes != null)
-                {
-                    foreach (var prop in order.Notes.RootElement.EnumerateObject())
-                        notesObj[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
-                            ? prop.Value.GetString() : prop.Value.GetRawText();
-                }
-                notesObj["shipments"] = shipments;
-                // Backward compat: set tracking_code to first shipment's code
-                if (shipments.Count == 1)
-                {
-                    var first = (dynamic)shipments[0];
-                    notesObj["tracking_code"] = first.tracking_code;
-                    notesObj["carrier_name"] = "GHN";
-                }
-                order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
-            }
-            else
-            {
-                logger.LogWarning("GHN: No shipments were created for Order {OrderCode}!", order.OrderCode);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed to create GHN shipments for {OrderCode}", order.OrderCode);
-        }
     }
 }

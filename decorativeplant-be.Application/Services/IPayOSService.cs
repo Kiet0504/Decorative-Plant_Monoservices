@@ -15,6 +15,10 @@ public interface IPayOSService
         List<PayOSItem> items,
         string returnUrl,
         string cancelUrl,
+        string? buyerName = null,
+        string? buyerEmail = null,
+        string? buyerPhone = null,
+        string? buyerAddress = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

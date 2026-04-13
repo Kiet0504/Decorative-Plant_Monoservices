@@ -28,6 +28,7 @@ public class PayOSService : IPayOSService
     public async Task<PayOSCreatePaymentResult> CreatePaymentLinkAsync(
         long orderCode, int amount, string description,
         List<PayOSItem> items, string returnUrl, string cancelUrl,
+        string? buyerName = null, string? buyerEmail = null, string? buyerPhone = null, string? buyerAddress = null,
         CancellationToken cancellationToken = default)
     {
         var payOSItems = items.Select(i => new ItemData(i.Name, i.Quantity, i.Price)).ToList();
@@ -39,6 +40,10 @@ public class PayOSService : IPayOSService
             items: payOSItems,
             cancelUrl: cancelUrl,
             returnUrl: returnUrl,
+            buyerName: !string.IsNullOrWhiteSpace(buyerName) ? buyerName : null,
+            buyerEmail: !string.IsNullOrWhiteSpace(buyerEmail) ? buyerEmail : null,
+            buyerPhone: !string.IsNullOrWhiteSpace(buyerPhone) ? buyerPhone : null,
+            buyerAddress: !string.IsNullOrWhiteSpace(buyerAddress) ? buyerAddress : null,
             expiredAt: (int)DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds()
         );
 
