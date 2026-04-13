@@ -48,6 +48,12 @@ public interface IGardenRepository
         bool includeInactive = false,
         CancellationToken cancellationToken = default);
 
+    Task<CareSchedule?> GetScheduleByIdAsync(Guid id, CancellationToken cancellationToken = default);
+
+    Task<CareSchedule> AddScheduleAsync(CareSchedule schedule, CancellationToken cancellationToken = default);
+
+    Task UpdateScheduleAsync(CareSchedule schedule, CancellationToken cancellationToken = default);
+
     Task<IEnumerable<PlantDiagnosis>> GetPlantDiagnosesByPlantIdAsync(
         Guid gardenPlantId,
         CancellationToken cancellationToken = default);

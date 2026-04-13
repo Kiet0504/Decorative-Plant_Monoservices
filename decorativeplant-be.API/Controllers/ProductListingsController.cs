@@ -17,6 +17,7 @@ public class ProductListingsController : BaseController
         [FromQuery] string? search, 
         [FromQuery] string? sortBy,
         [FromQuery] string? sortOrder,
+        [FromQuery] bool groupBySpecies = true,
         [FromQuery] int page = 1, 
         [FromQuery] int pageSize = 20)
     {
@@ -26,6 +27,7 @@ public class ProductListingsController : BaseController
             Search = search, 
             SortBy = sortBy,
             SortOrder = sortOrder,
+            GroupBySpecies = groupBySpecies,
             Page = page, 
             PageSize = pageSize 
         });
