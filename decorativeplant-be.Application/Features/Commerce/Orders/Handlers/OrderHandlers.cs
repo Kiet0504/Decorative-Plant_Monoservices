@@ -314,6 +314,11 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
             ?? throw new NotFoundException($"Order {cmd.Id} not found.");
 
         var normalizedStatus = cmd.Request.Status?.ToLowerInvariant() ?? "";
+
+        // Block staff from setting "completed" — only the customer may do that via POST /confirm-receipt
+        if (normalizedStatus == "completed")
+            throw new BadRequestException("Only the customer can mark an order as completed (via Confirm Receipt).");
+
         order.Status = normalizedStatus;
         if (normalizedStatus == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
 
