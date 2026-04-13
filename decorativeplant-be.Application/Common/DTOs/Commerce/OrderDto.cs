@@ -65,6 +65,7 @@ public class OrderResponse
     public string? OrderType { get; set; }
     public string? FulfillmentMethod { get; set; }
     public string Status { get; set; } = string.Empty;
+    public string? PaymentStatus { get; set; }
     public string? TrackingCode { get; set; }
     public string? CarrierName { get; set; }
     public OrderFinancialsDto? Financials { get; set; }
