@@ -177,6 +177,23 @@ public class GardenRepository : IGardenRepository
         return await query.ToListAsync(cancellationToken);
     }
 
+    public async Task<CareSchedule?> GetScheduleByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        return await _context.CareSchedules.FirstOrDefaultAsync(s => s.Id == id, cancellationToken);
+    }
+
+    public async Task<CareSchedule> AddScheduleAsync(CareSchedule schedule, CancellationToken cancellationToken = default)
+    {
+        await _context.CareSchedules.AddAsync(schedule, cancellationToken);
+        return schedule;
+    }
+
+    public Task UpdateScheduleAsync(CareSchedule schedule, CancellationToken cancellationToken = default)
+    {
+        _context.CareSchedules.Update(schedule);
+        return Task.CompletedTask;
+    }
+
     public async Task<IEnumerable<PlantDiagnosis>> GetPlantDiagnosesByPlantIdAsync(
         Guid gardenPlantId,
         CancellationToken cancellationToken = default)
