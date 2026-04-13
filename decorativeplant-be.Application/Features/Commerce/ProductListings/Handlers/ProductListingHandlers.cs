@@ -146,6 +146,7 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             if (!string.IsNullOrEmpty(targetTitle)) response.Title = targetTitle;
             
             response.ScientificName = e.Batch.Taxonomy.ScientificName;
+            response.TaxonomyId = e.Batch.TaxonomyId;
         }
 
         // Strictly use real stock from linked batch inventory (BatchStock)
@@ -160,6 +161,15 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
                 {
                     response.StockQuantity = aq.GetInt32();
                 }
+                if (batchStock.Quantities.RootElement.TryGetProperty("quantity", out var tq))
+                {
+                    response.BatchTotalQuantity = tq.GetInt32();
+                }
+                if (batchStock.Quantities.RootElement.TryGetProperty("reserved_quantity", out var rq))
+                {
+                    response.BatchReservedQuantity = rq.GetInt32();
+                }
+                response.StockLocationId = batchStock.LocationId;
             }
         }
 
@@ -237,9 +247,7 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         {
             if (entity.Batch != null)
             {
-                entity.Batch.CurrentTotalQuantity = req.StockQuantity.Value;
-                _logger.LogInformation("Updated existing Batch {BatchId} to quantity {Quantity} for Product {ProductId}", 
-                    entity.BatchId, req.StockQuantity.Value, entity.Id);
+                _logger.LogInformation("Stock change requested for listing {Id}. Syncing only storefront available quantity.", entity.Id);
             }
             else
             {

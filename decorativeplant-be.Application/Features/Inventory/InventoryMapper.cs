@@ -23,6 +23,11 @@ public static class InventoryMapper
             ToBranchId = transfer.ToBranchId ?? Guid.Empty,
             FromLocationId = transfer.FromLocationId ?? Guid.Empty,
             ToLocationId = transfer.ToLocationId ?? Guid.Empty,
+            FromBranchName = transfer.FromBranch?.Name,
+            FromBranchAddress = GetBranchAddress(transfer.FromBranch),
+            ToBranchName = transfer.ToBranch?.Name,
+            ToBranchAddress = GetBranchAddress(transfer.ToBranch),
+            SpeciesName = GetSpeciesName(transfer.Batch),
             Quantity = transfer.Quantity,
             Status = transfer.Status ?? "requested",
             CreatedAt = transfer.CreatedAt ?? DateTime.UtcNow,
@@ -32,14 +37,14 @@ public static class InventoryMapper
     }
 
     public static JsonDocument BuildLogisticsInfo(
-        Guid? requestedBy = null,
+        object? requestedBy = null,
         string? notes = null,
         DateTime? shippedAt = null,
-        Guid? shippedBy = null,
+        object? shippedBy = null,
         string? trackingNumber = null,
         string? shippingProvider = null, 
         DateTime? receivedAt = null,
-        Guid? receivedBy = null,
+        object? receivedBy = null,
         string? receivingNotes = null,
         JsonDocument? existingInfo = null)
     {
@@ -55,16 +60,16 @@ public static class InventoryMapper
             catch { /* Ignore invalid existing JSON */ }
         }
 
-        if (requestedBy.HasValue) dict["requested_by"] = requestedBy;
+        if (requestedBy != null) dict["requested_by"] = requestedBy;
         if (!string.IsNullOrEmpty(notes)) dict["notes"] = notes;
         
         if (shippedAt.HasValue) dict["shipped_at"] = shippedAt;
-        if (shippedBy.HasValue) dict["shipped_by"] = shippedBy;
+        if (shippedBy != null) dict["shipped_by"] = shippedBy;
         if (!string.IsNullOrEmpty(trackingNumber)) dict["tracking_number"] = trackingNumber;
         if (!string.IsNullOrEmpty(shippingProvider)) dict["shipping_provider"] = shippingProvider;
 
         if (receivedAt.HasValue) dict["received_at"] = receivedAt;
-        if (receivedBy.HasValue) dict["received_by"] = receivedBy;
+        if (receivedBy != null) dict["received_by"] = receivedBy;
         if (!string.IsNullOrEmpty(receivingNotes)) dict["receiving_notes"] = receivingNotes;
 
         var json = JsonSerializer.SerializeToUtf8Bytes(dict, JsonOptions);
@@ -80,6 +85,40 @@ public static class InventoryMapper
             if (prop.ValueKind == JsonValueKind.String && DateTime.TryParse(prop.GetString(), out var date)) return date;
             if (prop.ValueKind == JsonValueKind.String) return null;
         }
+        return null;
+    }
+
+    private static string? GetSpeciesName(PlantBatch? batch)
+    {
+        if (batch?.Taxonomy == null) return null;
+        
+        string taxVi = "";
+        string taxEn = "";
+        if (batch.Taxonomy.CommonNames != null)
+        {
+            var root = batch.Taxonomy.CommonNames.RootElement;
+            if (root.TryGetProperty("vi", out var viProp)) taxVi = viProp.GetString() ?? "";
+            if (root.TryGetProperty("en", out var enProp)) taxEn = enProp.GetString() ?? "";
+        }
+        
+        return !string.IsNullOrEmpty(taxVi) ? taxVi : (!string.IsNullOrEmpty(taxEn) ? taxEn : batch.Taxonomy.ScientificName);
+    }
+
+    private static string? GetBranchAddress(decorativeplant_be.Domain.Entities.Branch? branch)
+    {
+        if (branch?.ContactInfo == null) return null;
+        
+        try 
+        {
+            var root = branch.ContactInfo.RootElement;
+            if (root.TryGetProperty("full_address", out var addr))
+                return addr.GetString();
+        }
+        catch 
+        {
+            // Fallback
+        }
+        
         return null;
     }
 }

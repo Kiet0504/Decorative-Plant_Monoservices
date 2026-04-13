@@ -5,40 +5,41 @@ using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Application.Common.DTOs.Garden;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 using System.Linq.Expressions;
-using System.Text.Json;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class ListStockTransfersQueryHandler : IRequestHandler<ListStockTransfersQuery, PagedResultDto<StockTransferDto>>
 {
-    private readonly IRepositoryFactory _repositoryFactory;
+    private readonly IApplicationDbContext _context;
 
-    public ListStockTransfersQueryHandler(IRepositoryFactory repositoryFactory)
+    public ListStockTransfersQueryHandler(IApplicationDbContext context)
     {
-        _repositoryFactory = repositoryFactory;
+        _context = context;
     }
 
     public async Task<PagedResultDto<StockTransferDto>> Handle(ListStockTransfersQuery request, CancellationToken cancellationToken)
     {
-        var repo = _repositoryFactory.CreateRepository<StockTransfer>();
+        var query = _context.StockTransfers
+            .Include(x => x.FromBranch)
+            .Include(x => x.ToBranch)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.Taxonomy)
+            .Where(x =>
+                (string.IsNullOrEmpty(request.Status) || x.Status == request.Status) &&
+                (!request.BatchId.HasValue || x.BatchId == request.BatchId) &&
+                (!request.FromBranchId.HasValue || x.FromBranchId == request.FromBranchId) &&
+                (!request.ToBranchId.HasValue || x.ToBranchId == request.ToBranchId));
 
-        Expression<Func<StockTransfer, bool>> filter = x =>
-            (string.IsNullOrEmpty(request.Status) || x.Status == request.Status) &&
-            (!request.BatchId.HasValue || x.BatchId == request.BatchId) &&
-            (!request.FromBranchId.HasValue || x.FromBranchId == request.FromBranchId) &&
-            (!request.ToBranchId.HasValue || x.ToBranchId == request.ToBranchId);
-
-        var totalCount = await repo.CountAsync(filter, cancellationToken);
-        var allItems = await repo.FindAsync(filter, cancellationToken);
+        var totalCount = await query.CountAsync(cancellationToken);
         
-        // Manual paging as before
-        var pagedItems = allItems.OrderByDescending(x => x.CreatedAt)
-                                 .Skip((request.Page - 1) * request.PageSize)
-                                 .Take(request.PageSize)
-                                 .ToList();
+        var items = await query.OrderByDescending(x => x.CreatedAt)
+                               .Skip((request.Page - 1) * request.PageSize)
+                               .Take(request.PageSize)
+                               .ToListAsync(cancellationToken);
 
-        var dtos = pagedItems.Select(InventoryMapper.ToStockTransferDto).ToList();
+        var dtos = items.Select(InventoryMapper.ToStockTransferDto).ToList();
 
         return new PagedResultDto<StockTransferDto>
         {
