@@ -37,6 +37,21 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
         };
 
         await _iotRepository.AddSensorReadingAsync(reading, cancellationToken);
+        
+        // --- Update Activity Log ---
+        var activityDict = new Dictionary<string, string>();
+        if (device.ActivityLog != null)
+        {
+            try
+            {
+                var existing = JsonSerializer.Deserialize<Dictionary<string, string>>(device.ActivityLog.RootElement.GetRawText());
+                if (existing != null) activityDict = existing;
+            }
+            catch { }
+        }
+        activityDict["last_data_at"] = reading.RecordedAt?.ToString("o") ?? DateTime.UtcNow.ToString("o"); // ISO 8601
+        device.ActivityLog = JsonSerializer.SerializeToDocument(activityDict);
+        await _iotRepository.UpdateIotDeviceAsync(device, cancellationToken);
 
         // --- Automatic Alert Generation ---
         var rules = await _iotRepository.GetAutomationRulesAsync(device.Id, cancellationToken);

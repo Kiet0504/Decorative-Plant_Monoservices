@@ -53,6 +53,12 @@ public class CreateIotDeviceCommandHandler : IRequestHandler<CreateIotDeviceComm
         if (!string.IsNullOrEmpty(request.Device.Name)) deviceInfoDict["name"] = request.Device.Name;
         if (!string.IsNullOrEmpty(request.Device.Type)) deviceInfoDict["type"] = request.Device.Type;
 
+        // Initialize ActivityLog structure
+        var activityLog = new {
+            last_heartbeat_at = (string?)null,
+            last_data_at = (string?)null
+        };
+
         var newDevice = new IotDevice
         {
             Id = Guid.NewGuid(),
@@ -61,6 +67,7 @@ public class CreateIotDeviceCommandHandler : IRequestHandler<CreateIotDeviceComm
             SecretKey = generatedSecret,
             DeviceInfo = deviceInfoDict.Count > 0 ? JsonSerializer.SerializeToDocument(deviceInfoDict) : request.Device.DeviceInfo,
             Status = request.Device.Status ?? "Active",
+            ActivityLog = JsonSerializer.SerializeToDocument(activityLog),
             Components = request.Device.Components
         };
 
@@ -77,6 +84,7 @@ public class CreateIotDeviceCommandHandler : IRequestHandler<CreateIotDeviceComm
             Name = request.Device.Name,
             Type = request.Device.Type,
             Status = newDevice.Status,
+            ActivityLog = newDevice.ActivityLog,
             Components = newDevice.Components
         };
     }
