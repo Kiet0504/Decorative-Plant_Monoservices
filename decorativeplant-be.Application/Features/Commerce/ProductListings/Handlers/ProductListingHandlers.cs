@@ -94,12 +94,20 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         return MapToResponse(entity);
     }
 
+    internal static string? GetProductTitle(ProductListing e)
+    {
+        if (e.ProductInfo == null) return null;
+        return e.ProductInfo.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
+    }
+
     internal static ProductListingResponse MapToResponse(ProductListing e)
     {
         var response = new ProductListingResponse
         {
             Id = e.Id,
             BranchId = e.BranchId,
+            BranchName = e.Branch?.Name,
+            BranchAddress = e.Branch?.ContactInfo?.RootElement.TryGetProperty("full_address", out var addr) == true ? addr.GetString() : null,
             BatchId = e.BatchId,
             CreatedAt = e.CreatedAt
         };
@@ -289,6 +297,77 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
                 req.Images.Select(i => new { url = i.Url, alt = i.Alt, is_primary = i.IsPrimary, sort_order = i.SortOrder })));
 
         await _context.SaveChangesAsync(ct);
+
+        // --- NEW: Synchronization feature ---
+        if (req.SyncToAllBranches == true)
+        {
+            _logger.LogInformation("Syncing product updates to all branches for species related to listing {Id}", entity.Id);
+            
+            var taxonomyId = entity.Batch?.TaxonomyId;
+            var currentTitle = req.Title ?? CreateProductListingHandler.GetProductTitle(entity);
+            var normalizedTitle = currentTitle?.Trim().ToLowerInvariant();
+
+            // Find all other listings for the same species
+            var otherListings = await _context.ProductListings
+                .Include(x => x.Batch)
+                .Where(x => x.Id != entity.Id)
+                .ToListAsync(ct);
+
+            var targets = otherListings.Where(x => 
+            {
+                if (taxonomyId.HasValue && x.Batch != null && x.Batch.TaxonomyId == taxonomyId.Value) return true;
+                
+                if (!taxonomyId.HasValue && !string.IsNullOrEmpty(normalizedTitle))
+                {
+                    var otherTitle = CreateProductListingHandler.GetProductTitle(x)?.Trim().ToLowerInvariant();
+                    return otherTitle == normalizedTitle;
+                }
+
+                return false;
+            }).ToList();
+
+            foreach (var target in targets)
+            {
+                // Update ProductInfo JSONB
+                var targetPI = new Dictionary<string, object?>();
+                if (target.ProductInfo != null)
+                    foreach (var prop in target.ProductInfo.RootElement.EnumerateObject())
+                        targetPI[prop.Name] = GetJsonValue(prop.Value);
+
+                if (req.Title != null) targetPI["title"] = req.Title;
+                if (req.ScientificName != null) targetPI["scientific_name"] = req.ScientificName;
+                if (req.Description != null) targetPI["description"] = req.Description;
+                if (req.Price != null) targetPI["price"] = req.Price;
+                if (req.CareInfo != null) targetPI["care_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.CareInfo));
+                if (req.GrowthInfo != null) targetPI["growth_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.GrowthInfo));
+                
+                target.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(targetPI));
+
+                // Update Status/Visibility/Featured
+                var targetSI = new Dictionary<string, object?>();
+                if (target.StatusInfo != null)
+                    foreach (var prop in target.StatusInfo.RootElement.EnumerateObject())
+                        targetSI[prop.Name] = GetJsonValue(prop.Value);
+
+                if (req.Status != null) targetSI["status"] = req.Status;
+                if (req.Visibility != null) targetSI["visibility"] = req.Visibility;
+                if (req.Featured.HasValue) targetSI["featured"] = req.Featured.Value;
+                
+                target.StatusInfo = JsonDocument.Parse(JsonSerializer.Serialize(targetSI));
+                
+                // Update Images if provided
+                if (req.Images != null)
+                    target.Images = JsonDocument.Parse(JsonSerializer.Serialize(
+                        req.Images.Select(i => new { url = i.Url, alt = i.Alt, is_primary = i.IsPrimary, sort_order = i.SortOrder })));
+            }
+
+            if (targets.Any())
+            {
+                await _context.SaveChangesAsync(ct);
+                _logger.LogInformation("Synchronized {Count} related listings for species '{Title}'", targets.Count, req.Title ?? "Unknown");
+            }
+        }
+
         return CreateProductListingHandler.MapToResponse(entity);
     }
 
@@ -346,6 +425,7 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
         // 2. Fetch all relevant entries for aggregation
         // Note: We don't filter by BranchId in SQL yet if we want to show 'Global' info 
         // BUT if the query.BranchId is set, the customer only wants to see what's available AT that branch.
+
         var allListings = await q.ToListAsync(ct);
         
         // 3. Map to DTOs (this calculates individual listing stock)
@@ -366,90 +446,125 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             mapped = mapped.Where(x => x.Status == query.Status).ToList();
         }
 
-        // 5. Group by Species (Normalized Title + Scientific Name)
-        // This combines duplicates across batches and branches
-        var grouped = mapped
-            .GroupBy(p => (p.ScientificName ?? p.Title ?? "").Trim().ToLowerInvariant())
-            .Select(g =>
-            {
-                var primary = g.OrderByDescending(p => p.StockQuantity).First();
-                
-                // If a branch filter is applied, we only care about stock at THAT branch
-                if (query.BranchId.HasValue)
-                {
-                    primary.StockQuantity = g.Where(x => x.BranchId == query.BranchId.Value).Sum(x => x.StockQuantity);
-                }
-                else
-                {
-                    primary.StockQuantity = g.Sum(p => p.StockQuantity);
-                }
+        // 5. Condition Grouping or Individual View
+        List<ProductListingResponse> finalResult;
 
-                primary.TotalSystemStock = g.Sum(p => p.StockQuantity);
-                primary.AvailableBranches = g.Where(x => x.StockQuantity > 0).Select(p => p.BranchId).Distinct().Count();
-                primary.SoldCount = g.Sum(p => p.SoldCount);
-                primary.ViewCount = g.Sum(p => p.ViewCount);
+        if (query.GroupBySpecies)
+        {
+            // Group by Species (Normalized Title + Scientific Name)
+            finalResult = mapped
+                .GroupBy(p => (p.ScientificName ?? p.Title ?? "").Trim().ToLowerInvariant())
+                .Select(g =>
+                {
+                    // Filter group items by branch if requested
+                    var itemsInScope = query.BranchId.HasValue 
+                        ? g.Where(x => x.BranchId == query.BranchId.Value).ToList() 
+                        : g.ToList();
 
-                // Aggregate branch stocks info
-                primary.BranchStocks = g
-                    .SelectMany(p => p.BranchStocks)
-                    .GroupBy(bs => bs.BranchId)
-                    .Select(bsg => 
+                    if (!itemsInScope.Any()) return null;
+
+                    // For aggregated view, we pick the entry with most stock as the primary reference for metadata
+                    var primary = itemsInScope.OrderByDescending(p => p.StockQuantity).First();
+                    
+                    // If a branch filter is applied, we only care about stock at THAT branch
+                    if (query.BranchId.HasValue)
                     {
-                        var first = bsg.First();
-                        return new BranchStockDto 
+                        primary.StockQuantity = itemsInScope.Sum(x => x.StockQuantity);
+                    }
+                    else
+                    {
+                        primary.StockQuantity = g.Sum(p => p.StockQuantity);
+                    }
+
+                    primary.TotalSystemStock = g.Sum(p => p.StockQuantity);
+                    primary.AvailableBranches = g.Where(x => x.StockQuantity > 0).Select(p => p.BranchId).Distinct().Count();
+                    primary.SoldCount = g.Sum(p => p.SoldCount);
+                    primary.ViewCount = g.Sum(p => p.ViewCount);
+
+                    // Aggregation for Home Page Price (Minimum Price within scope)
+                    var prices = itemsInScope.Select(p => ParsePrice(p.Price)).ToList();
+                    var minPrice = prices.Min();
+                    var maxPrice = prices.Max();
+                    
+                    primary.Price = minPrice.ToString("0");
+                    primary.MaxPrice = maxPrice.ToString("0");
+                    primary.HasPriceRange = maxPrice > minPrice;
+
+                    // Aggregate branch stocks info
+                    primary.BranchStocks = g
+                        .SelectMany(p => p.BranchStocks)
+                        .GroupBy(bs => bs.BranchId)
+                        .Select(bsg => 
                         {
-                            BranchId = bsg.Key,
-                            BranchName = first.BranchName,
-                            BranchAddress = first.BranchAddress,
-                            OperatingHours = first.OperatingHours,
-                            StockQuantity = bsg.Sum(x => x.StockQuantity),
-                            Price = bsg.OrderByDescending(x => x.StockQuantity).First().Price
-                        };
-                    })
-                    .ToList();
+                            var first = bsg.First();
+                            return new BranchStockDto 
+                            {
+                                BranchId = bsg.Key,
+                                BranchName = first.BranchName,
+                                BranchAddress = first.BranchAddress,
+                                OperatingHours = first.OperatingHours,
+                                StockQuantity = bsg.Sum(x => x.StockQuantity),
+                                Price = bsg.OrderByDescending(x => x.StockQuantity).First().Price
+                            };
+                        })
+                        .ToList();
 
-                return primary;
-            })
-            // CRITICAL: Filter out items with 0 available stock in the current context
-            .Where(p => p.StockQuantity > 0) 
-            // Filter out items with 0 price for customers (unless viewing all listings as staff)
-            .Where(p => query.Status == "all" || decimal.Parse(p.Price ?? "0") > 0)
-            // Filter out draft items for customers
-            .Where(p => query.Status == "all" || p.Status == "active")
-            .ToList();
+                    return primary;
+                })
+                .Where(p => p != null)
+                .Cast<ProductListingResponse>()
+                // CRITICAL: Filter out items with 0 available stock in the current context (only for aggregated view)
+                .Where(p => p.StockQuantity > 0) 
+                // Filter out items with 0 price for customers (unless viewing all listings as staff)
+                .Where(p => query.Status == "all" || decimal.Parse(p.Price ?? "0") > 0)
+                // Filter out draft items for customers
+                .Where(p => query.Status == "all" || p.Status == "active")
+                .ToList();
+        }
+        else
+        {
+            // Individual View (No grouping) - used for Admin management
+            finalResult = mapped;
 
-        // 6. Post-grouping Search Filter
+            // Apply branch filter if provided
+            if (query.BranchId.HasValue)
+            {
+                finalResult = finalResult.Where(x => x.BranchId == query.BranchId.Value).ToList();
+            }
+        }
+
+        // 6. Post-mapping Search Filter
         if (!string.IsNullOrEmpty(query.Search))
         {
             var searchLower = query.Search.Trim().ToLowerInvariant();
-            grouped = grouped.Where(p =>
+            finalResult = finalResult.Where(p =>
                 (p.Title ?? "").ToLowerInvariant().Contains(searchLower) ||
                 (p.ScientificName ?? "").ToLowerInvariant().Contains(searchLower)
             ).ToList();
         }
 
-        // 7. Post-grouping Sorting
+        // 7. Post-mapping Sorting
         if (!string.IsNullOrEmpty(query.SortBy))
         {
             var descending = query.SortOrder?.ToLower() == "desc";
             var sortBy = query.SortBy.ToLower();
 
             if (sortBy == "inventory")
-                grouped = descending ? grouped.OrderByDescending(x => x.StockQuantity).ToList() : grouped.OrderBy(x => x.StockQuantity).ToList();
+                finalResult = descending ? finalResult.OrderByDescending(x => x.StockQuantity).ToList() : finalResult.OrderBy(x => x.StockQuantity).ToList();
             else if (sortBy == "price")
-                grouped = descending ? grouped.OrderByDescending(x => ParsePrice(x.Price)).ToList() : grouped.OrderBy(x => ParsePrice(x.Price)).ToList();
+                finalResult = descending ? finalResult.OrderByDescending(x => ParsePrice(x.Price)).ToList() : finalResult.OrderBy(x => ParsePrice(x.Price)).ToList();
             else if (sortBy == "createdat")
-                grouped = descending ? grouped.OrderByDescending(x => x.CreatedAt).ToList() : grouped.OrderBy(x => x.CreatedAt).ToList();
+                finalResult = descending ? finalResult.OrderByDescending(x => x.CreatedAt).ToList() : finalResult.OrderBy(x => x.CreatedAt).ToList();
             else
-                grouped = grouped.OrderByDescending(x => x.CreatedAt).ToList();
+                finalResult = finalResult.OrderByDescending(x => x.CreatedAt).ToList();
         }
         else
         {
-            grouped = grouped.OrderByDescending(x => x.CreatedAt).ToList();
+            finalResult = finalResult.OrderByDescending(x => x.CreatedAt).ToList();
         }
 
-        var totalCount = grouped.Count;
-        var pagedItems = grouped
+        var totalCount = finalResult.Count;
+        var pagedItems = finalResult
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
             .ToList();
@@ -503,22 +618,24 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
             .Where(x => x.Id != entity.Id)
             .ToListAsync(ct);
 
-        var matchingOthers = allOthers
-            .Where(e => (GetProductTitle(e) ?? "").Trim().ToLowerInvariant() == normalizedTitle)
-            .Select(CreateProductListingHandler.MapToResponse)
+        response.BranchStocks = allOthers
+            .Where(e => (CreateProductListingHandler.GetProductTitle(e) ?? "").Trim().ToLowerInvariant() == normalizedTitle)
+            .Select(e => new BranchStockDto
+            {
+                ListingId = e.Id,
+                BranchId = e.BranchId ?? Guid.Empty,
+                BranchName = e.Branch?.Name ?? "Unknown Branch",
+                BranchAddress = (e.Branch?.ContactInfo?.RootElement.TryGetProperty("full_address", out var addr) == true ? addr.GetString() : "") ?? "",
+                Price = (e.ProductInfo?.RootElement.TryGetProperty("price", out var p) == true ? p.GetString() : "0") ?? "0",
+                StockQuantity = (e.ProductInfo?.RootElement.TryGetProperty("stock_quantity", out var sq) == true ? sq.GetInt32() : 0),
+                OperatingHours = e.Branch?.OperatingHours
+            })
             .ToList();
 
-        response.BranchStocks.AddRange(matchingOthers.SelectMany(x => x.BranchStocks));
-        response.TotalSystemStock = response.BranchStocks.Sum(x => x.StockQuantity);
-        response.AvailableBranches = response.BranchStocks.Select(x => x.BranchId).Distinct().Count();
+        response.TotalSystemStock = response.StockQuantity + response.BranchStocks.Sum(x => x.StockQuantity);
+        response.AvailableBranches = (response.BranchId != null ? 1 : 0) + response.BranchStocks.Select(x => x.BranchId).Distinct().Count();
 
         return response;
-    }
-
-    private static string? GetProductTitle(ProductListing e)
-    {
-        if (e.ProductInfo == null) return null;
-        return e.ProductInfo.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 }
 

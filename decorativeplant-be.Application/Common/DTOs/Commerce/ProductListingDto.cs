@@ -55,6 +55,7 @@ public class UpdateProductListingRequest
     public string? MetaDescription { get; set; }
     public string? MetaKeywords { get; set; }
     public List<ProductImageDto>? Images { get; set; }
+    public bool? SyncToAllBranches { get; set; }
 }
 
 // ── Response DTOs ──
@@ -62,12 +63,15 @@ public class ProductListingResponse
 {
     public Guid Id { get; set; }
     public Guid? BranchId { get; set; }
+    public string? BranchName { get; set; }
+    public string? BranchAddress { get; set; }
     public Guid? BatchId { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? ScientificName { get; set; }
     public string? Slug { get; set; }
     public string? Description { get; set; }
     public string Price { get; set; } = "0";
+    public string MaxPrice { get; set; } = "0";
     public int StockQuantity { get; set; }
     public int MinOrder { get; set; }
     public int MaxOrder { get; set; }
@@ -88,6 +92,7 @@ public class ProductListingResponse
     // Unified Product fields (Chain Store model)
     public int TotalSystemStock { get; set; }
     public int AvailableBranches { get; set; }
+    public bool HasPriceRange { get; set; }
     public List<BranchStockDto> BranchStocks { get; set; } = new();
 }
 
