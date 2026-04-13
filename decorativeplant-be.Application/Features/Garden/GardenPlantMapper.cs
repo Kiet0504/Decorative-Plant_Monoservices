@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using decorativeplant_be.Application.Common.DTOs.Garden;
 using decorativeplant_be.Domain.Entities;
 
@@ -44,6 +45,16 @@ public static class GardenPlantMapper
             IsArchived = plant.IsArchived,
             CreatedAt = plant.CreatedAt,
             Taxonomy = taxonomy
+        };
+    }
+
+    public static TaxonomySummaryDto ToTaxonomySummaryDto(PlantTaxonomy taxonomy)
+    {
+        return new TaxonomySummaryDto
+        {
+            Id = taxonomy.Id,
+            ScientificName = taxonomy.ScientificName ?? string.Empty,
+            CommonName = GetCommonName(taxonomy.CommonNames)
         };
     }
 
@@ -117,6 +128,7 @@ public static class GardenPlantMapper
 
     /// <summary>
     /// Merges command fields into existing details, preserving milestones if not provided.
+    /// Preserves extension keys: <c>purchase</c>, <c>ai_care</c>, <c>shop_product_title</c>, and any other JSON not overwritten by core fields.
     /// </summary>
     public static System.Text.Json.JsonDocument? MergeDetailsJson(
         System.Text.Json.JsonDocument? existingDetails,
@@ -143,7 +155,35 @@ public static class GardenPlantMapper
         var mergedSize = size ?? existing?.Size;
         var mergedMilestones = existing?.Milestones;
 
-        return BuildDetailsJson(mergedNickname, mergedLocation, mergedSource, mergedAdoptedDate, mergedHealth, mergedSize, mergedMilestones);
+        var coreDoc = BuildDetailsJson(mergedNickname, mergedLocation, mergedSource, mergedAdoptedDate, mergedHealth, mergedSize, mergedMilestones, null);
+
+        if (existingDetails == null)
+        {
+            return coreDoc;
+        }
+
+        var existingObj = JsonNode.Parse(existingDetails.RootElement.GetRawText()) as JsonObject ?? new JsonObject();
+
+        if (coreDoc != null)
+        {
+            var coreObj = JsonNode.Parse(coreDoc.RootElement.GetRawText()) as JsonObject;
+            if (coreObj != null)
+            {
+                foreach (var p in coreObj)
+                {
+                    existingObj[p.Key] = p.Value?.DeepClone();
+                }
+            }
+        }
+        else
+        {
+            foreach (var k in new[] { "nickname", "location", "source", "adopted_date", "health", "size", "milestones" })
+            {
+                existingObj.Remove(k);
+            }
+        }
+
+        return JsonDocument.Parse(existingObj.ToJsonString());
     }
 
     /// <summary>

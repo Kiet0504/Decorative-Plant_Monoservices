@@ -34,3 +34,17 @@ public class TaxonomySummaryDto
 
     public string? CommonName { get; set; }
 }
+
+/// <summary>
+/// Preview of taxonomy resolved from a purchase order line (same logic as import-from-purchase).
+/// </summary>
+public class OrderItemTaxonomyPreviewDto
+{
+    public bool Resolved { get; set; }
+
+    public Guid? TaxonomyId { get; set; }
+
+    public string? ScientificName { get; set; }
+
+    public string? CommonName { get; set; }
+}

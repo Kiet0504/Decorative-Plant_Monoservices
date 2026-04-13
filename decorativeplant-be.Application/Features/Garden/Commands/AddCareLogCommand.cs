@@ -14,7 +14,7 @@ public class AddCareLogCommand : IRequest<CareLogDto>
 
     public Guid? ScheduleId { get; set; }
 
-    /// <summary>watered|fertilized|pruned|repotted|inspected</summary>
+    /// <summary>Preset slug (e.g. watered) or free-text label for what you did.</summary>
     public string ActionType { get; set; } = string.Empty;
 
     public string? Description { get; set; }
@@ -23,7 +23,7 @@ public class AddCareLogCommand : IRequest<CareLogDto>
 
     public string? Observations { get; set; }
 
-    /// <summary>thriving|okay|concerning</summary>
+    /// <summary>Optional: preset slug (thriving|okay|concerning) or free-text mood.</summary>
     public string? Mood { get; set; }
 
     public DateTime? PerformedAt { get; set; }

@@ -20,6 +20,7 @@ using decorativeplant_be.Infrastructure.Auth;
 using Amazon.S3;
 using Amazon.Runtime;
 using Amazon;
+using decorativeplant_be.Application.Common.Settings;
 
 namespace decorativeplant_be.Infrastructure;
 
@@ -146,6 +147,12 @@ public static class InfrastructureServiceRegistration
         services.Configure<AiDiagnosisSettings>(configuration.GetSection(AiDiagnosisSettings.SectionName));
         services.AddHttpClient();
         services.AddScoped<IAiDiagnosisService, OpenAiDiagnosisService>();
+
+        // Local AI (Ollama) for personalized care guidance
+        services.Configure<OllamaSettings>(configuration.GetSection(OllamaSettings.SectionName));
+        services.AddScoped<IOllamaClient, OllamaClient>();
+
+        services.Configure<AiCareAdviceSettings>(configuration.GetSection(AiCareAdviceSettings.SectionName));
 
         // Email and OTP
         services.Configure<EmailSettings>(configuration.GetSection(EmailSettings.SectionName));

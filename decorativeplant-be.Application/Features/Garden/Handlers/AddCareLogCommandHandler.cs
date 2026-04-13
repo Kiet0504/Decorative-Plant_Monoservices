@@ -29,12 +29,15 @@ public class AddCareLogCommandHandler : IRequestHandler<AddCareLogCommand, CareL
             throw new NotFoundException("Garden plant", request.PlantId);
         }
 
+        var actionType = request.ActionType.Trim();
+        var mood = string.IsNullOrWhiteSpace(request.Mood) ? null : request.Mood.Trim();
+
         var logInfo = CareLogMapper.BuildLogInfoJson(
-            request.ActionType,
+            actionType,
             request.Description,
             request.Products,
             request.Observations,
-            request.Mood);
+            mood);
 
         var images = CareLogMapper.BuildImagesJson(request.Images);
 
