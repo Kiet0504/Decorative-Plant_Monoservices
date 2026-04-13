@@ -64,7 +64,29 @@ try
                     "http://localhost:4173"   // React preview
                 );
             policy.SetIsOriginAllowed(origin =>
-                    new Uri(origin).Host == "localhost")
+                {
+                    if (string.IsNullOrEmpty(origin)) return false;
+                    var uri = new Uri(origin);
+                    var host = uri.Host.ToLowerInvariant();
+
+                    // localhost dev
+                    if (host == "localhost" || host == "127.0.0.1") return true;
+
+                    // LAN dev (so iPhone can open http://192.168.x.x:5173)
+                    if (host.StartsWith("192.168.")) return true;
+                    if (host.StartsWith("10.")) return true;
+                    if (host.StartsWith("172.16.") || host.StartsWith("172.17.") || host.StartsWith("172.18.")
+                        || host.StartsWith("172.19.") || host.StartsWith("172.20.") || host.StartsWith("172.21.")
+                        || host.StartsWith("172.22.") || host.StartsWith("172.23.") || host.StartsWith("172.24.")
+                        || host.StartsWith("172.25.") || host.StartsWith("172.26.") || host.StartsWith("172.27.")
+                        || host.StartsWith("172.28.") || host.StartsWith("172.29.") || host.StartsWith("172.30.")
+                        || host.StartsWith("172.31.")) return true;
+
+                    // ngrok dev domains
+                    if (host.EndsWith(".ngrok-free.app") || host.EndsWith(".ngrok-free.dev")) return true;
+
+                    return false;
+                })
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials();
