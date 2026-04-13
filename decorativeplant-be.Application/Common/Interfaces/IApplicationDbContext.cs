@@ -57,6 +57,10 @@ public interface IApplicationDbContext
     // Recommendations
     DbSet<RecommendationLog> RecommendationLogs { get; }
 
+    // Module 9: AR Preview
+    DbSet<ArPreviewSession> ArPreviewSessions { get; }
+    DbSet<ProductModelAsset> ProductModelAssets { get; }
+
     Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
     
     /// <summary>
