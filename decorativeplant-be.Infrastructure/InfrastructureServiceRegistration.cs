@@ -73,6 +73,7 @@ public static class InfrastructureServiceRegistration
         services.Configure<GoogleOAuthSettings>(configuration.GetSection(GoogleOAuthSettings.SectionName));
         services.Configure<FrontendSettings>(configuration.GetSection(FrontendSettings.SectionName));
         services.AddScoped<GoogleOAuthService>();
+        services.AddScoped<GoogleCalendarService>();
 
         // Configure GHN (Giao Hang Nhanh) Settings
         services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
