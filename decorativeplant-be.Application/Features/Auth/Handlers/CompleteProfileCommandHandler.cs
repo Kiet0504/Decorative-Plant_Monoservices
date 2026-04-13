@@ -101,6 +101,7 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
         }
 
         userAccount.UpdatedAt = DateTime.UtcNow;
+        userAccount.IsProfileCompleted = true;
 
         // Save changes
         await _context.SaveChangesAsync(cancellationToken);
