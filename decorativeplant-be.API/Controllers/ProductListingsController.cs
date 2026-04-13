@@ -13,6 +13,8 @@ public class ProductListingsController : BaseController
     [HttpGet]
     public async Task<IActionResult> GetAll(
         [FromQuery] Guid? branchId, 
+        [FromQuery] Guid? taxonomyId,
+        [FromQuery] string? categoryId,
         [FromQuery] string? status, 
         [FromQuery] string? search, 
         [FromQuery] string? sortBy,
@@ -23,6 +25,8 @@ public class ProductListingsController : BaseController
     {
         var result = await Mediator.Send(new GetProductListingsQuery { 
             BranchId = branchId, 
+            TaxonomyId = taxonomyId,
+            CategoryId = categoryId,
             Status = status, 
             Search = search, 
             SortBy = sortBy,

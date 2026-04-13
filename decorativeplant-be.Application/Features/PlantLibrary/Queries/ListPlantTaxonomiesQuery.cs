@@ -8,6 +8,7 @@ public class ListPlantTaxonomiesQuery : IRequest<PagedResultDto<PlantTaxonomySum
 {
     public string? SearchTerm { get; set; }
     public Guid? CategoryId { get; set; }
+    public bool OnlyWithActiveListings { get; set; }
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 10;
 }

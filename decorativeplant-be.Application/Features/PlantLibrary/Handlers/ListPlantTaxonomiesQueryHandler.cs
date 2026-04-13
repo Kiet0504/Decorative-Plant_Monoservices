@@ -5,63 +5,71 @@ using decorativeplant_be.Application.Features.PlantLibrary.Queries;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using System.Linq.Expressions;
+using Microsoft.EntityFrameworkCore;
 
 namespace decorativeplant_be.Application.Features.PlantLibrary.Handlers;
 
 public class ListPlantTaxonomiesQueryHandler : IRequestHandler<ListPlantTaxonomiesQuery, PagedResultDto<PlantTaxonomySummaryDto>>
 {
     private readonly IRepositoryFactory _repositoryFactory;
+    private readonly IApplicationDbContext _context;
 
-    public ListPlantTaxonomiesQueryHandler(IRepositoryFactory repositoryFactory)
+    public ListPlantTaxonomiesQueryHandler(IRepositoryFactory repositoryFactory, IApplicationDbContext context)
     {
         _repositoryFactory = repositoryFactory;
+        _context = context;
     }
 
     public async Task<PagedResultDto<PlantTaxonomySummaryDto>> Handle(ListPlantTaxonomiesQuery request, CancellationToken cancellationToken)
     {
-        var repo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
         var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
 
-        Expression<Func<PlantTaxonomy, bool>> filter = x => true;
+        // We use IApplicationDbContext directly for complex taxonomies filtering (to support OnlyWithActiveListings)
+        var q = _context.PlantTaxonomies.AsQueryable();
 
         if (request.CategoryId.HasValue)
         {
-            var cid = request.CategoryId.Value;
-            filter = x => x.CategoryId == cid;
+            q = q.Where(x => x.CategoryId == request.CategoryId.Value);
         }
 
         if (!string.IsNullOrEmpty(request.SearchTerm))
         {
             var term = request.SearchTerm.ToLower();
-            // Note: JSONB search in generic repo via LINQ might be limited depending on provider.
-            // Searching ScientificName is safe. CommonNames is JSONB.
-            // Simple approach: Search ScientificName OR assume we can search JSON string representation (inefficient but works for small datasets)
-            // Or only search ScientificName for now.
-            // Let's chain predicates.
-            
-            Expression<Func<PlantTaxonomy, bool>> searchFilter = x => x.ScientificName.ToLower().Contains(term);
-            
-            // Combine filters (basic AND)
-            var param = Expression.Parameter(typeof(PlantTaxonomy), "x");
-            var body = Expression.AndAlso(
-                Expression.Invoke(filter, param),
-                Expression.Invoke(searchFilter, param)
-            );
-            filter = Expression.Lambda<Func<PlantTaxonomy, bool>>(body, param);
+            q = q.Where(x => x.ScientificName.ToLower().Contains(term));
         }
-        
-        var totalCount = await repo.CountAsync(filter, cancellationToken);
-        var items = await repo.FindAsync(filter, cancellationToken); 
-        
-        // Pagination logic here (manual since FindAsync returns IEnumerable typically, or IQueryable? Repository returns IEnumerable usually)
-        // If Repository returns IEnumerable, we are fetching ALL match then paging in memory. Not ideal for large sets but ok for MVP.
-        // Actually Repository FindAsync returns IEnumerable<T>.
-        // Ideally we should push pagination to DB. But assuming small dataset for Taxonomies.
-        
-        var pagedItems = items
+
+        if (request.OnlyWithActiveListings)
+        {
+            // Fetch taxonomies that have AT LEAST ONE product listing
+            // We'll filter the "active" status in memory because JSONB querying in LINQ to Entities 
+            // without specialized providers/mapping is unreliable across different versions.
+            var taxonomyIdsWithListings = await _context.ProductListings
+                .Include(l => l.Batch)
+                .Where(l => l.Batch != null && l.Batch.TaxonomyId != null)
+                .Select(l => new { l.Batch!.TaxonomyId, l.StatusInfo, l.Id, l.BatchId })
+                .ToListAsync(cancellationToken);
+
+            // Filter for active/published in memory
+            var activeTaxonomyIds = taxonomyIdsWithListings
+                .Where(l => {
+                    if (l.StatusInfo == null) return false;
+                    var status = l.StatusInfo.RootElement.TryGetProperty("status", out var st) ? st.GetString() : null;
+                    return status == "active" || status == "published";
+                })
+                .Select(l => l.TaxonomyId!.Value)
+                .Distinct()
+                .ToList();
+
+            q = q.Where(t => activeTaxonomyIds.Contains(t.Id));
+        }
+
+        var totalCount = await q.CountAsync(cancellationToken);
+        var items = await q
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
-            .ToList();
+            .ToListAsync(cancellationToken); 
+        
+        var pagedItems = items;
 
         // Populate Categories for display
         foreach(var item in pagedItems)

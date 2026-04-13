@@ -422,6 +422,20 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 .ThenInclude(b => b!.Taxonomy)
             .AsQueryable();
 
+        // 1.5 Filters
+        if (query.TaxonomyId.HasValue)
+        {
+            q = q.Where(x => x.Batch != null && x.Batch.TaxonomyId == query.TaxonomyId.Value);
+        }
+
+        if (!string.IsNullOrEmpty(query.CategoryId))
+        {
+            if (Guid.TryParse(query.CategoryId, out var catId))
+            {
+                q = q.Where(x => x.Batch != null && x.Batch.Taxonomy != null && x.Batch.Taxonomy.CategoryId == catId);
+            }
+        }
+
         // 2. Fetch all relevant entries for aggregation
         // Note: We don't filter by BranchId in SQL yet if we want to show 'Global' info 
         // BUT if the query.BranchId is set, the customer only wants to see what's available AT that branch.
@@ -456,30 +470,31 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 .GroupBy(p => (p.ScientificName ?? p.Title ?? "").Trim().ToLowerInvariant())
                 .Select(g =>
                 {
-                    // Filter group items by branch if requested
+                    // 1. Calculate all aggregated stats BEFORE modifying any objects
+                    var groupList = g.ToList();
+                    var totalStock = groupList.Sum(p => p.StockQuantity);
+                    var totalSoldCount = groupList.Sum(p => p.SoldCount);
+                    var totalViewCount = groupList.Sum(p => p.ViewCount);
+                    var availableBranches = groupList.Where(x => x.StockQuantity > 0).Select(p => p.BranchId).Distinct().Count();
+
+                    // 2. Filter group items by branch if requested
                     var itemsInScope = query.BranchId.HasValue 
-                        ? g.Where(x => x.BranchId == query.BranchId.Value).ToList() 
-                        : g.ToList();
+                        ? groupList.Where(x => x.BranchId == query.BranchId.Value).ToList() 
+                        : groupList;
 
                     if (!itemsInScope.Any()) return null;
 
-                    // For aggregated view, we pick the entry with most stock as the primary reference for metadata
+                    var contextStock = itemsInScope.Sum(x => x.StockQuantity);
+
+                    // 3. Pick the entry with most stock as the primary reference for metadata
                     var primary = itemsInScope.OrderByDescending(p => p.StockQuantity).First();
                     
-                    // If a branch filter is applied, we only care about stock at THAT branch
-                    if (query.BranchId.HasValue)
-                    {
-                        primary.StockQuantity = itemsInScope.Sum(x => x.StockQuantity);
-                    }
-                    else
-                    {
-                        primary.StockQuantity = g.Sum(p => p.StockQuantity);
-                    }
-
-                    primary.TotalSystemStock = g.Sum(p => p.StockQuantity);
-                    primary.AvailableBranches = g.Where(x => x.StockQuantity > 0).Select(p => p.BranchId).Distinct().Count();
-                    primary.SoldCount = g.Sum(p => p.SoldCount);
-                    primary.ViewCount = g.Sum(p => p.ViewCount);
+                    // 4. Update the primary object with calculated aggregates
+                    primary.StockQuantity = contextStock;
+                    primary.TotalSystemStock = totalStock;
+                    primary.AvailableBranches = availableBranches;
+                    primary.SoldCount = totalSoldCount;
+                    primary.ViewCount = totalViewCount;
 
                     // Aggregation for Home Page Price (Minimum Price within scope)
                     var prices = itemsInScope.Select(p => ParsePrice(p.Price)).ToList();
@@ -530,6 +545,17 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             if (query.BranchId.HasValue)
             {
                 finalResult = finalResult.Where(x => x.BranchId == query.BranchId.Value).ToList();
+            }
+
+            // --- NEW: Safety Filtering for non-grouped view for customers ---
+            if (query.Status != "all")
+            {
+                // Filter out draft/private items unless 'all' is explicitly requested (usually by staff)
+                finalResult = finalResult
+                    .Where(p => p.Status == "active" || p.Status == "published")
+                    .Where(p => decimal.TryParse(p.Price ?? "0", out var pr) && pr > 0)
+                    .Where(p => p.StockQuantity > 0)
+                    .ToList();
             }
         }
 

@@ -163,15 +163,17 @@ public class RuleBasedRecommendationEngine : IRecommendationEngine
 
         // Basic: only public + active/published listings. Stored in StatusInfo JSONB.
         // Since JSONB query translation may be tricky, we filter in-memory after taking a pool.
-        var pool = await (
-                from l in q.OrderByDescending(l => l.CreatedAt).Take(CandidatePoolSize)
-                join b in _db.PlantBatches on l.BatchId equals b.Id into batchJoin
-                from b in batchJoin.DefaultIfEmpty()
-                select new ListingCandidate
-                {
-                    Listing = l,
-                    TaxonomyId = b != null ? b.TaxonomyId : null
-                })
+        var pool = await q
+            .Include(l => l.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
+            .OrderByDescending(l => l.CreatedAt)
+            .Take(CandidatePoolSize)
+            .Select(l => new ListingCandidate
+            {
+                Listing = l,
+                TaxonomyId = l.Batch != null ? l.Batch.TaxonomyId : null
+            })
             .ToListAsync(ct);
 
         return pool
@@ -190,14 +192,37 @@ public class RuleBasedRecommendationEngine : IRecommendationEngine
 
             if (!string.IsNullOrWhiteSpace(visibility) && !string.Equals(visibility, "public", StringComparison.OrdinalIgnoreCase))
                 return false;
-            if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "published", StringComparison.OrdinalIgnoreCase) && !string.Equals(status, "active", StringComparison.OrdinalIgnoreCase))
+            
+            // Default to "draft" if status is missing
+            var finalStatus = status?.ToLower() ?? "draft";
+            if (finalStatus != "published" && finalStatus != "active")
                 return false;
 
-            return true;
+            // CRITICAL: Stock Check
+            var stock = 0;
+            if (listing.Batch != null && listing.Batch.BatchStocks != null)
+            {
+                // If branch specific, we could tighten this. 
+                // But generally for recommendations, we check if it is available ANYWHERE or at the specific branch.
+                // Since this candidate list might be branch-filtered already (line 159), we sum the relevant stock.
+                var relevantStocks = listing.BranchId.HasValue 
+                    ? listing.Batch.BatchStocks.Where(s => s.Location?.BranchId == listing.BranchId.Value)
+                    : listing.Batch.BatchStocks;
+
+                foreach (var s in relevantStocks)
+                {
+                    if (s.Quantities != null && s.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+                    {
+                        stock += aq.GetInt32();
+                    }
+                }
+            }
+
+            return stock > 0;
         }
         catch
         {
-            return true;
+            return false;
         }
     }
 

@@ -8,6 +8,8 @@ namespace decorativeplant_be.Application.Features.Commerce.ProductListings.Queri
 public class GetProductListingsQuery : IRequest<PagedResult<ProductListingResponse>>
 {
     public Guid? BranchId { get; set; }
+    public Guid? TaxonomyId { get; set; }
+    public string? CategoryId { get; set; }
     public string? Status { get; set; }
     public string? Search { get; set; }
     public int Page { get; set; } = 1;

@@ -30,6 +30,7 @@ public interface IApplicationDbContext
     DbSet<ProductReview> ProductReviews { get; }
 
     // Module 4: Inventory
+    DbSet<PlantCategory> PlantCategories { get; }
     DbSet<BatchStock> BatchStocks { get; }
     DbSet<InventoryLocation> InventoryLocations { get; }
     DbSet<PlantBatch> PlantBatches { get; }
