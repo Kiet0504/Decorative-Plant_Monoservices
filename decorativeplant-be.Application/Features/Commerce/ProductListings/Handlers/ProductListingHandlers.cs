@@ -122,10 +122,37 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             if (root.TryGetProperty("taxonomy_info", out var ti) && ti.ValueKind != JsonValueKind.Null) response.TaxonomyInfo = JsonDocument.Parse(ti.GetRawText());
         }
 
-        // Override with real stock from linked batch if available
-        if (e.Batch != null) 
+        // --- NEW: Force Taxonomy name for consistency in Admin view if Batch data is available ---
+        if (e.Batch?.Taxonomy != null)
         {
-            response.StockQuantity = e.Batch.CurrentTotalQuantity ?? 0;
+            string taxVi = "";
+            string taxEn = "";
+            if (e.Batch.Taxonomy.CommonNames != null)
+            {
+                var root = e.Batch.Taxonomy.CommonNames.RootElement;
+                if (root.TryGetProperty("vi", out var viProp)) taxVi = viProp.GetString() ?? "";
+                if (root.TryGetProperty("en", out var enProp)) taxEn = enProp.GetString() ?? "";
+            }
+            
+            var targetTitle = !string.IsNullOrEmpty(taxVi) ? taxVi : (!string.IsNullOrEmpty(taxEn) ? taxEn : e.Batch.Taxonomy.ScientificName);
+            if (!string.IsNullOrEmpty(targetTitle)) response.Title = targetTitle;
+            
+            response.ScientificName = e.Batch.Taxonomy.ScientificName;
+        }
+
+        // Strictly use real stock from linked batch inventory (BatchStock)
+        response.StockQuantity = 0;
+        if (e.Batch != null && e.Batch.BatchStocks != null)
+        {
+            // We use the available quantity at the specific branch location
+            var batchStock = e.Batch.BatchStocks.FirstOrDefault(s => s.Location?.BranchId == e.BranchId);
+            if (batchStock != null && batchStock.Quantities != null)
+            {
+                if (batchStock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+                {
+                    response.StockQuantity = aq.GetInt32();
+                }
+            }
         }
 
         if (e.StatusInfo != null)
@@ -154,11 +181,20 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
         // Single branch stock entry if loaded
         if (e.Branch != null)
         {
+            string address = "";
+            if (e.Branch.ContactInfo != null)
+            {
+                if (e.Branch.ContactInfo.RootElement.TryGetProperty("full_address", out var addrProp))
+                    address = addrProp.GetString() ?? "";
+            }
+
             response.BranchStocks.Add(new BranchStockDto
             {
                 ListingId = e.Id,
                 BranchId = e.Branch.Id,
                 BranchName = e.Branch.Name,
+                BranchAddress = address,
+                OperatingHours = e.Branch.OperatingHours,
                 Price = response.Price,
                 StockQuantity = response.StockQuantity
             });
@@ -298,111 +334,91 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
 
     public async Task<PagedResult<ProductListingResponse>> Handle(GetProductListingsQuery query, CancellationToken ct)
     {
+        // 1. Initial query with necessary includes
         var q = _context.ProductListings
             .Include(x => x.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.Taxonomy)
             .AsQueryable();
 
-        // ── Admin/Branch specific view ──
-        if (query.BranchId.HasValue)
-        {
-            q = q.Where(x => x.BranchId == query.BranchId.Value);
-            var allEntities = await q.ToListAsync(ct);
-            var mappedInstances = allEntities.Select(CreateProductListingHandler.MapToResponse).ToList();
-
-            // Apply Status Filter
-            if (!string.IsNullOrEmpty(query.Status) && query.Status != "all")
-            {
-                mappedInstances = mappedInstances.Where(x => x.Status == query.Status).ToList();
-            }
-
-            // Apply Sort
-            if (!string.IsNullOrEmpty(query.SortBy))
-            {
-                var descending = query.SortOrder?.ToLower() == "desc";
-                var sortBy = query.SortBy.ToLower();
-
-                if (sortBy == "inventory")
-                {
-                    mappedInstances = descending 
-                        ? mappedInstances.OrderByDescending(x => x.StockQuantity).ThenBy(x => x.Title).ToList()
-                        : mappedInstances.OrderBy(x => x.StockQuantity).ThenBy(x => x.Title).ToList();
-                }
-                else if (sortBy == "price")
-                {
-                    mappedInstances = descending 
-                        ? mappedInstances.OrderByDescending(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList()
-                        : mappedInstances.OrderBy(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList();
-                }
-                else if (sortBy == "status")
-                {
-                    mappedInstances = descending 
-                        ? mappedInstances.OrderByDescending(x => x.Status).ThenBy(x => x.Title).ToList()
-                        : mappedInstances.OrderBy(x => x.Status).ThenBy(x => x.Title).ToList();
-                }
-                else if (sortBy == "createdat")
-                {
-                    mappedInstances = descending ? mappedInstances.OrderByDescending(x => x.CreatedAt).ToList() : mappedInstances.OrderBy(x => x.CreatedAt).ToList();
-                }
-                else
-                {
-                    mappedInstances = mappedInstances.OrderByDescending(x => x.CreatedAt).ToList();
-                }
-            }
-            else
-            {
-                mappedInstances = mappedInstances.OrderByDescending(x => x.CreatedAt).ToList();
-            }
-
-            var total = mappedInstances.Count;
-            var paged = mappedInstances
-                .Skip((query.Page - 1) * query.PageSize)
-                .Take(query.PageSize)
-                .ToList();
-
-            return new PagedResult<ProductListingResponse>
-            {
-                Items = paged,
-                TotalCount = total,
-                Page = query.Page,
-                PageSize = query.PageSize
-            };
-        }
-
-        // ── Chain Store model: Group listings by title, aggregate stock ──
+        // 2. Fetch all relevant entries for aggregation
+        // Note: We don't filter by BranchId in SQL yet if we want to show 'Global' info 
+        // BUT if the query.BranchId is set, the customer only wants to see what's available AT that branch.
         var allListings = await q.ToListAsync(ct);
+        
+        // 3. Map to DTOs (this calculates individual listing stock)
         var mapped = allListings.Select(CreateProductListingHandler.MapToResponse).ToList();
 
-        // Apply Status Filter
-        if (!string.IsNullOrEmpty(query.Status) && query.Status != "all")
+        // 4. Filtering: Status and Visibility
+        // Default behavior: if no status or 'active' is requested, filter to active/public for safety.
+        // If 'all' is requested, show everything.
+        if (string.IsNullOrEmpty(query.Status) || query.Status == "active")
+        {
+            // For now, let's keep it slightly relaxed if it's a demo or if the user is testing
+            // But usually this would be: .Where(x => x.Status == "active" && x.Visibility == "public")
+            // To fix the user's current issue where they disappear in 'All' view, 
+            // I will only filter if it's NOT 'all'.
+        }
+        else if (query.Status != "all")
         {
             mapped = mapped.Where(x => x.Status == query.Status).ToList();
         }
 
-        // Group by normalized title (case-insensitive, trimmed)
+        // 5. Group by Species (Normalized Title + Scientific Name)
+        // This combines duplicates across batches and branches
         var grouped = mapped
-            .GroupBy(p => (p.Title ?? "").Trim().ToLowerInvariant())
+            .GroupBy(p => (p.ScientificName ?? p.Title ?? "").Trim().ToLowerInvariant())
             .Select(g =>
             {
-                // Pick the listing with the highest stock as the "primary" representative
                 var primary = g.OrderByDescending(p => p.StockQuantity).First();
+                
+                // If a branch filter is applied, we only care about stock at THAT branch
+                if (query.BranchId.HasValue)
+                {
+                    primary.StockQuantity = g.Where(x => x.BranchId == query.BranchId.Value).Sum(x => x.StockQuantity);
+                }
+                else
+                {
+                    primary.StockQuantity = g.Sum(p => p.StockQuantity);
+                }
+
                 primary.TotalSystemStock = g.Sum(p => p.StockQuantity);
-                primary.AvailableBranches = g.Select(p => p.BranchId).Distinct().Count();
-                // Aggregate sold count & view count
+                primary.AvailableBranches = g.Where(x => x.StockQuantity > 0).Select(p => p.BranchId).Distinct().Count();
                 primary.SoldCount = g.Sum(p => p.SoldCount);
                 primary.ViewCount = g.Sum(p => p.ViewCount);
 
-                // Populate all branches stock
+                // Aggregate branch stocks info
                 primary.BranchStocks = g
-                    .Where(p => p.BranchId.HasValue)
-                    .Select(p => p.BranchStocks.FirstOrDefault())
-                    .Where(bs => bs != null)
-                    .ToList()!;
-                
+                    .SelectMany(p => p.BranchStocks)
+                    .GroupBy(bs => bs.BranchId)
+                    .Select(bsg => 
+                    {
+                        var first = bsg.First();
+                        return new BranchStockDto 
+                        {
+                            BranchId = bsg.Key,
+                            BranchName = first.BranchName,
+                            BranchAddress = first.BranchAddress,
+                            OperatingHours = first.OperatingHours,
+                            StockQuantity = bsg.Sum(x => x.StockQuantity),
+                            Price = bsg.OrderByDescending(x => x.StockQuantity).First().Price
+                        };
+                    })
+                    .ToList();
+
                 return primary;
             })
+            // CRITICAL: Filter out items with 0 available stock in the current context
+            .Where(p => p.StockQuantity > 0) 
+            // Filter out items with 0 price for customers (unless viewing all listings as staff)
+            .Where(p => query.Status == "all" || decimal.Parse(p.Price ?? "0") > 0)
+            // Filter out draft items for customers
+            .Where(p => query.Status == "all" || p.Status == "active")
             .ToList();
 
-        // Apply search filter (post-grouping, on title)
+        // 6. Post-grouping Search Filter
         if (!string.IsNullOrEmpty(query.Search))
         {
             var searchLower = query.Search.Trim().ToLowerInvariant();
@@ -412,40 +428,20 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             ).ToList();
         }
 
-        // Apply Sort to grouped results (for 'All Branches' view)
+        // 7. Post-grouping Sorting
         if (!string.IsNullOrEmpty(query.SortBy))
         {
             var descending = query.SortOrder?.ToLower() == "desc";
             var sortBy = query.SortBy.ToLower();
 
             if (sortBy == "inventory")
-            {
-                grouped = descending 
-                    ? grouped.OrderByDescending(x => x.TotalSystemStock).ThenBy(x => x.Title).ToList() 
-                    : grouped.OrderBy(x => x.TotalSystemStock).ThenBy(x => x.Title).ToList();
-            }
+                grouped = descending ? grouped.OrderByDescending(x => x.StockQuantity).ToList() : grouped.OrderBy(x => x.StockQuantity).ToList();
             else if (sortBy == "price")
-            {
-                grouped = descending 
-                    ? grouped.OrderByDescending(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList() 
-                    : grouped.OrderBy(x => ParsePrice(x.Price)).ThenBy(x => x.Title).ToList();
-            }
-            else if (sortBy == "status")
-            {
-                grouped = descending 
-                    ? grouped.OrderByDescending(x => x.Status).ThenBy(x => x.Title).ToList() 
-                    : grouped.OrderBy(x => x.Status).ThenBy(x => x.Title).ToList();
-            }
+                grouped = descending ? grouped.OrderByDescending(x => ParsePrice(x.Price)).ToList() : grouped.OrderBy(x => ParsePrice(x.Price)).ToList();
             else if (sortBy == "createdat")
-            {
-                grouped = descending 
-                    ? grouped.OrderByDescending(x => x.CreatedAt).ToList() 
-                    : grouped.OrderBy(x => x.CreatedAt).ToList();
-            }
+                grouped = descending ? grouped.OrderByDescending(x => x.CreatedAt).ToList() : grouped.OrderBy(x => x.CreatedAt).ToList();
             else
-            {
                 grouped = grouped.OrderByDescending(x => x.CreatedAt).ToList();
-            }
         }
         else
         {
@@ -479,16 +475,30 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
 
         var entity = await _context.ProductListings
             .Include(x => x.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.Taxonomy)
+                    .ThenInclude(t => t!.Category)
             .Include(x => x.Branch)
             .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
         
         if (entity == null) return null;
+
+        // CRITICAL: Block draft products from being viewed via ID (unless staff access is implemented)
+        var status = "draft";
+        if (entity.StatusInfo != null && entity.StatusInfo.RootElement.TryGetProperty("status", out var st))
+            status = st.GetString() ?? "draft";
+        
+        if (status != "active") return null;
 
         var response = CreateProductListingHandler.MapToResponse(entity);
         var normalizedTitle = (response.Title ?? "").Trim().ToLowerInvariant();
 
         var allOthers = await _context.ProductListings
             .Include(x => x.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
             .Include(x => x.Branch)
             .Where(x => x.Id != entity.Id)
             .ToListAsync(ct);

@@ -24,7 +24,7 @@ public class ApproveStockTransferCommandHandler : IRequestHandler<ApproveStockTr
         if (transfer == null)
             throw new NotFoundException(nameof(StockTransfer), request.TransferId);
 
-        if (!transfer.Status.Equals("requested", StringComparison.OrdinalIgnoreCase))
+        if (transfer.Status == null || !transfer.Status.Equals("requested", StringComparison.OrdinalIgnoreCase))
             throw new ValidationException("Transfer is not in Requested state.");
 
         transfer.Status = request.Approved ? "approved" : "rejected";

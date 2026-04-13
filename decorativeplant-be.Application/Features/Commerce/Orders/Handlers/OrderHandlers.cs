@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -19,17 +20,20 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
     private readonly ILogger<CreateOrderHandler> _logger;
     private readonly IShippingService _shippingService;
     private readonly IBranchAllocationService _allocationService;
+    private readonly IStockService _stockService;
 
     public CreateOrderHandler(
-        IApplicationDbContext context, 
-        ILogger<CreateOrderHandler> logger, 
+        IApplicationDbContext context,
+        ILogger<CreateOrderHandler> logger,
         IShippingService shippingService,
-        IBranchAllocationService allocationService)
+        IBranchAllocationService allocationService,
+        IStockService stockService)
     {
         _context = context;
         _logger = logger;
         _shippingService = shippingService;
         _allocationService = allocationService;
+        _stockService = stockService;
     }
 
     public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
@@ -63,44 +67,14 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 
             foreach (var e in enrichedItems)
             {
-                var itemSubtotal = decimal.Parse(e.unitPrice) * e.reqItem.Quantity;
+                if (!decimal.TryParse(e.unitPrice, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var parsedPrice))
+                    throw new BadRequestException($"Invalid price for '{e.title ?? e.reqItem.ListingId.ToString()}'.");
+                var itemSubtotal = parsedPrice * e.reqItem.Quantity;
                 cartSubtotal += itemSubtotal;
 
-                // Reserve stock with pessimistic locking (SELECT ... FOR UPDATE)
-                // This prevents race conditions: if two users order the last item(s)
-                // concurrently, the second transaction will BLOCK here until the first
-                // commits, then read the updated (correct) available_quantity.
-                if (e.listing.BatchId.HasValue)
-                {
-                    // Acquire row-level lock (blocks concurrent transactions)
-                    await _context.AcquireStockLockAsync(e.listing.BatchId.Value, ct);
-                    var stock = await _context.BatchStocks
-                        .FirstOrDefaultAsync(s => s.BatchId == e.listing.BatchId, ct);
-                    if (stock?.Quantities != null)
-                    {
-                        var root = stock.Quantities.RootElement;
-                        var total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0;
-                        var reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0;
-                        var available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0;
-
-                        if (available < e.reqItem.Quantity)
-                        {
-                            var productName = e.title ?? e.reqItem.ListingId.ToString();
-                            throw new BadRequestException($"Insufficient stock for '{productName}'. Available: {available}, requested: {e.reqItem.Quantity}.");
-                        }
-
-                        reserved += e.reqItem.Quantity;
-                        available -= e.reqItem.Quantity;
-
-                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-                        {
-                            quantity = total,
-                            reserved_quantity = reserved,
-                            available_quantity = available
-                        }));
-                        stock.UpdatedAt = DateTime.UtcNow;
-                    }
-                }
+                // Reserve stock with pessimistic locking via StockService
+                var productName = e.title ?? e.reqItem.ListingId.ToString();
+                await _stockService.ReserveStockAsync(e.listing.Id, e.listing.BranchId, e.reqItem.Quantity, productName, ct);
 
                 orderItems.Add(new OrderItem
                 {
@@ -109,7 +83,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     BatchId = e.listing.BatchId,
                     BranchId = e.listing.BranchId,
                     Quantity = e.reqItem.Quantity,
-                    Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0") })),
+                    Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0", CultureInfo.InvariantCulture) })),
                     Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = e.title, image_snapshot = e.image }))
                 });
             }
@@ -147,11 +121,11 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                         var rulesRoot = voucher.Rules.RootElement;
                         usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
                         usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
-                        minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0") : 0;
+                        minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0", CultureInfo.InvariantCulture) : 0;
                     }
 
                     decimal eligibleTotal = voucher.BranchId.HasValue
-                        ? enrichedItems.Where(e => e.listing.BranchId == voucher.BranchId).Sum(e => decimal.Parse(e.unitPrice) * e.reqItem.Quantity)
+                        ? enrichedItems.Where(e => e.listing.BranchId == voucher.BranchId).Sum(e => decimal.Parse(e.unitPrice, CultureInfo.InvariantCulture) * e.reqItem.Quantity)
                         : cartSubtotal;
 
                     if (usedCount < usageLimit && eligibleTotal >= minOrder)
@@ -161,7 +135,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                             var infoRoot = voucher.Info.RootElement;
                             var type = infoRoot.TryGetProperty("discount_type", out var dt) ? dt.GetString() : null;
                             var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
-                            var val = decimal.Parse(valStr);
+                            var val = decimal.Parse(valStr, CultureInfo.InvariantCulture);
 
                             if (type == "percentage") totalDiscount = eligibleTotal * (val / 100);
                             else if (type == "fixed") totalDiscount = val;
@@ -198,7 +172,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                         FromWardCode = _shippingService.DefaultFromWardCode,
                         ToDistrictId = req.DeliveryAddress.DistrictId,
                         ToWardCode = req.DeliveryAddress.WardCode,
-                        Weight = orderItems.Sum(oi => oi.Quantity) * 1000,
+                        Weight = Math.Max(orderItems.Sum(oi => oi.Quantity) * 500, 500), // ~500g per item, min 500g
                         InsuranceValue = (int)cartSubtotal,
                         ServiceTypeId = 2
                     });
@@ -229,7 +203,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 OrderCode = orderCode,
                 UserId = cmd.UserId,
                 TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
-                Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = cartSubtotal.ToString("0"), shipping = shippingFee.ToString("0"), discount = totalDiscount.ToString("0"), tax = "0", total = orderTotal.ToString("0") })),
+                Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = cartSubtotal.ToString("0", CultureInfo.InvariantCulture), shipping = shippingFee.ToString("0", CultureInfo.InvariantCulture), discount = totalDiscount.ToString("0", CultureInfo.InvariantCulture), tax = "0", total = orderTotal.ToString("0", CultureInfo.InvariantCulture) })),
                 Status = "pending",
                 Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
                 DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City, district_id = req.DeliveryAddress.DistrictId, ward_code = req.DeliveryAddress.WardCode })) : null,
@@ -326,15 +300,27 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand, OrderResponse>
 {
     private readonly IApplicationDbContext _context;
-    public UpdateOrderStatusHandler(IApplicationDbContext context) => _context = context;
+    private readonly IStockService _stockService;
+
+    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService)
+    {
+        _context = context;
+        _stockService = stockService;
+    }
 
     public async Task<OrderResponse> Handle(UpdateOrderStatusCommand cmd, CancellationToken ct)
     {
         var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"Order {cmd.Id} not found.");
 
-        order.Status = cmd.Request.Status;
-        if (cmd.Request.Status == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
+        var normalizedStatus = cmd.Request.Status?.ToLowerInvariant() ?? "";
+
+        // Block staff from setting "completed" — only the customer may do that via POST /confirm-receipt
+        if (normalizedStatus == "completed")
+            throw new BadRequestException("Only the customer can mark an order as completed (via Confirm Receipt).");
+
+        order.Status = normalizedStatus;
+        if (normalizedStatus == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
 
         var notesDict = new Dictionary<string, object?>();
         if (order.Notes != null)
@@ -358,7 +344,13 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
 public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderResponse>
 {
     private readonly IApplicationDbContext _context;
-    public CancelOrderHandler(IApplicationDbContext context) => _context = context;
+    private readonly IStockService _stockService;
+
+    public CancelOrderHandler(IApplicationDbContext context, IStockService stockService)
+    {
+        _context = context;
+        _stockService = stockService;
+    }
 
     public async Task<OrderResponse> Handle(CancelOrderCommand cmd, CancellationToken ct)
     {
@@ -371,6 +363,10 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
         var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"Order {cmd.Id} not found.");
 
+        // Validate ownership — users can only cancel their own orders
+        if (cmd.UserId.HasValue && order.UserId != cmd.UserId)
+            throw new BadRequestException("You can only cancel your own orders.");
+
         if (order.Status != "pending")
             throw new BadRequestException("Only pending orders can be cancelled.");
 
@@ -381,41 +377,10 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
                 notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
         notes["cancellation_reason"] = cmd.Request.CancellationReason;
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
-        
-        // Restore stock with pessimistic locking to prevent race conditions
+
+        // Restore stock with pessimistic locking via StockService
         if (order.OrderItems != null)
-        {
-            foreach (var item in order.OrderItems)
-            {
-                if (item.BatchId.HasValue)
-                {
-                    // Acquire row-level lock (blocks concurrent transactions)
-                    await _context.AcquireStockLockAsync(item.BatchId.Value, ct);
-                    var stock = await _context.BatchStocks
-                        .FirstOrDefaultAsync(s => s.BatchId == item.BatchId, ct);
-                    if (stock != null && stock.Quantities != null)
-                    {
-                        var root = stock.Quantities.RootElement;
-                        var total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
-                        var reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
-                        var available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
-                        
-                        // Deduct from reserved and add back to available
-                        var q = item.Quantity;
-                        reserved -= q;
-                        if (reserved < 0) reserved = 0;
-                        available += q;
-                        
-                        stock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
-                        {
-                            quantity = total,
-                            reserved_quantity = reserved,
-                            available_quantity = available
-                        }));
-                    }
-                }
-            }
-        }
+            await _stockService.RestoreOrderStockAsync(order.OrderItems, ct);
 
         await _context.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
@@ -443,8 +408,9 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
         if (order.UserId != cmd.UserId)
             throw new BadRequestException("You can only confirm receipt for your own orders.");
 
-        if (order.Status != "delivered")
-            throw new BadRequestException("Only delivered orders can be confirmed as received.");
+        var currentStatus = order.Status?.ToLowerInvariant();
+        if (currentStatus != "delivered" && currentStatus != "shipped")
+            throw new BadRequestException("Only delivered or shipped orders can be confirmed as received.");
 
         order.Status = "completed";
 
@@ -500,6 +466,11 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
     {
         var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
         if (order == null) return null;
+
+        // Non-admin users can only view their own orders
+        if (query.UserId.HasValue && order.UserId != query.UserId)
+            throw new BadRequestException("You do not have permission to view this order.");
+
         return CreateOrderHandler.MapToResponse(order);
     }
 }
@@ -521,14 +492,14 @@ public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopis
         decimal cartSubtotal = req.Items.Sum(i => i.Quantity * i.UnitPrice);
         if (cartSubtotal <= 0)
         {
-            throw new Exception("Order subtotal must be greater than 0");
+            throw new BadRequestException("Order subtotal must be greater than 0");
         }
 
         // 2. Validate deposit (must be >= 30%)
         decimal minDeposit = cartSubtotal * 0.3m;
         if (req.DepositAmount < minDeposit)
         {
-            throw new Exception($"Deposit amount must be at least 30% ({minDeposit:N0} VND)");
+            throw new BadRequestException($"Deposit amount must be at least 30% ({minDeposit.ToString("N0", CultureInfo.InvariantCulture)} VND)");
         }
         
         decimal remainingBalance = cartSubtotal - req.DepositAmount;
@@ -549,8 +520,8 @@ public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopis
                 ListingId = itemReq.ListingId,
                 Quantity = itemReq.Quantity,
                 Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { 
-                    unit_price = itemReq.UnitPrice.ToString("0"), 
-                    subtotal = (itemReq.Quantity * itemReq.UnitPrice).ToString("0") 
+                    unit_price = itemReq.UnitPrice.ToString("0", CultureInfo.InvariantCulture),
+                    subtotal = (itemReq.Quantity * itemReq.UnitPrice).ToString("0", CultureInfo.InvariantCulture) 
                 }))
             };
             orderItems.Add(orderItem);
@@ -584,13 +555,13 @@ public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopis
                 fulfillment_method = "bopis_transfer" 
             })),
             Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { 
-                subtotal = cartSubtotal.ToString("0"), 
-                discount = "0", 
-                tax = "0", 
+                subtotal = cartSubtotal.ToString("0", CultureInfo.InvariantCulture),
+                discount = "0",
+                tax = "0",
                 shipping = "0",
-                total = cartSubtotal.ToString("0"),
-                amount_paid = req.DepositAmount.ToString("0"),
-                remaining_balance = remainingBalance.ToString("0")
+                total = cartSubtotal.ToString("0", CultureInfo.InvariantCulture),
+                amount_paid = req.DepositAmount.ToString("0", CultureInfo.InvariantCulture),
+                remaining_balance = remainingBalance.ToString("0", CultureInfo.InvariantCulture)
             })),
             Status = "deposit_paid", 
             DeliveryAddress = JsonDocument.Parse(JsonSerializer.Serialize(new { 

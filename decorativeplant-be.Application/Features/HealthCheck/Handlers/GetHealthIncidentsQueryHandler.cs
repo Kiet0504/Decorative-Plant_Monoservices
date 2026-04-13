@@ -4,6 +4,7 @@ using decorativeplant_be.Application.Features.HealthCheck.DTOs;
 using decorativeplant_be.Application.Features.HealthCheck.Queries;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Features.HealthCheck.Handlers;
 
@@ -21,6 +22,11 @@ public class GetHealthIncidentsQueryHandler : IRequestHandler<GetHealthIncidents
         var query = _context.HealthIncidents
             .Include(i => i.Batch)
             .AsNoTracking();
+
+        if (request.BranchId.HasValue)
+        {
+            query = query.Where(i => i.Batch != null && i.Batch.BranchId == request.BranchId.Value);
+        }
 
         // Filtering
         if (!string.IsNullOrEmpty(request.Status))
@@ -56,14 +62,28 @@ public class GetHealthIncidentsQueryHandler : IRequestHandler<GetHealthIncidents
         };
 
         var totalCount = await query.CountAsync(cancellationToken);
-        var items = await query
+        var items = await query.ToListAsync(cancellationToken);
+
+        IEnumerable<HealthIncident> filteredItems = items;
+
+        // Apply Status Filter (In-memory for JSONB field)
+        if (!string.IsNullOrEmpty(request.Status) && request.Status != "All Status")
+        {
+            filteredItems = filteredItems.Where(i => 
+                i.StatusInfo != null && 
+                i.StatusInfo.RootElement.TryGetProperty("status", out var sp) && 
+                sp.GetString()?.Equals(request.Status, StringComparison.OrdinalIgnoreCase) == true);
+            totalCount = filteredItems.Count();
+        }
+
+        var pagedItems = filteredItems
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         return new PagedResult<HealthIncidentDto>
         {
-            Items = items.Select(HealthIncidentMapper.ToDto).ToList(),
+            Items = pagedItems.Select(x => HealthIncidentMapper.ToDto(x)).ToList(),
             TotalCount = totalCount,
             Page = request.Page,
             PageSize = request.PageSize

@@ -3,6 +3,7 @@ using decorativeplant_be.Application.Common.DTOs.Garden;
 using decorativeplant_be.Application.Features.Inventory.Commands;
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
+using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -31,11 +32,7 @@ public class PlantBatchController : BaseController
     [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantBatchDto>>> Update(Guid id, [FromBody] UpdatePlantBatchCommand command)
     {
-        if (id != command.Id)
-        {
-            return BadRequest(ApiResponse<PlantBatchDto>.ErrorResponse("ID mismatch."));
-        }
-
+        command.Id = id; // Always sync with route to avoid binding mismatches
         var result = await Mediator.Send(command);
         return Ok(ApiResponse<PlantBatchDto>.SuccessResponse(result, "Plant batch updated successfully."));
     }
@@ -58,20 +55,49 @@ public class PlantBatchController : BaseController
     [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PagedResultDto<PlantBatchSummaryDto>>>> List(
         [FromQuery] string? search = null,
+        [FromQuery] string? healthStatus = null,
+        [FromQuery] string? sortOrder = null,
         [FromQuery] Guid? taxonomyId = null,
         [FromQuery] Guid? supplierId = null,
+        [FromQuery] Guid? branchId = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20)
     {
         var query = new ListPlantBatchesQuery 
         { 
             SearchTerm = search,
+            HealthStatus = healthStatus,
+            SortOrder = sortOrder,
             TaxonomyId = taxonomyId,
             SupplierId = supplierId,
+            BranchId = branchId,
             Page = page, 
             PageSize = pageSize 
         };
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<PagedResultDto<PlantBatchSummaryDto>>.SuccessResponse(result, "Plant batches retrieved."));
+    }
+
+    /// <summary>
+    /// Publish a batch to sales stock (BatchStock & ProductListing).
+    /// </summary>
+    [HttpPost("{id}/publish")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
+    public async Task<ActionResult<ApiResponse<bool>>> PublishToStock(Guid id, [FromBody] PublishBatchToStockCommand command)
+    {
+        command.BatchId = id;
+        var result = await Mediator.Send(command);
+        return Ok(ApiResponse<bool>.SuccessResponse(result, "Batch published to sales stock."));
+    }
+
+    /// <summary>
+    /// Delete an existing plant batch.
+    /// </summary>
+    [HttpDelete("{id}")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
+    public async Task<ActionResult<ApiResponse<Unit>>> Delete(Guid id)
+    {
+        await Mediator.Send(new DeletePlantBatchCommand(id));
+        return Ok(ApiResponse<Unit>.SuccessResponse(Unit.Value, "Plant batch deleted successfully."));
     }
 }

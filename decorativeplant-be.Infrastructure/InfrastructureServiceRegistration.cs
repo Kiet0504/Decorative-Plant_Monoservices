@@ -79,8 +79,11 @@ public static class InfrastructureServiceRegistration
         services.AddHttpClient<IShippingService, GhnService>();
 
         // Register Branch Allocation Service (Chain Store model)
-        services.AddScoped<decorativeplant_be.Application.Services.IBranchAllocationService, 
+        services.AddScoped<decorativeplant_be.Application.Services.IBranchAllocationService,
                            decorativeplant_be.Application.Services.BranchAllocationService>();
+        // Register Stock Service (shared lock/reserve/deduct logic)
+        services.AddScoped<decorativeplant_be.Application.Services.IStockService,
+                           decorativeplant_be.Application.Services.StockService>();
         // Register MQTT Service
         services.AddSingleton<MqttService>();
         services.AddHostedService<MqttService>(provider => provider.GetRequiredService<MqttService>());

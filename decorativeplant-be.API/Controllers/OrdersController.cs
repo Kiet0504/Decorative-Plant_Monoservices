@@ -17,11 +17,49 @@ public class OrdersController : BaseController
 {
     [HttpGet]
     [Authorize]
-    public async Task<IActionResult> GetOrders([FromQuery] Guid? branchId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public async Task<IActionResult> GetOrders(
+        [FromQuery] Guid? branchId,
+        [FromQuery] string? status,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromServices] IApplicationDbContext context = null!)
     {
         var isAdmin = User.IsInRole("admin");
-        var userId = isAdmin ? null : GetUserId();
-        var result = await Mediator.Send(new GetOrdersQuery { UserId = userId, BranchId = branchId, Status = status, Page = page, PageSize = pageSize });
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
+
+        Guid? userId = null;
+        Guid? effectiveBranchId = branchId;
+
+        if (isAdmin)
+        {
+            // Admin sees everything — no userId / branchId filter unless explicitly passed
+        }
+        else if (isStaff)
+        {
+            
+            if (!effectiveBranchId.HasValue)
+            {
+                var staffUserId = GetUserId();
+                effectiveBranchId = await context.StaffAssignments
+                    .Where(s => s.StaffId == staffUserId && s.IsPrimary)
+                    .Select(s => (Guid?)s.BranchId)
+                    .FirstOrDefaultAsync();
+            }
+        }
+        else
+        {
+            // Regular customer — only see their own orders
+            userId = GetUserId();
+        }
+
+        var result = await Mediator.Send(new GetOrdersQuery
+        {
+            UserId = userId,
+            BranchId = effectiveBranchId,
+            Status = status,
+            Page = page,
+            PageSize = pageSize
+        });
         return Ok(ApiResponse<PagedResult<OrderResponse>>.SuccessResponse(result));
     }
 
@@ -29,7 +67,10 @@ public class OrdersController : BaseController
     [Authorize]
     public async Task<IActionResult> GetById(Guid id)
     {
-        var result = await Mediator.Send(new GetOrderByIdQuery { Id = id });
+        var isAdmin = User.IsInRole("admin");
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
+        var userId = (isAdmin || isStaff) ? (Guid?)null : GetUserId();
+        var result = await Mediator.Send(new GetOrderByIdQuery { Id = id, UserId = userId });
         if (result == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
@@ -87,7 +128,7 @@ public class OrdersController : BaseController
 
         var userId = GetUserId();
         var isAdmin = User.IsInRole("admin");
-        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager");
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
 
         Guid? staffBranchId = null;
 
@@ -123,11 +164,12 @@ public class OrdersController : BaseController
                 if (string.IsNullOrEmpty(code)) continue;
 
                 // Staff only sees shipments belonging to their branch
-                if (isStaff)
+                // If shipment has no branch_id (null), show it to all staff
+                if (isStaff && staffBranchId.HasValue)
                 {
                     var shipmentBranchId = shipment.TryGetProperty("branch_id", out var bid)
                         ? bid.GetString() : null;
-                    if (shipmentBranchId != staffBranchId?.ToString()) continue;
+                    if (shipmentBranchId != null && shipmentBranchId != staffBranchId.Value.ToString()) continue;
                 }
 
                 var tracking = await shipping.TrackOrderAsync(code);
@@ -144,14 +186,21 @@ public class OrdersController : BaseController
     }
 
     [HttpPost("{id:guid}/tracking/switch-status")]
-    [Authorize(Roles = "store_staff,branch_manager,admin")]
+    [Authorize(Roles = "store_staff,branch_manager,fulfillment_staff,admin")]
     public async Task<IActionResult> SwitchGhnStatus(
         Guid id,
         [FromBody] SwitchGhnStatusRequest request,
         [FromServices] IApplicationDbContext context,
         [FromServices] IShippingService shipping)
     {
-        var validStatuses = new HashSet<string> { "picking", "cancel", "storing", "transporting", "sorting", "delivering", "delivered", "return" };
+        var validStatuses = new HashSet<string>
+        {
+            "ready_to_pick", "picking", "picked",
+            "storing", "sorting", "transporting", "delivering",
+            "delivered",
+            "delivery_fail", "waiting_to_return", "return", "returned",
+            "cancel", "lost"
+        };
         if (!validStatuses.Contains(request.TargetStatus))
             return BadRequest(ApiResponse<object>.ErrorResponse("Invalid target status"));
 
@@ -182,27 +231,66 @@ public class OrdersController : BaseController
             return BadRequest(ApiResponse<object>.ErrorResponse("No GHN shipments found for this order"));
 
         var switched = new List<string>();
+        var logger = HttpContext.RequestServices.GetRequiredService<ILogger<OrdersController>>();
+        logger.LogInformation("SwitchGhnStatus: orderId={OrderId}, isAdmin={IsAdmin}, staffBranchId={StaffBranchId}, targetStatus={Target}, shipmentCount={Count}",
+            id, isAdmin, staffBranchId, request.TargetStatus, shipments.GetArrayLength());
+
         foreach (var shipment in shipments.EnumerateArray())
         {
-            if (!shipment.TryGetProperty("tracking_code", out var tc)) continue;
+            if (!shipment.TryGetProperty("tracking_code", out var tc)) { logger.LogWarning("Shipment missing tracking_code, skipping"); continue; }
             var code = tc.GetString();
-            if (string.IsNullOrEmpty(code)) continue;
+            if (string.IsNullOrEmpty(code)) { logger.LogWarning("Shipment has empty tracking_code, skipping"); continue; }
 
-            if (!isAdmin)
+            if (!isAdmin && staffBranchId.HasValue)
             {
                 var shipmentBranchId = shipment.TryGetProperty("branch_id", out var bid) ? bid.GetString() : null;
-                if (shipmentBranchId != staffBranchId?.ToString()) continue;
+                if (shipmentBranchId != null && shipmentBranchId != staffBranchId.Value.ToString())
+                {
+                    logger.LogWarning("Shipment {Code} branch mismatch: {ShipBranch} != {StaffBranch}, skipping", code, shipmentBranchId, staffBranchId);
+                    continue;
+                }
             }
 
+            logger.LogInformation("Calling GHN switch-status for {Code} → {Target}", code, request.TargetStatus);
             var ok = await shipping.SwitchGhnStatusAsync(code, request.TargetStatus);
+            logger.LogInformation("GHN switch-status result for {Code}: {Result}", code, ok);
             if (ok) switched.Add(code);
         }
 
         if (switched.Count == 0)
             return BadRequest(ApiResponse<object>.ErrorResponse("Failed to switch status on GHN"));
 
-        return Ok(ApiResponse<object>.SuccessResponse(new { switched }, $"Switched {switched.Count} shipment(s) to '{request.TargetStatus}'"));
+        // GHN switched successfully — now mirror the change into our own DB so FE
+        // stepper/timeline reflect reality without staff having to bump PATCH /status too.
+        var shippingRows = await context.Shippings
+            .Where(s => s.OrderId == order.Id && s.TrackingCode != null && switched.Contains(s.TrackingCode))
+            .ToListAsync();
+
+        foreach (var s in shippingRows)
+            s.Status = request.TargetStatus;
+
+        var mappedOrderStatus = MapGhnStatusToOrderStatus(request.TargetStatus);
+        if (mappedOrderStatus != null)
+            order.Status = mappedOrderStatus;
+
+        await context.SaveChangesAsync(CancellationToken.None);
+
+        return Ok(ApiResponse<object>.SuccessResponse(
+            new { switched, orderStatus = order.Status },
+            $"Switched {switched.Count} shipment(s) to '{request.TargetStatus}'"));
     }
+
+    // GHN real flow: ready_to_pick → picking → picked → storing → sorting → transporting → delivering → delivered
+    private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
+    {
+        "ready_to_pick"                                  => "confirmed",
+        "picking" or "picked" or "storing" or "sorting"  => "processing",
+        "transporting" or "delivering" or "delivery_fail" => "shipping",
+        "delivered"                                      => "delivered",
+        "waiting_to_return" or "return" or "returned"    => "returned",
+        "cancel" or "lost"                               => "cancelled",
+        _                                                => null,
+    };
 
     [HttpPost]
     [Authorize]
@@ -213,7 +301,7 @@ public class OrdersController : BaseController
     }
 
     [HttpPatch("{id:guid}/status")]
-    [Authorize]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateOrderStatusRequest request)
     {
         var result = await Mediator.Send(new UpdateOrderStatusCommand { Id = id, Request = request });

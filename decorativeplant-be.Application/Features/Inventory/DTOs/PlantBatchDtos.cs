@@ -9,6 +9,7 @@ public class PlantBatchDto
     public Guid? ParentBatchId { get; set; }
     public string? ParentBatchCode { get; set; } // For display
     public Guid? BranchId { get; set; }
+    public string? BranchName { get; set; } // Display
     public Guid? TaxonomyId { get; set; }
     public string? SpeciesName { get; set; } // Display
     public Guid? SupplierId { get; set; }
@@ -20,6 +21,7 @@ public class PlantBatchDto
     
     public int InitialQuantity { get; set; }
     public int CurrentTotalQuantity { get; set; }
+    public string? ImageUrl { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
 
@@ -28,6 +30,9 @@ public class PlantBatchSummaryDto
     public Guid Id { get; set; }
     public string? BatchCode { get; set; }
     public string? SpeciesName { get; set; }
+    public string? BranchName { get; set; } // Added
+    public string? HealthStatus { get; set; }
+    public string? Stage { get; set; }
     public int CurrentTotalQuantity { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
@@ -48,6 +53,9 @@ public class CreatePlantBatchDto
 public class UpdatePlantBatchDto
 {
     public Guid Id { get; set; }
+    public Guid? BranchId { get; set; } // Added
+    public int? InitialQuantity { get; set; }
+    public int? CurrentTotalQuantity { get; set; }
     public Dictionary<string, object>? SourceInfo { get; set; }
     public Dictionary<string, object>? Specs { get; set; }
 }

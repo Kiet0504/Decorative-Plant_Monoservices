@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Domain.Entities;
 using decorativeplant_be.Application.Common.Interfaces;
+using System.Linq.Expressions;
 
 namespace decorativeplant_be.Infrastructure.Data;
 
@@ -73,12 +74,11 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
 
     // ── Pessimistic Locking ──
 
-    public async Task AcquireStockLockAsync(Guid batchId, CancellationToken ct = default)
+    public async Task AcquireStockLockAsync(Guid listingId, CancellationToken ct = default)
     {
-
         await Database.ExecuteSqlRawAsync(
-            "SELECT 1 FROM \"BatchStocks\" WHERE \"BatchId\" = {0} FOR UPDATE",
-            new object[] { batchId }, ct);
+            "SELECT 1 FROM \"product_listing\" WHERE \"Id\" = {0} FOR UPDATE",
+            new object[] { listingId }, ct);
     }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

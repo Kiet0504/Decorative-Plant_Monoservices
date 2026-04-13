@@ -33,6 +33,7 @@ public static class PlantBatchMapper
             ParentBatchId = entity.ParentBatchId,
             ParentBatchCode = entity.ParentBatch?.BatchCode,
             BranchId = entity.BranchId,
+            BranchName = entity.Branch?.Name, // Added
             TaxonomyId = entity.TaxonomyId,
             SpeciesName = GetSpeciesDisplayName(entity.Taxonomy),
             SupplierId = entity.SupplierId,
@@ -41,6 +42,7 @@ public static class PlantBatchMapper
             Specs = specs,
             InitialQuantity = entity.InitialQuantity ?? 0,
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
+            ImageUrl = entity.Taxonomy?.ImageUrl,
             CreatedAt = entity.CreatedAt
         };
     }
@@ -52,9 +54,44 @@ public static class PlantBatchMapper
             Id = entity.Id,
             BatchCode = entity.BatchCode,
             SpeciesName = GetSpeciesDisplayName(entity.Taxonomy),
+            BranchName = entity.Branch?.Name, // Added
+            HealthStatus = NormalizeValue(ExtractSpec(entity.Specs, "health_status") ?? "Healthy"),
+            Stage = NormalizeValue(ExtractSpec(entity.Specs, "maturity_stage") ?? "Stable"),
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             CreatedAt = entity.CreatedAt
         };
+    }
+
+    private static string NormalizeValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return value;
+        
+        // Handle snake_case or kebab-case
+        value = value.Replace("_", " ").Replace("-", " ");
+        
+        // Capitalize each word
+        var words = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < words.Length; i++)
+        {
+            if (words[i].Length > 0)
+                words[i] = char.ToUpper(words[i][0]) + words[i].Substring(1).ToLower();
+        }
+        
+        return string.Join(" ", words);
+    }
+
+    private static string? ExtractSpec(JsonDocument? specs, string key)
+    {
+        if (specs == null) return null;
+        try
+        {
+            if (specs.RootElement.TryGetProperty(key, out var prop))
+            {
+                return prop.GetString();
+            }
+        }
+        catch { }
+        return null;
     }
 
     private static string? GetSpeciesDisplayName(PlantTaxonomy? taxonomy)

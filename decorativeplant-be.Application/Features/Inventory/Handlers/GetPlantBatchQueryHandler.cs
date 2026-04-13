@@ -4,6 +4,7 @@ using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
+using System.Text.Json;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
@@ -41,7 +42,14 @@ public class GetPlantBatchQueryHandler : IRequestHandler<GetPlantBatchQuery, Pla
             entity.Supplier = await supRepo.GetByIdAsync(entity.SupplierId.Value, cancellationToken);
         }
 
-        // 3. Parent Batch (for traceability)
+        // 3. Branch
+        if (entity.BranchId.HasValue && entity.Branch == null)
+        {
+            var branchRepo = _repositoryFactory.CreateRepository<decorativeplant_be.Domain.Entities.Branch>();
+            entity.Branch = await branchRepo.GetByIdAsync(entity.BranchId.Value, cancellationToken);
+        }
+
+        // 4. Parent Batch (for traceability)
         if (entity.ParentBatchId.HasValue && entity.ParentBatch == null)
         {
             // Avoid deep recursion, just get immediate parent for now.
