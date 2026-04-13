@@ -80,6 +80,17 @@ public class InventoryController : BaseController
     }
 
     /// <summary>
+    /// Get stock transfer detail by ID.
+    /// </summary>
+    [HttpGet("transfers/{id}")]
+    public async Task<ActionResult<ApiResponse<StockTransferDto>>> GetTransfer(Guid id)
+    {
+        var result = await Mediator.Send(new GetStockTransferByIdQuery(id));
+        if (result == null) return NotFound(ApiResponse<StockTransferDto>.ErrorResponse("Transfer not found.", null, 404));
+        return Ok(ApiResponse<StockTransferDto>.SuccessResponse(result));
+    }
+
+    /// <summary>
     /// Get items with low stock.
     /// </summary>
     [HttpGet("low-stock")]

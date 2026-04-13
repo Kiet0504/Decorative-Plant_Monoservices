@@ -5,6 +5,9 @@ using decorativeplant_be.Application.Features.Inventory.Commands;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+using System.Collections.Generic;
+using decorativeplant_be.Application.Features.Inventory;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
@@ -19,7 +22,12 @@ public class ApproveStockTransferCommandHandler : IRequestHandler<ApproveStockTr
 
     public async Task<StockTransferDto> Handle(ApproveStockTransferCommand request, CancellationToken cancellationToken)
     {
-        var transfer = await _context.StockTransfers.FirstOrDefaultAsync(t => t.Id == request.TransferId, cancellationToken);
+        var transfer = await _context.StockTransfers
+            .Include(x => x.FromBranch)
+            .Include(x => x.ToBranch)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.Taxonomy)
+            .FirstOrDefaultAsync(t => t.Id == request.TransferId, cancellationToken);
 
         if (transfer == null)
             throw new NotFoundException(nameof(StockTransfer), request.TransferId);
@@ -31,6 +39,9 @@ public class ApproveStockTransferCommandHandler : IRequestHandler<ApproveStockTr
         
         if (request.Approved)
         {
+            // In this workflow, stock is NOT deducted during approval.
+            // It is only deducted when the source branch clicks "Ship".
+            // Here we only ensure the source branch is correctly identified.
             if (request.FromBranchId.HasValue)
             {
                 transfer.FromBranchId = request.FromBranchId.Value;
@@ -39,37 +50,6 @@ public class ApproveStockTransferCommandHandler : IRequestHandler<ApproveStockTr
             if (!transfer.FromBranchId.HasValue)
             {
                 throw new ValidationException("A source branch (FromBranchId) must be specified to approve this transfer.");
-            }
-
-            // Deduct stock from the source branch
-            // For now, if we don't have an exact BatchId, we just find any stock in the FromBranchId 
-            // In a real system we'd deduct based on Product ID matched via listing
-            // For simplicity (MVP), we assume there's a way. Let's try to grab a BatchStock in FromBranchId
-            var stockToDeduct = await _context.BatchStocks
-                .Include(bs => bs.Location)
-                .Where(bs => bs.Location != null && bs.Location.BranchId == transfer.FromBranchId)
-                // In full implementation, we filter by BatchId or Product matching Listing
-                .FirstOrDefaultAsync(cancellationToken);
-
-            if (stockToDeduct != null && stockToDeduct.Quantities != null)
-            {
-                var root = stockToDeduct.Quantities.RootElement;
-                int total = root.TryGetProperty("quantity", out var t) ? t.GetInt32() : 0;
-                int reserved = root.TryGetProperty("reserved_quantity", out var r) ? r.GetInt32() : 0;
-                int available = root.TryGetProperty("available_quantity", out var a) ? a.GetInt32() : 0;
-
-                if (available < transfer.Quantity)
-                    throw new ValidationException("Insufficient available stock in the selected branch to approve transfer.");
-
-                available -= transfer.Quantity;
-                reserved += transfer.Quantity;
-
-                stockToDeduct.Quantities = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new
-                {
-                    quantity = total,
-                    reserved_quantity = reserved,
-                    available_quantity = available
-                }));
             }
 
             // Tie revenue to the OrderItem

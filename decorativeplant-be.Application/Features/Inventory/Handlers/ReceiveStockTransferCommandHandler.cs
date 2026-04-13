@@ -4,64 +4,116 @@ using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Commands;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using System.Collections.Generic;
+using decorativeplant_be.Application.Features.Inventory;
+using Microsoft.Extensions.Logging;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTransferCommand, StockTransferDto>
 {
-    private readonly IRepositoryFactory _repositoryFactory;
-    private readonly IUnitOfWork _unitOfWork;
+    private readonly IApplicationDbContext _context;
+    private readonly Microsoft.Extensions.Logging.ILogger<ReceiveStockTransferCommandHandler> _logger;
 
-    public ReceiveStockTransferCommandHandler(IRepositoryFactory repositoryFactory, IUnitOfWork unitOfWork)
+    public ReceiveStockTransferCommandHandler(IApplicationDbContext context, Microsoft.Extensions.Logging.ILogger<ReceiveStockTransferCommandHandler> logger)
     {
-        _repositoryFactory = repositoryFactory;
-        _unitOfWork = unitOfWork;
+        _context = context;
+        _logger = logger;
     }
 
     public async Task<StockTransferDto> Handle(ReceiveStockTransferCommand request, CancellationToken cancellationToken)
     {
-        var transferRepo = _repositoryFactory.CreateRepository<StockTransfer>();
-        var transfer = await transferRepo.GetByIdAsync(request.TransferId, cancellationToken);
+        var transfer = await _context.StockTransfers
+            .Include(x => x.FromBranch)
+            .Include(x => x.ToBranch)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.Taxonomy)
+            .FirstOrDefaultAsync(t => t.Id == request.TransferId, cancellationToken);
 
         if (transfer == null) throw new NotFoundException(nameof(StockTransfer), request.TransferId);
-        if (transfer.Status != "Shipped") throw new ValidationException("Transfer must be Shipped before Receiving.");
+        if (transfer.Status != "shipped") throw new ValidationException("Transfer must be Shipped before Receiving.");
 
-        // Add to Destination Stock
-        var stockRepo = _repositoryFactory.CreateRepository<BatchStock>();
-        var destStock = await stockRepo.FirstOrDefaultAsync(s => s.BatchId == transfer.BatchId && s.LocationId == transfer.ToLocationId, cancellationToken);
+        // Identify Target Location
+        var targetLocationId = transfer.ToLocationId;
+        if (targetLocationId == null)
+        {
+            // Prioritize "Sales" or "Storefront" locations
+            var salesLoc = await _context.InventoryLocations
+                .Where(l => l.BranchId == transfer.ToBranchId && (l.Type == "Sales" || l.Type == "Storefront"))
+                .OrderBy(l => l.Name)
+                .FirstOrDefaultAsync(cancellationToken);
+            
+            if (salesLoc == null)
+            {
+                // Create a default "Sales" location if none exists
+                salesLoc = new InventoryLocation
+                {
+                    Id = Guid.NewGuid(),
+                    BranchId = transfer.ToBranchId,
+                    Name = "Main Storefront",
+                    Type = "Sales"
+                };
+                _context.InventoryLocations.Add(salesLoc);
+            }
+            targetLocationId = salesLoc.Id;
+        }
+
+        // CONSOLIDATION LOGIC: Check if this branch already has a listing for this exact species (Taxonomy)
+        // If it does, we merge the stock into that existing listing's primary batch to avoid duplicates.
+        var effectiveBatchId = transfer.BatchId!.Value;
+        var listing = await _context.ProductListings
+            .Include(pl => pl.Batch)
+            .FirstOrDefaultAsync(pl => pl.BranchId == transfer.ToBranchId && pl.Batch != null && pl.Batch.TaxonomyId == (transfer.Batch != null ? transfer.Batch.TaxonomyId : Guid.Empty), cancellationToken);
+
+        if (listing != null)
+        {
+            _logger.LogInformation("Consolidating incoming batch {SourceBatchId} into existing branch batch {TargetBatchId} for taxonomy {TaxonomyId}", 
+                transfer.BatchId ?? Guid.Empty, listing.BatchId ?? Guid.Empty, transfer.Batch?.TaxonomyId);
+            effectiveBatchId = listing.BatchId ?? Guid.Empty;
+        }
+
+        // Add to Destination Stock (using effectiveBatchId which might be the merged batch)
+        var destStock = await _context.BatchStocks
+            .FirstOrDefaultAsync(s => s.BatchId == effectiveBatchId && s.LocationId == targetLocationId, cancellationToken);
 
         if (destStock == null)
         {
             destStock = new BatchStock
             {
                 Id = Guid.NewGuid(),
-                BatchId = transfer.BatchId,
-                LocationId = transfer.ToLocationId,
-                Quantities = JsonSerializer.SerializeToDocument(new BatchStockQuantities { Quantity = 0, ReservedQuantity = 0, AvailableQuantity = 0 }),
+                BatchId = effectiveBatchId,
+                LocationId = targetLocationId,
+                Quantities = JsonSerializer.SerializeToDocument(new BatchStockQuantities { Quantity = 0, ReservedQuantity = 0, AvailableQuantity = 0, TotalReceived = 0 }),
                 UpdatedAt = DateTime.UtcNow
             };
-            await stockRepo.AddAsync(destStock, cancellationToken);
+            _context.BatchStocks.Add(destStock);
         }
 
-        var quantities = destStock.Quantities != null 
-            ? JsonSerializer.Deserialize<BatchStockQuantities>(destStock.Quantities) 
-            : new BatchStockQuantities();
-            
-        if (quantities == null) quantities = new BatchStockQuantities();
+        var quantities = JsonSerializer.Deserialize<BatchStockQuantities>(destStock.Quantities!.RootElement.GetRawText()) 
+            ?? new BatchStockQuantities();
 
-        // Add received stock
+        // Add received stock to all indicators
         quantities.Quantity += transfer.Quantity;
         quantities.AvailableQuantity += transfer.Quantity;
-        // Reserved remains same
+        quantities.TotalReceived += transfer.Quantity; 
 
         destStock.Quantities = JsonSerializer.SerializeToDocument(quantities);
         destStock.UpdatedAt = DateTime.UtcNow;
-        if (await stockRepo.ExistsAsync(s => s.Id == destStock.Id, cancellationToken))
-             await stockRepo.UpdateAsync(destStock, cancellationToken);
+
+        // SYNC targeted batch total (global)
+        var targetBatch = (effectiveBatchId == transfer.BatchId) 
+            ? transfer.Batch 
+            : await _context.PlantBatches.FirstOrDefaultAsync(b => b.Id == effectiveBatchId, cancellationToken);
+
+        if (targetBatch != null)
+        {
+            targetBatch.CurrentTotalQuantity = (targetBatch.CurrentTotalQuantity ?? 0) + transfer.Quantity;
+        }
 
         // Update Transfer
-        transfer.Status = "Received";
+        transfer.Status = "received";
         
         // Update Logistics Info
         transfer.LogisticsInfo = InventoryMapper.BuildLogisticsInfo(
@@ -71,7 +123,41 @@ public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTr
             existingInfo: transfer.LogisticsInfo
         );
 
-        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        // CREATE LISTING if it didn't exist (though if listing was null above, we'll create it now)
+        if (listing == null)
+        {
+            // Try to find a reference listing for the same taxonomy to copy metadata
+            var refListing = await _context.ProductListings
+                .Include(pl => pl.Batch)
+                .Where(pl => pl.Batch != null && pl.Batch.TaxonomyId == (transfer.Batch != null ? transfer.Batch.TaxonomyId : Guid.Empty))
+                .FirstOrDefaultAsync(cancellationToken);
+
+            listing = new ProductListing
+            {
+                Id = Guid.NewGuid(),
+                BranchId = transfer.ToBranchId,
+                BatchId = effectiveBatchId,
+                CreatedAt = DateTime.UtcNow,
+                ProductInfo = refListing?.ProductInfo,
+                StatusInfo = refListing?.StatusInfo ?? JsonSerializer.SerializeToDocument(new { status = "active", visibility = "public" }),
+                Images = refListing?.Images,
+                SeoInfo = refListing?.SeoInfo
+            };
+            _context.ProductListings.Add(listing);
+        }
+
+        // Update storefront quantity (Available quantity reflects what's on the web)
+        if (listing.ProductInfo != null)
+        {
+            var productInfo = JsonSerializer.Deserialize<Dictionary<string, object>>(listing.ProductInfo.RootElement.GetRawText());
+            if (productInfo != null)
+            {
+                productInfo["stock_quantity"] = quantities.AvailableQuantity;
+                listing.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(productInfo));
+            }
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
 
         return InventoryMapper.ToStockTransferDto(transfer);
     }
@@ -86,5 +172,8 @@ public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTr
 
         [System.Text.Json.Serialization.JsonPropertyName("available_quantity")]
         public int AvailableQuantity { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("total_received")]
+        public int TotalReceived { get; set; }
     }
 }
