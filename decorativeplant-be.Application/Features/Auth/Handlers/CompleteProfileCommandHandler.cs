@@ -45,15 +45,19 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
         if (!string.IsNullOrWhiteSpace(request.WateringFrequency))
             userAccount.WateringFrequency = request.WateringFrequency;
 
-        // Concatenate multiple selections into comma-separated strings only if provided
-        if (request.PlacementLocation != null && request.PlacementLocation.Count > 0)
+        // Multi-select: null = leave unchanged; empty list = clear; non-empty = replace
+        if (request.PlacementLocation != null)
         {
-            userAccount.PlacementLocation = string.Join(", ", request.PlacementLocation);
+            userAccount.PlacementLocation = request.PlacementLocation.Count > 0
+                ? string.Join(", ", request.PlacementLocation)
+                : null;
         }
 
-        if (request.SpaceSize != null && request.SpaceSize.Count > 0)
+        if (request.SpaceSize != null)
         {
-            userAccount.SpaceSize = string.Join(", ", request.SpaceSize);
+            userAccount.SpaceSize = request.SpaceSize.Count > 0
+                ? string.Join(", ", request.SpaceSize)
+                : null;
         }
 
         if (request.HasChildrenOrPets.HasValue)
@@ -61,9 +65,11 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
             userAccount.HasChildrenOrPets = request.HasChildrenOrPets.Value;
         }
 
-        if (request.PreferredStyle != null && request.PreferredStyle.Count > 0)
+        if (request.PreferredStyle != null)
         {
-            userAccount.PreferredStyle = string.Join(", ", request.PreferredStyle);
+            userAccount.PreferredStyle = request.PreferredStyle.Count > 0
+                ? string.Join(", ", request.PreferredStyle)
+                : null;
         }
 
         if (!string.IsNullOrWhiteSpace(request.BudgetRange))
@@ -93,11 +99,26 @@ public class CompleteProfileCommandHandler : IRequestHandler<CompleteProfileComm
             userAccount.Phone = request.Phone;
         }
 
-        // Convert PlantGoals list to JsonDocument only if provided
-        if (request.PlantGoals != null && request.PlantGoals.Count > 0)
+        if (request.Bio != null)
+            userAccount.Bio = string.IsNullOrWhiteSpace(request.Bio) ? null : request.Bio.Trim();
+
+        if (request.AvatarUrl != null)
+            userAccount.AvatarUrl = string.IsNullOrWhiteSpace(request.AvatarUrl) ? null : request.AvatarUrl.Trim();
+
+        if (request.HardinessZone != null)
+            userAccount.HardinessZone = string.IsNullOrWhiteSpace(request.HardinessZone) ? null : request.HardinessZone.Trim();
+
+        if (request.PlantGoals != null)
         {
-            var plantGoalsJson = JsonSerializer.Serialize(request.PlantGoals);
-            userAccount.PlantGoals = JsonDocument.Parse(plantGoalsJson);
+            if (request.PlantGoals.Count > 0)
+            {
+                var plantGoalsJson = JsonSerializer.Serialize(request.PlantGoals);
+                userAccount.PlantGoals = JsonDocument.Parse(plantGoalsJson);
+            }
+            else
+            {
+                userAccount.PlantGoals = null;
+            }
         }
 
         userAccount.UpdatedAt = DateTime.UtcNow;

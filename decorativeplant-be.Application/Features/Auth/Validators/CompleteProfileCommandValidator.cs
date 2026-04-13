@@ -62,5 +62,20 @@ public class CompleteProfileCommandValidator : AbstractValidator<CompleteProfile
         RuleFor(x => x.LocationCity)
             .MaximumLength(100)
             .WithMessage("LocationCity must not exceed 100 characters.");
+
+        RuleFor(x => x.Bio)
+            .MaximumLength(2000)
+            .When(x => !string.IsNullOrEmpty(x.Bio))
+            .WithMessage("Bio must not exceed 2000 characters.");
+
+        RuleFor(x => x.AvatarUrl)
+            .MaximumLength(2048)
+            .When(x => !string.IsNullOrEmpty(x.AvatarUrl))
+            .WithMessage("AvatarUrl must not exceed 2048 characters.");
+
+        RuleFor(x => x.HardinessZone)
+            .MaximumLength(32)
+            .When(x => !string.IsNullOrEmpty(x.HardinessZone))
+            .WithMessage("HardinessZone must not exceed 32 characters.");
     }
 }
