@@ -443,10 +443,12 @@ public class UpdateGrowthMilestoneRequest
 public class AddCareLogRequest
 {
     public Guid? ScheduleId { get; set; }
+    /// <summary>Preset slug or free-text care label.</summary>
     public string ActionType { get; set; } = string.Empty;
     public string? Description { get; set; }
     public object? Products { get; set; }
     public string? Observations { get; set; }
+    /// <summary>Optional: preset slug or free-text mood.</summary>
     public string? Mood { get; set; }
     public DateTime? PerformedAt { get; set; }
     public List<CareLogImageDto>? Images { get; set; }

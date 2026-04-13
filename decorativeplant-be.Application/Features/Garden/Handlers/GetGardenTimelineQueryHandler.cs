@@ -45,7 +45,8 @@ public class GetGardenTimelineQueryHandler : IRequestHandler<GetGardenTimelineQu
                 Date = date,
                 Type = "care",
                 Title = actionType,
-                Summary = GetLogSummary(log.LogInfo),
+                Summary = GetLogDescription(log.LogInfo),
+                Mood = GetLogMoodDisplay(log.LogInfo),
                 ImageUrl = GetFirstImageUrl(log.Images),
                 SourceId = log.Id,
                 Metadata = null
@@ -145,12 +146,38 @@ public class GetGardenTimelineQueryHandler : IRequestHandler<GetGardenTimelineQu
         }
     }
 
-    private static string? GetLogSummary(System.Text.Json.JsonDocument? logInfo)
+    /// <summary>Body text only (description). Mood is exposed on <see cref="TimelineItemDto.Mood"/>.</summary>
+    private static string? GetLogDescription(System.Text.Json.JsonDocument? logInfo)
     {
         if (logInfo == null) return null;
         try
         {
-            return logInfo.RootElement.TryGetProperty("description", out var p) ? p.GetString() : null;
+            var root = logInfo.RootElement;
+            return root.TryGetProperty("description", out var p) ? p.GetString() : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Display label for mood (matches diary presets where legacy slugs were used).</summary>
+    private static string? GetLogMoodDisplay(System.Text.Json.JsonDocument? logInfo)
+    {
+        if (logInfo == null) return null;
+        try
+        {
+            if (!logInfo.RootElement.TryGetProperty("mood", out var moodEl)) return null;
+            var m = moodEl.GetString();
+            if (string.IsNullOrWhiteSpace(m)) return null;
+            var t = m.Trim();
+            return t.ToLowerInvariant() switch
+            {
+                "thriving" => "Thriving",
+                "okay" => "Okay",
+                "concerning" => "Worried",
+                _ => t
+            };
         }
         catch
         {

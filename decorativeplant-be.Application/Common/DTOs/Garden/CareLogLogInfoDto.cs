@@ -7,7 +7,7 @@ namespace decorativeplant_be.Application.Common.DTOs.Garden;
 /// </summary>
 public class CareLogLogInfoDto
 {
-    /// <summary>watered|fertilized|pruned|repotted|inspected</summary>
+    /// <summary>Preset slug or free-text care label.</summary>
     [JsonPropertyName("action_type")]
     public string? ActionType { get; set; }
 
@@ -18,6 +18,6 @@ public class CareLogLogInfoDto
 
     public string? Observations { get; set; }
 
-    /// <summary>thriving|okay|concerning</summary>
+    /// <summary>Preset slug or free-text mood.</summary>
     public string? Mood { get; set; }
 }

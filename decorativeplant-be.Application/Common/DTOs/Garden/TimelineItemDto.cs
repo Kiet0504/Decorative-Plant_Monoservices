@@ -16,6 +16,9 @@ public class TimelineItemDto
 
     public string? Summary { get; set; }
 
+    /// <summary>Care logs only: how the plant seemed (from log_info.mood).</summary>
+    public string? Mood { get; set; }
+
     public string? ImageUrl { get; set; }
 
     /// <summary>ID of the source entity (CareLog, milestone, or PlantDiagnosis).</summary>

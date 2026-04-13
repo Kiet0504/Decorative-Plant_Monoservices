@@ -43,7 +43,12 @@ public static class CareLogMapper
     /// <summary>
     /// Builds LogInfo JsonDocument from command fields.
     /// </summary>
-    public static System.Text.Json.JsonDocument? BuildLogInfoJson(string actionType, string? description, object? products, string? observations, string? mood)
+    public static System.Text.Json.JsonDocument? BuildLogInfoJson(
+        string actionType,
+        string? description,
+        object? products,
+        string? observations,
+        string? mood)
     {
         var dict = new Dictionary<string, object?>
         {
