@@ -72,6 +72,10 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<SystemConfig> SystemConfigs { get; set; } = null!;
     public DbSet<RecommendationLog> RecommendationLogs { get; set; } = null!;
 
+    // Module 9: AR Preview
+    public DbSet<ArPreviewSession> ArPreviewSessions { get; set; } = null!;
+    public DbSet<ProductModelAsset> ProductModelAssets { get; set; } = null!;
+
     // ── Pessimistic Locking ──
 
     public async Task AcquireStockLockAsync(Guid listingId, CancellationToken ct = default)
