@@ -14,6 +14,7 @@ public class GetProductListingsQuery : IRequest<PagedResult<ProductListingRespon
     public int PageSize { get; set; } = 20;
     public string? SortBy { get; set; }
     public string? SortOrder { get; set; }
+    public bool GroupBySpecies { get; set; } = true;
 }
 
 public class GetProductListingByIdQuery : IRequest<ProductListingResponse?>
