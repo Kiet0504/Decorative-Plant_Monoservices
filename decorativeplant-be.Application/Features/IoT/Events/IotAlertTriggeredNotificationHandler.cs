@@ -1,29 +1,32 @@
-using decorativeplant_be.Application.Common.DTOs.Email;
+using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Services;
+using decorativeplant_be.Domain.Entities;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace decorativeplant_be.Application.Features.IoT.Events;
 
 public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAlertTriggeredNotification>
 {
-    private readonly IEmailService _emailService;
     private readonly IEmailTemplateService _emailTemplateService;
     private readonly IConfiguration _configuration;
+    private readonly IApplicationDbContext _context;
     private readonly ILogger<IotAlertTriggeredNotificationHandler> _logger;
 
     public IotAlertTriggeredNotificationHandler(
-        IEmailService emailService, 
         IEmailTemplateService emailTemplateService, 
         IConfiguration configuration,
+        IApplicationDbContext context,
         ILogger<IotAlertTriggeredNotificationHandler> logger)
     {
-        _emailService = emailService;
         _emailTemplateService = emailTemplateService;
         _configuration = configuration;
+        _context = context;
         _logger = logger;
     }
 
@@ -34,19 +37,55 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
             var device = notification.Device;
             var alert = notification.Alert;
             
-            _logger.LogInformation("Processing email notification for IoT Alert on Device {DeviceId}", device.Id);
+            _logger.LogInformation("Processing IoT Alert Notification for Device {DeviceId}", device.Id);
 
-            // Construct readable alert message
-            var alertMessage = $"Cảm biến {alert.ComponentKey} tại thiết bị {device.Id} (Kho/Vườn) đã vi phạm quy tắc: {notification.RuleName}. Vui lòng kiểm tra khẩn cấp!";
+            // 1. Find Current Cultivation Staff Emails
+            var staffEmails = await _context.UserAccounts
+                .AsNoTracking()
+                .Where(u => u.Role == "cultivation_staff" && u.IsActive)
+                .Select(u => u.Email)
+                .ToListAsync(cancellationToken);
 
-            // Extract the API Host or build ActionUrl for the email buttons
-            var apiBaseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5000";
-            var actionUrl = $"{apiBaseUrl}/api/public/iot/action?deviceId={device.Id}";
+            if (!staffEmails.Any())
+            {
+                _logger.LogWarning("No active cultivation staff found to receive IoT alert {AlertId}", alert.Id);
+                return;
+            }
 
-            // Generate secure ActionToken for bypassing auth when clicking "water_now"
-            var secretKey = _configuration["ApiSettings:SecretKey"] ?? "default_secret";
-            var rawData = $"{device.Id}water_now{device.SecretKey}{secretKey}";
-            var computedToken = "";
+            // 2. Extract Alert Details from JSONB alert_info
+            var alertMessage = "Abnormal behavior detected!";
+            var severity = "WARNING";
+            
+            if (alert.AlertInfo != null)
+            {
+                var root = alert.AlertInfo.RootElement;
+                var title = root.TryGetProperty("title", out var t) ? t.GetString() : null;
+                var msg = root.TryGetProperty("message", out var m) ? m.GetString() : null;
+                severity = root.TryGetProperty("severity", out var s) ? s.GetString()?.ToUpper() ?? "WARNING" : "WARNING";
+
+                if (!string.IsNullOrEmpty(title) && !string.IsNullOrEmpty(msg))
+                    alertMessage = $"{title}: {msg}";
+                else
+                    alertMessage = title ?? msg ?? alertMessage;
+            }
+
+            // 3. Extract Device Name
+            var deviceName = "Unknown Device";
+            if (device.DeviceInfo != null)
+            {
+                if (device.DeviceInfo.RootElement.TryGetProperty("name", out var n))
+                {
+                    deviceName = n.GetString() ?? deviceName;
+                }
+            }
+
+            // 4. Generate Security Token for Action
+            const string action = "water_now";
+            var apiSecretKey = _configuration["ApiSettings:SecretKey"] ?? "default_secret";
+            var baseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5031";
+            
+            var rawData = $"{device.Id}{action}{device.SecretKey}{apiSecretKey}";
+            string computedToken;
             using (var sha256 = SHA256.Create())
             {
                 var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(rawData));
@@ -55,28 +94,29 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
 
             var placeholders = new Dictionary<string, string>
             {
+                { "Severity", severity },
                 { "AlertMessage", alertMessage },
-                { "ActionUrl", actionUrl },
+                { "ActionUrl", $"{baseUrl}/api/public/iot/action?deviceId={device.Id}" },
                 { "ActionToken", computedToken }
             };
 
-            var targetEmail = "decorativeplant.staff@gmail.com"; 
+            // 5. Dispatch Emails
+            foreach (var email in staffEmails)
+            {
+                await _emailTemplateService.SendTemplateAsync(
+                    templateName: "IotAlert",
+                    model: placeholders,
+                    to: email,
+                    subject: $"[IoT ALERT] {severity} - {deviceName}",
+                    cancellationToken: cancellationToken
+                );
+            }
 
-            await _emailTemplateService.SendTemplateAsync(
-                templateName: "IotAlert",
-                model: placeholders,
-                to: targetEmail,
-                subject: $"[CẢNH BÁO MỨC ĐỘ KHẨN] Vi phạm quy tắc {notification.RuleName} - Cảm biến {alert.ComponentKey}",
-                toName: "Cultivation Staff",
-                cancellationToken: cancellationToken
-            );
-
-            _logger.LogInformation("Successfully dispatched IoT Alert Email to {email}", targetEmail);
+            _logger.LogInformation("IoT Alert Email dispatched to {Count} staff members.", staffEmails.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to send IoT Alert Email to Cultivation Staff.");
-            // We fail silently preventing the main API thread from crashing just because email delivery fails.
+            _logger.LogError(ex, "Failed to process IotAlertTriggeredNotification.");
         }
     }
 }

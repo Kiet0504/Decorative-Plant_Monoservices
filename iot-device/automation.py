@@ -191,7 +191,7 @@ def _save_cooldown_data(rule_id, timestamp):
         print("[Cooldown] Loi khi ghi file flash:", e)
 
 _load_cooldown_data()
-DEFAULT_COOLDOWN = 600 
+DEFAULT_COOLDOWN = 100 
 
 def is_time_synced():
     """Kiem tra xem gio da duoc dong bo (NTP) chua.
@@ -255,12 +255,25 @@ def _check_single_condition(r, sensor_data):
     if current_val is not None and val is not None:
         try:
             c_val = float(current_val)
-            t_val = float(val)
-            if op == ">": res = c_val > t_val
-            elif op == "<": res = c_val < t_val
-            elif op == "==" or op == "=": res = c_val == t_val
-            elif op == ">=": res = c_val >= t_val
-            elif op == "<=": res = c_val <= t_val
+            
+            # Handle range-based operators
+            if isinstance(val, str) and "-" in val:
+                min_max = val.split("-")
+                if len(min_max) == 2:
+                    t_min = float(min_max[0])
+                    t_max = float(min_max[1])
+                    
+                    if op == "between":
+                        res = t_min <= c_val <= t_max
+                    elif op == "outside":
+                        res = c_val < t_min or c_val > t_max
+            else:
+                t_val = float(val)
+                if op == ">": res = c_val > t_val
+                elif op == "<": res = c_val < t_val
+                elif op == "==" or op == "=": res = c_val == t_val
+                elif op == ">=": res = c_val >= t_val
+                elif op == "<=": res = c_val <= t_val
         except:
             pass
 
