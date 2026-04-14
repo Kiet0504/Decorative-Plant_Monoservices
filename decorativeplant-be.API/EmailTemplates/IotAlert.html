@@ -28,23 +28,24 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>Cảnh báo Hệ thống IoT</h1>
+            <h1>IoT System Alert</h1>
         </div>
         <div class="content">
-            <p>Xin chào,</p>
-            <p>Hệ thống giám sát của <strong>Decorative Plant</strong> vừa ghi nhận một cảnh báo từ thiết bị của bạn:</p>
+            <p>Hello,</p>
+            <p>The <strong>Decorative Plant</strong> monitoring system has just recorded an alert from your device:</p>
 
             <div class="alert-box">
-                <strong>Cảnh báo:</strong> {{AlertMessage}}
+                <span style="font-size: 11px; font-weight: 800; background: #ff9f1c; color: white; padding: 2px 8px; border-radius: 4px; margin-right: 8px;">{{Severity}}</span>
+                <strong>Alert:</strong> {{AlertMessage}}
             </div>
 
-            <p>Bạn có muốn thực hiện tưới nước ngay lập tức không?</p>
+            <p>Would you like to initiate immediate watering?</p>
             
             <div style="text-align: center;">
-                <a href="{{ActionUrl}}&action=water_now&token={{ActionToken}}" class="button">Tưới nước ngay (30 giây)</a>
+                <a href="{{ActionUrl}}&action=water_now&token={{ActionToken}}" class="button">Water Now (30 seconds)</a>
             </div>
 
-            <p style="margin-top: 30px;">Nếu bạn không phải là người yêu cầu thông tin này, vui lòng bỏ qua email.</p>
+            <p style="margin-top: 30px;">If you did not request this information, please ignore this email.</p>
         </div>
         <div class="footer">
             &copy; 2026 Decorative Plant - Advanced IoT Services.
