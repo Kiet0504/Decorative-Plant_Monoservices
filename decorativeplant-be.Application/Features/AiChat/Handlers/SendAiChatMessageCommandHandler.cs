@@ -1,0 +1,627 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using decorativeplant_be.Application.Common.DTOs.AiChat;
+using decorativeplant_be.Application.Common.DTOs.Garden;
+using decorativeplant_be.Application.Common.Exceptions;
+using decorativeplant_be.Application.Common.Interfaces;
+using decorativeplant_be.Application.Features.AiChat;
+using decorativeplant_be.Application.Features.AiChat.Commands;
+using decorativeplant_be.Application.Features.Garden;
+using decorativeplant_be.Application.Services;
+using decorativeplant_be.Domain.Entities;
+using MediatR;
+using Microsoft.Extensions.Logging;
+
+namespace decorativeplant_be.Application.Features.AiChat.Handlers;
+
+public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChatMessageCommand, AiChatReplyDto>
+{
+    private static readonly JsonSerializerOptions TaskInfoJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    private readonly IUserAccountService _userAccountService;
+    private readonly IGardenRepository _gardenRepository;
+    private readonly IOllamaClient _ollama;
+    private readonly IPlantDiagnosisFromBase64Service _formalDiagnosisFromBase64;
+    private readonly IChatDiagnosisPipelineSettings _chatDiagnosisPipeline;
+    private readonly IChatImageIntentClassifier _imageIntentClassifier;
+    private readonly ILogger<SendAiChatMessageCommandHandler> _logger;
+
+    public SendAiChatMessageCommandHandler(
+        IUserAccountService userAccountService,
+        IGardenRepository gardenRepository,
+        IOllamaClient ollama,
+        IPlantDiagnosisFromBase64Service formalDiagnosisFromBase64,
+        IChatDiagnosisPipelineSettings chatDiagnosisPipeline,
+        IChatImageIntentClassifier imageIntentClassifier,
+        ILogger<SendAiChatMessageCommandHandler> logger)
+    {
+        _userAccountService = userAccountService;
+        _gardenRepository = gardenRepository;
+        _ollama = ollama;
+        _formalDiagnosisFromBase64 = formalDiagnosisFromBase64;
+        _chatDiagnosisPipeline = chatDiagnosisPipeline;
+        _imageIntentClassifier = imageIntentClassifier;
+        _logger = logger;
+    }
+
+    public async Task<AiChatReplyDto> Handle(SendAiChatMessageCommand request, CancellationToken cancellationToken)
+    {
+        var user = await _userAccountService.GetByIdAsync(request.UserId, cancellationToken);
+        if (user == null)
+        {
+            throw new NotFoundException("User", request.UserId);
+        }
+
+        GardenPlant? focusPlant = null;
+        if (request.GardenPlantId.HasValue)
+        {
+            focusPlant = await _gardenRepository.GetPlantByIdAsync(
+                request.GardenPlantId.Value,
+                includeTaxonomy: true,
+                cancellationToken);
+            if (focusPlant == null || focusPlant.UserId != request.UserId)
+            {
+                throw new NotFoundException("Garden plant", request.GardenPlantId.Value);
+            }
+        }
+
+        IReadOnlyList<CareSchedule> focusSchedules = Array.Empty<CareSchedule>();
+        IReadOnlyList<CareLog> focusRecentLogs = Array.Empty<CareLog>();
+        IReadOnlyList<PlantDiagnosis> focusDiagnoses = Array.Empty<PlantDiagnosis>();
+        if (focusPlant != null)
+        {
+            focusSchedules = (await _gardenRepository.GetSchedulesByPlantIdAsync(
+                    focusPlant.Id,
+                    includeInactive: false,
+                    cancellationToken))
+                .ToList();
+            focusRecentLogs = (await _gardenRepository.GetRecentCareLogsByPlantIdAsync(
+                    focusPlant.Id,
+                    limit: 15,
+                    cancellationToken))
+                .ToList();
+            focusDiagnoses = (await _gardenRepository.GetPlantDiagnosesByPlantIdAsync(focusPlant.Id, cancellationToken))
+                .Take(5)
+                .ToList();
+        }
+
+        var (plants, _) = await _gardenRepository.GetPlantsByUserIdAsync(
+            request.UserId,
+            includeArchived: false,
+            healthFilter: null,
+            page: 1,
+            pageSize: 30,
+            cancellationToken);
+
+        var normalizedImage = NormalizeAttachedImageBase64(request.AttachedImageBase64);
+        var lastUserText = request.Messages.LastOrDefault(m =>
+            string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content;
+        var hasImage = !string.IsNullOrEmpty(normalizedImage);
+        var useFormalDiagnosis = await _imageIntentClassifier.ShouldUseFormalDiagnosisPipelineAsync(
+            lastUserText,
+            hasImage,
+            cancellationToken);
+
+        if (hasImage && useFormalDiagnosis && !_chatDiagnosisPipeline.CanRunFormalGeminiOllamaFromChat)
+        {
+            _logger.LogInformation(
+                "AI chat: formal Gemini+Ollama diagnosis skipped — set AiDiagnosis:Provider=GeminiOllama and AiDiagnosis:GeminiApiKey (chat will use Ollama vision/text instead).");
+        }
+        else if (hasImage && !useFormalDiagnosis)
+        {
+            _logger.LogInformation(
+                "AI chat: image present but formal diagnosis pipeline not selected (caption looks like general plant care, not disease/damage intent).");
+        }
+
+        if (useFormalDiagnosis && _chatDiagnosisPipeline.CanRunFormalGeminiOllamaFromChat && hasImage)
+        {
+            try
+            {
+                var mime = NormalizeImageMimeType(request.AttachedImageMimeType);
+                var formalGardenContext = focusPlant != null
+                    ? BuildFormalDiagnosisGardenContext(
+                        user,
+                        focusPlant,
+                        focusSchedules,
+                        focusRecentLogs,
+                        focusDiagnoses)
+                    : null;
+                var diagnosis = await _formalDiagnosisFromBase64.AnalyzeFromBase64Async(
+                    normalizedImage!,
+                    mime,
+                    lastUserText,
+                    formalGardenContext,
+                    cancellationToken);
+                _logger.LogInformation(
+                    "AI chat: formal Gemini+Ollama diagnosis completed for user {UserId} (disease label: {Disease}).",
+                    request.UserId,
+                    diagnosis.Disease);
+                return new AiChatReplyDto
+                {
+                    Reply = FormatDiagnosisAsChatReply(diagnosis),
+                    SuggestedIntent = PlantChatIntentDetector.DiseaseDiagnosisIntent,
+                    Diagnosis = ToDiagnosisSummary(diagnosis)
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Formal Gemini+Ollama diagnosis from chat failed; falling back to conversational model.");
+            }
+        }
+
+        var diseaseHelpIntent = PlantChatIntentDetector.IsDiseaseDiagnosisIntent(lastUserText)
+            || hasImage;
+
+        var systemPrompt = BuildSystemPrompt(
+            user,
+            plants,
+            focusPlant,
+            diseaseHelpIntent,
+            focusSchedules,
+            focusRecentLogs,
+            focusDiagnoses);
+
+        var ollamaMessages = new List<OllamaChatTurnDto>
+        {
+            new() { Role = "system", Content = systemPrompt }
+        };
+
+        foreach (var m in request.Messages)
+        {
+            ollamaMessages.Add(new OllamaChatTurnDto
+            {
+                Role = m.Role.ToLowerInvariant(),
+                Content = m.Content
+            });
+        }
+
+        if (!string.IsNullOrEmpty(normalizedImage))
+        {
+            for (var i = ollamaMessages.Count - 1; i >= 0; i--)
+            {
+                if (!string.Equals(ollamaMessages[i].Role, "user", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var content = string.IsNullOrWhiteSpace(ollamaMessages[i].Content)
+                    ? "The user attached a plant photo. Describe what you see and offer practical care advice. If you notice possible disease or pests, name them cautiously and suggest next steps."
+                    : ollamaMessages[i].Content;
+                ollamaMessages[i] = new OllamaChatTurnDto
+                {
+                    Role = "user",
+                    Content = content,
+                    ImagesBase64 = new List<string> { normalizedImage }
+                };
+                break;
+            }
+        }
+
+        var logSummary = ollamaMessages.Select(m => new
+        {
+            m.Role,
+            ContentLength = m.Content?.Length ?? 0,
+            ImageCount = m.ImagesBase64?.Count ?? 0
+        });
+        _logger.LogInformation(
+            "AI chat → Ollama. UserId={UserId}, GardenPlantId={GardenPlantId}, MessageCount={Count}, Summary={Summary}",
+            request.UserId,
+            request.GardenPlantId,
+            ollamaMessages.Count,
+            JsonSerializer.Serialize(logSummary));
+
+        try
+        {
+            var reply = await _ollama.ChatAsync(ollamaMessages, cancellationToken);
+            return new AiChatReplyDto
+            {
+                Reply = reply,
+                SuggestedIntent = diseaseHelpIntent ? PlantChatIntentDetector.DiseaseDiagnosisIntent : null
+            };
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            _logger.LogError(ex, "AI chat request failed for user {UserId}", request.UserId);
+            return new AiChatReplyDto
+            {
+                Reply =
+                    "I'm having trouble reaching the plant assistant right now. " +
+                    "Please ensure Ollama is running and reachable from the API (see Docker `Ollama__BaseUrl`), then try again.",
+                SuggestedIntent = diseaseHelpIntent ? PlantChatIntentDetector.DiseaseDiagnosisIntent : null
+            };
+        }
+    }
+
+    private static string BuildSystemPrompt(
+        UserAccount user,
+        IEnumerable<GardenPlant> plants,
+        GardenPlant? focus,
+        bool userSeemsToNeedDiseaseHelp,
+        IReadOnlyList<CareSchedule> focusSchedules,
+        IReadOnlyList<CareLog> focusRecentCareLogs,
+        IReadOnlyList<PlantDiagnosis> focusDiagnoses)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("You are a helpful, friendly plant care assistant for an app called Decorative Plant.");
+        sb.AppendLine("Use the user's profile and garden context below to personalize answers (light, humidity, experience, space, pets/children, goals).");
+        sb.AppendLine("If the user asks about something outside houseplants, shopping, or garden care, answer briefly and steer back to plants when appropriate.");
+        sb.AppendLine("Do not claim to see photos unless the user pasted an image URL you can reason about. Do not give medical or veterinary diagnoses; suggest professional help when serious toxicity or health issues are possible.");
+        sb.AppendLine();
+
+        sb.AppendLine("--- User profile ---");
+        sb.AppendLine($"Display name: {user.DisplayName ?? "not set"}");
+        sb.AppendLine($"Experience: {user.ExperienceLevel ?? "not set"}");
+        sb.AppendLine($"City / zone: {user.LocationCity ?? "not set"} / {user.HardinessZone ?? "not set"}");
+        sb.AppendLine($"Sunlight at home: {user.SunlightExposure ?? "not set"}");
+        sb.AppendLine($"Room temperature preference: {user.RoomTemperatureRange ?? "not set"}");
+        sb.AppendLine($"Humidity: {user.HumidityLevel ?? "not set"}");
+        sb.AppendLine($"Typical watering habit: {user.WateringFrequency ?? "not set"}");
+        sb.AppendLine($"Placement: {user.PlacementLocation ?? "not set"}, space: {user.SpaceSize ?? "not set"}");
+        sb.AppendLine($"Children or pets at home: {(user.HasChildrenOrPets.HasValue ? user.HasChildrenOrPets.Value.ToString() : "not set")}");
+        sb.AppendLine($"Preferred style: {user.PreferredStyle ?? "not set"}, budget: {user.BudgetRange ?? "not set"}");
+        sb.AppendLine($"Plant goals: {FormatGoals(user.PlantGoals)}");
+        sb.AppendLine();
+
+        sb.AppendLine("--- User's garden (recent plants) ---");
+        var list = plants.ToList();
+        if (list.Count == 0)
+        {
+            sb.AppendLine("No plants in the garden yet.");
+        }
+        else
+        {
+            foreach (var p in list)
+            {
+                var d = GardenPlantMapper.DeserializeDetails(p.Details);
+                var name = string.IsNullOrWhiteSpace(d.Nickname) ? "Unnamed plant" : d.Nickname;
+                var tax = p.Taxonomy?.ScientificName ?? "Unknown species";
+                var health = d.Health ?? "?";
+                sb.AppendLine($"- {name} ({tax}), health: {health}");
+            }
+        }
+
+        if (focus != null)
+        {
+            AppendFocusPlantContextBlock(sb, focus, focusSchedules, focusRecentCareLogs, focusDiagnoses);
+            sb.AppendLine();
+            sb.AppendLine(
+                "Prefer the focus plant's schedules, diary entries, milestones, and past AI diagnoses below when they are relevant to the question. " +
+                "If something is missing, say so briefly and give general guidance.");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("Keep replies concise unless the user asks for detail. Use bullet points for care steps when helpful.");
+
+        if (userSeemsToNeedDiseaseHelp)
+        {
+            sb.AppendLine();
+            sb.AppendLine("--- Intent ---");
+            sb.AppendLine(
+                "The user's latest message suggests concern about disease, pests, mold, spots, or visible plant damage. " +
+                "Text-only chat cannot replace examining a clear photo. The Decorative Plant app offers AI disease diagnosis " +
+                "from My Garden using an uploaded photo of affected leaves. Encourage well-lit, in-focus photos if they use that. " +
+                "Do not claim you can see their images unless they pasted a URL here.");
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>Profile + focus plant data for Gemini/Ollama formal disease pipeline (chat photo path).</summary>
+    private static string BuildFormalDiagnosisGardenContext(
+        UserAccount user,
+        GardenPlant focus,
+        IReadOnlyList<CareSchedule> focusSchedules,
+        IReadOnlyList<CareLog> focusRecentCareLogs,
+        IReadOnlyList<PlantDiagnosis> focusDiagnoses)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("--- Grower / environment (from user profile) ---");
+        sb.AppendLine($"Experience: {user.ExperienceLevel ?? "not set"}");
+        sb.AppendLine($"City / zone: {user.LocationCity ?? "not set"} / {user.HardinessZone ?? "not set"}");
+        sb.AppendLine($"Sunlight at home: {user.SunlightExposure ?? "not set"}");
+        sb.AppendLine($"Humidity: {user.HumidityLevel ?? "not set"}");
+        sb.AppendLine($"Typical watering habit: {user.WateringFrequency ?? "not set"}");
+        AppendFocusPlantContextBlock(sb, focus, focusSchedules, focusRecentCareLogs, focusDiagnoses);
+        sb.AppendLine();
+        sb.AppendLine(
+            "Relate possible causes of the visible issue to this context when reasonable (e.g. watering vs schedule, humidity, light, recent repot, past checks). " +
+            "If context is insufficient, say so.");
+        return sb.ToString().Trim();
+    }
+
+    private static void AppendFocusPlantContextBlock(
+        StringBuilder sb,
+        GardenPlant focus,
+        IReadOnlyList<CareSchedule> focusSchedules,
+        IReadOnlyList<CareLog> focusRecentCareLogs,
+        IReadOnlyList<PlantDiagnosis> focusDiagnoses)
+    {
+        var fd = GardenPlantMapper.DeserializeDetails(focus.Details);
+        var fname = string.IsNullOrWhiteSpace(fd.Nickname) ? "This plant" : fd.Nickname;
+        var ftax = focus.Taxonomy?.ScientificName ?? "Unknown species";
+        var fcommon = focus.Taxonomy != null ? GardenPlantMapper.ToTaxonomySummaryDto(focus.Taxonomy).CommonName : null;
+        sb.AppendLine();
+        sb.AppendLine("--- Current focus plant (user is likely asking about this one) ---");
+        sb.AppendLine(
+            $"{fname} — species: {ftax}" +
+            (string.IsNullOrWhiteSpace(fcommon) ? "" : $", common name: {fcommon}") +
+            $", location in home: {fd.Location ?? "not set"}, source: {fd.Source ?? "not set"}, adopted: {fd.AdoptedDate ?? "not set"}, health: {fd.Health ?? "not set"}, size: {fd.Size ?? "not set"}.");
+        AppendFocusMilestones(sb, fd);
+        AppendFocusSchedules(sb, focusSchedules);
+        AppendFocusCareDiary(sb, focusRecentCareLogs);
+        AppendFocusDiagnoses(sb, focusDiagnoses);
+    }
+
+    private static void AppendFocusMilestones(StringBuilder sb, GardenPlantDetailsDto fd)
+    {
+        var milestones = fd.Milestones;
+        if (milestones == null || milestones.Count == 0)
+        {
+            return;
+        }
+
+        var sorted = milestones.OrderByDescending(m => m.OccurredAt).Take(8).ToList();
+        sb.AppendLine();
+        sb.AppendLine("--- Growth milestones (plant diary; this plant) ---");
+        foreach (var m in sorted)
+        {
+            var label = m.Type.ToLowerInvariant() switch
+            {
+                "first_leaf" => "First leaf",
+                "new_growth" => "New growth",
+                "flowering" => "Flowering",
+                "repotted" => "Repotted",
+                _ => string.IsNullOrWhiteSpace(m.Type) ? "Milestone" : m.Type
+            };
+            var date = m.OccurredAt.ToString("yyyy-MM-dd");
+            var line = $"- {date}: {label}";
+            if (!string.IsNullOrWhiteSpace(m.Notes))
+            {
+                line += $" — {m.Notes.Trim()}";
+            }
+
+            sb.AppendLine(line);
+        }
+    }
+
+    private static void AppendFocusSchedules(StringBuilder sb, IReadOnlyList<CareSchedule> schedules)
+    {
+        if (schedules.Count == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("--- Active care reminders / schedules (this plant) ---");
+        foreach (var s in schedules)
+        {
+            if (s.TaskInfo == null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var t = JsonSerializer.Deserialize<CareScheduleTaskInfoDto>(
+                    s.TaskInfo.RootElement.GetRawText(),
+                    TaskInfoJsonOptions);
+                if (t == null)
+                {
+                    continue;
+                }
+
+                var parts = new List<string> { $"task: {t.Type}", $"frequency: {t.Frequency}" };
+                if (t.IntervalDays.HasValue)
+                {
+                    parts.Add($"every {t.IntervalDays} days");
+                }
+
+                if (!string.IsNullOrWhiteSpace(t.TimeOfDay))
+                {
+                    parts.Add($"time of day: {t.TimeOfDay}");
+                }
+
+                if (t.NextDue.HasValue)
+                {
+                    parts.Add($"next due (UTC): {t.NextDue:O}");
+                }
+
+                sb.AppendLine("- " + string.Join(", ", parts) + ".");
+            }
+            catch
+            {
+                sb.AppendLine("- (active schedule; details could not be read)");
+            }
+        }
+    }
+
+    private static void AppendFocusCareDiary(StringBuilder sb, IReadOnlyList<CareLog> logs)
+    {
+        if (logs.Count == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("--- Recent care diary (newest first; this plant) ---");
+        foreach (var log in logs)
+        {
+            var date = log.PerformedAt?.ToString("yyyy-MM-dd") ?? "?";
+            var action = "care";
+            string? desc = null;
+            string? obs = null;
+            string? mood = null;
+            try
+            {
+                if (log.LogInfo != null)
+                {
+                    var root = log.LogInfo.RootElement;
+                    if (root.TryGetProperty("action_type", out var a))
+                    {
+                        action = a.GetString() ?? action;
+                    }
+
+                    if (root.TryGetProperty("description", out var d))
+                    {
+                        desc = d.GetString();
+                    }
+
+                    if (root.TryGetProperty("observations", out var o))
+                    {
+                        obs = o.GetString();
+                    }
+
+                    if (root.TryGetProperty("mood", out var m))
+                    {
+                        mood = m.GetString();
+                    }
+                }
+            }
+            catch
+            {
+                // keep defaults
+            }
+
+            var bits = new List<string> { $"{date}: {action}" };
+            if (!string.IsNullOrWhiteSpace(desc))
+            {
+                bits.Add($"note: {desc.Trim()}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(obs))
+            {
+                bits.Add($"observations: {obs.Trim()}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(mood))
+            {
+                bits.Add($"mood: {mood.Trim()}");
+            }
+
+            sb.AppendLine("- " + string.Join(" — ", bits));
+        }
+    }
+
+    private static void AppendFocusDiagnoses(StringBuilder sb, IReadOnlyList<PlantDiagnosis> diagnoses)
+    {
+        if (diagnoses.Count == 0)
+        {
+            return;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("--- Recent AI disease checks from My Garden (this plant) ---");
+        foreach (var d in diagnoses.OrderByDescending(x => x.CreatedAt))
+        {
+            var date = (d.CreatedAt ?? DateTime.MinValue).ToString("yyyy-MM-dd");
+            var (title, summary) = GetDiagnosisTitleAndSummary(d.AiResult);
+            var line = $"- {date}: {title}";
+            if (!string.IsNullOrWhiteSpace(summary))
+            {
+                line += $" — {summary}";
+            }
+
+            sb.AppendLine(line);
+        }
+    }
+
+    private static (string Title, string? Summary) GetDiagnosisTitleAndSummary(JsonDocument? aiResult)
+    {
+        if (aiResult == null)
+        {
+            return ("Diagnosis", null);
+        }
+
+        try
+        {
+            var disease = aiResult.RootElement.TryGetProperty("disease", out var d) ? d.GetString() : null;
+            var recommendations = aiResult.RootElement.TryGetProperty("recommendations", out var r) && r.ValueKind == JsonValueKind.Array
+                ? string.Join("; ", r.EnumerateArray().Select(x => x.GetString()).Where(x => !string.IsNullOrEmpty(x)))
+                : null;
+            return (disease ?? "Diagnosis", recommendations);
+        }
+        catch
+        {
+            return ("Diagnosis", null);
+        }
+    }
+
+    private static string FormatGoals(JsonDocument? goals)
+    {
+        if (goals == null) return "not set";
+        try
+        {
+            if (goals.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                var parts = goals.RootElement.EnumerateArray()
+                    .Select(e => e.GetString())
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .ToList();
+                return parts.Count == 0 ? "not set" : string.Join(", ", parts);
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return "not set";
+    }
+
+    /// <summary>Strips data-URL prefix if present; returns raw base64 or null.</summary>
+    private static string? NormalizeAttachedImageBase64(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var s = raw.Trim();
+        if (s.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            var comma = s.IndexOf(',', StringComparison.Ordinal);
+            if (comma >= 0 && comma < s.Length - 1)
+            {
+                s = s[(comma + 1)..].Trim();
+            }
+        }
+
+        return string.IsNullOrEmpty(s) ? null : s;
+    }
+
+    private static string NormalizeImageMimeType(string? mime)
+    {
+        if (string.IsNullOrWhiteSpace(mime))
+        {
+            return "image/jpeg";
+        }
+
+        var m = mime.Trim().ToLowerInvariant();
+        return m is "image/jpeg" or "image/png" or "image/webp" ? m : "image/jpeg";
+    }
+
+    /// <summary>Short chat line only — full detail lives in <see cref="AiChatReplyDto.Diagnosis"/> for the client UI.</summary>
+    private static string FormatDiagnosisAsChatReply(AiDiagnosisResultDto d)
+    {
+        var pct = (int)Math.Round(d.Confidence > 1 ? d.Confidence : d.Confidence * 100);
+        return $"We checked your photo — the most likely issue is {d.Disease} (about {pct}% confidence). Details are in the summary below.";
+    }
+
+    private static AiChatDiagnosisSummaryDto ToDiagnosisSummary(AiDiagnosisResultDto d)
+    {
+        return new AiChatDiagnosisSummaryDto
+        {
+            Disease = d.Disease,
+            Confidence = d.Confidence,
+            Symptoms = d.Symptoms,
+            Recommendations = d.Recommendations,
+            Explanation = d.Explanation
+        };
+    }
+}

@@ -145,14 +145,28 @@ public static class InfrastructureServiceRegistration
         // Register IApplicationDbContext
         services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IApplicationDbContext>(sp =>
             sp.GetRequiredService<ApplicationDbContext>());
-        // AI Diagnosis (OpenAI)
+        // AI Diagnosis: OpenAI-only or Gemini + Ollama (see AiDiagnosis:Provider)
         services.Configure<AiDiagnosisSettings>(configuration.GetSection(AiDiagnosisSettings.SectionName));
         services.AddHttpClient();
-        services.AddScoped<IAiDiagnosisService, OpenAiDiagnosisService>();
+        services.AddScoped<OpenAiDiagnosisService>();
+        services.AddScoped<GeminiPlantDiseaseDetectionService>();
+        services.AddScoped<OllamaDiagnosisReasoningService>();
+        services.AddScoped<GeminiOllamaDiagnosisService>();
+        services.AddScoped<IPlantDiagnosisFromBase64Service>(sp =>
+            sp.GetRequiredService<GeminiOllamaDiagnosisService>());
+        services.AddScoped<IChatDiagnosisPipelineSettings, ChatDiagnosisPipelineSettings>();
+        services.AddScoped<IAiDiagnosisService>(sp =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiDiagnosisSettings>>().Value;
+            return string.Equals(opts.Provider, "GeminiOllama", StringComparison.OrdinalIgnoreCase)
+                ? sp.GetRequiredService<GeminiOllamaDiagnosisService>()
+                : sp.GetRequiredService<OpenAiDiagnosisService>();
+        });
 
-        // Local AI (Ollama) for personalized care guidance
+        // Local AI (Ollama) for personalized care guidance + diagnosis reasoning when Provider=GeminiOllama
         services.Configure<OllamaSettings>(configuration.GetSection(OllamaSettings.SectionName));
         services.AddScoped<IOllamaClient, OllamaClient>();
+        services.AddScoped<IChatImageIntentClassifier, OllamaChatImageIntentClassifier>();
 
         services.Configure<AiCareAdviceSettings>(configuration.GetSection(AiCareAdviceSettings.SectionName));
 

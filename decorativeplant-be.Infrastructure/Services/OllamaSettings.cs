@@ -18,5 +18,14 @@ public sealed class OllamaSettings
     /// Optional request timeout in seconds (HTTP).
     /// </summary>
     public int TimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// When set (e.g. llama3.2:1b, phi3:mini), image+caption intent uses this small model for JSON classification instead of keyword-only routing.
+    /// Leave empty to use keyword-based intent heuristics only.
+    /// </summary>
+    public string IntentClassificationModel { get; set; } = string.Empty;
+
+    /// <summary>HTTP timeout for intent classification calls (seconds). Default 12.</summary>
+    public int IntentClassificationTimeoutSeconds { get; set; } = 12;
 }
 
