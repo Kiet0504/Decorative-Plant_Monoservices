@@ -92,6 +92,7 @@ public class UserAccount : BaseEntity
     public ICollection<ShoppingCart> ShoppingCarts { get; set; } = new List<ShoppingCart>();
     public ICollection<OrderHeader> Orders { get; set; } = new List<OrderHeader>();
     public ICollection<ProductReview> ProductReviews { get; set; } = new List<ProductReview>();
+    public ICollection<WishlistItem> WishlistItems { get; set; } = new List<WishlistItem>();
     public ICollection<GardenPlant> GardenPlants { get; set; } = new List<GardenPlant>();
     public ICollection<CultivationLog> CultivationLogs { get; set; } = new List<CultivationLog>();
     public ICollection<ReturnRequest> ReturnRequests { get; set; } = new List<ReturnRequest>();

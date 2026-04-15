@@ -52,6 +52,7 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<Voucher> Vouchers { get; set; } = null!;
     public DbSet<Promotion> Promotions { get; set; } = null!;
     public DbSet<ShoppingCart> ShoppingCarts { get; set; } = null!;
+    public DbSet<WishlistItem> WishlistItems { get; set; } = null!;
     public DbSet<OrderHeader> OrderHeaders { get; set; } = null!;
     public DbSet<OrderItem> OrderItems { get; set; } = null!;
     public DbSet<PaymentTransaction> PaymentTransactions { get; set; } = null!;

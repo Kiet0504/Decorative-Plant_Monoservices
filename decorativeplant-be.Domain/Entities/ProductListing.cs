@@ -21,4 +21,5 @@ public class ProductListing
     public PlantBatch? Batch { get; set; }
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
     public ICollection<ProductReview> ProductReviews { get; set; } = new List<ProductReview>();
+    public ICollection<WishlistItem> WishlistItems { get; set; } = new List<WishlistItem>();
 }

@@ -21,6 +21,7 @@ public interface IApplicationDbContext
     DbSet<Voucher> Vouchers { get; }
     DbSet<Promotion> Promotions { get; }
     DbSet<ShoppingCart> ShoppingCarts { get; }
+    DbSet<WishlistItem> WishlistItems { get; }
     DbSet<OrderHeader> OrderHeaders { get; }
     DbSet<OrderItem> OrderItems { get; }
     DbSet<PaymentTransaction> PaymentTransactions { get; }
