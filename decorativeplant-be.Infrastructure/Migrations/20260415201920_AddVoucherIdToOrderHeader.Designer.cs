@@ -3,6 +3,7 @@ using System;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using decorativeplant_be.Infrastructure.Data;
@@ -12,9 +13,11 @@ using decorativeplant_be.Infrastructure.Data;
 namespace decorativeplant_be.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260415201920_AddVoucherIdToOrderHeader")]
+    partial class AddVoucherIdToOrderHeader
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1741,36 +1744,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.ToTable("voucher", (string)null);
                 });
 
-            modelBuilder.Entity("decorativeplant_be.Domain.Entities.WishlistItem", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasDefaultValueSql("gen_random_uuid()");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<Guid>("ListingId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ListingId");
-
-                    b.HasIndex("UserId");
-
-                    b.HasIndex("UserId", "ListingId")
-                        .IsUnique();
-
-                    b.ToTable("wishlist_item", (string)null);
-                });
-
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.AiTrainingFeedback", b =>
                 {
                     b.HasOne("decorativeplant_be.Domain.Entities.UserAccount", "User")
@@ -2328,25 +2301,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Navigation("Branch");
                 });
 
-            modelBuilder.Entity("decorativeplant_be.Domain.Entities.WishlistItem", b =>
-                {
-                    b.HasOne("decorativeplant_be.Domain.Entities.ProductListing", "Listing")
-                        .WithMany("WishlistItems")
-                        .HasForeignKey("ListingId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("decorativeplant_be.Domain.Entities.UserAccount", "User")
-                        .WithMany("WishlistItems")
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Listing");
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.AutomationRule", b =>
                 {
                     b.Navigation("ExecutionLogs");
@@ -2476,8 +2430,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Navigation("OrderItems");
 
                     b.Navigation("ProductReviews");
-
-                    b.Navigation("WishlistItems");
                 });
 
             modelBuilder.Entity("decorativeplant_be.Domain.Entities.Supplier", b =>
@@ -2504,8 +2456,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Navigation("ShoppingCarts");
 
                     b.Navigation("StaffAssignments");
-
-                    b.Navigation("WishlistItems");
                 });
 #pragma warning restore 612, 618
         }
