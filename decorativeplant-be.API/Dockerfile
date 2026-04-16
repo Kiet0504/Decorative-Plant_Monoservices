@@ -32,7 +32,13 @@ RUN dotnet publish "./decorativeplant-be.API.csproj" -c $BUILD_CONFIGURATION -o 
 FROM base AS final
 # Install gosu to fix Data Protection volume permissions (run chown as root, then exec as app user)
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends gosu libgssapi-krb5-2 \
+# Ubuntu mirrors occasionally sync and cause hash/size mismatches; use a stable mirror + retries.
+RUN if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+      sed -i 's|http://archive.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources && \
+      sed -i 's|http://security.ubuntu.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources ; \
+    fi && \
+    apt-get update -o Acquire::Retries=5 && \
+    apt-get install -y --no-install-recommends gosu libgssapi-krb5-2 \
     && rm -rf /var/lib/apt/lists/*
 COPY decorativeplant-be.API/entrypoint.sh /entrypoint.sh
 # Fix potential Windows CRLF issues

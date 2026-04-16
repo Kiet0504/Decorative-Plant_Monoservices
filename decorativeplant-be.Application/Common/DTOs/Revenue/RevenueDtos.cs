@@ -32,4 +32,5 @@ public class TopProductRevenueDto
     public int UnitsSold { get; set; }
     public string UnitPrice { get; set; } = "0";
     public string TotalRevenue { get; set; } = "0";
+    public string? ImageUrl { get; set; }
 }
