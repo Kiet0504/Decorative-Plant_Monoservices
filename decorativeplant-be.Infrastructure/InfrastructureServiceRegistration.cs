@@ -94,6 +94,7 @@ public static class InfrastructureServiceRegistration
         // Register Background Jobs
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.MonthlyQuotaResetJob>();
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.PendingOrderCleanupJob>();
+        services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.CareTaskReminderJob>();
 
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();

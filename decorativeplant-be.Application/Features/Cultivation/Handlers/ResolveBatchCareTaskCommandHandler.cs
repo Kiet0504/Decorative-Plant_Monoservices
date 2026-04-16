@@ -42,6 +42,45 @@ public class ResolveBatchCareTaskCommandHandler : IRequestHandler<ResolveBatchCa
         detailsDict["status"] = "Done";
         log.Details = CultivationMapper.BuildJson(detailsDict);
 
+        // 3. Handle Recurrence: If recurring, create the next instance
+        if (detailsDict.ContainsKey("repeat_every") && detailsDict["repeat_every"] != "None")
+        {
+            var repeatEvery = detailsDict["repeat_every"];
+            if (DateTime.TryParse(detailsDict["due_date"], out var currentDueDate))
+            {
+                var nextDueDate = repeatEvery switch
+                {
+                    "Daily" => currentDueDate.AddDays(1),
+                    "Weekly" => currentDueDate.AddDays(7),
+                    "Biweekly" => currentDueDate.AddDays(14),
+                    "Monthly" => currentDueDate.AddMonths(1),
+                    _ => currentDueDate
+                };
+
+                var nextDetails = new Dictionary<string, string>(detailsDict)
+                {
+                    ["status"] = "Pending",
+                    ["due_date"] = nextDueDate.ToString("yyyy-MM-ddTHH:mm:ss"),
+                };
+                // Remove last_notified_at for the new task
+                nextDetails.Remove("last_notified_at");
+
+                var nextLog = new CultivationLog
+                {
+                    Id = Guid.NewGuid(),
+                    BatchId = log.BatchId,
+                    LocationId = log.LocationId,
+                    ActivityType = log.ActivityType,
+                    Description = log.Description,
+                    Details = CultivationMapper.BuildJson(nextDetails),
+                    PerformedAt = null,
+                    PerformedBy = null
+                };
+
+                _context.CultivationLogs.Add(nextLog);
+            }
+        }
+
         await _context.SaveChangesAsync(cancellationToken);
         return true;
     }

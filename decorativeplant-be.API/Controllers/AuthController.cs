@@ -184,7 +184,8 @@ public class AuthController : BaseController
         if (u.Role != "admin" && u.Role != "customer")
         {
             branchId = await _context.StaffAssignments
-                .Where(sa => sa.StaffId == u.Id && sa.IsPrimary)
+                .Where(sa => sa.StaffId == u.Id)
+                .OrderByDescending(sa => sa.IsPrimary)
                 .Select(sa => (Guid?)sa.BranchId)
                 .FirstOrDefaultAsync();
         }
