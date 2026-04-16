@@ -11,7 +11,7 @@ public class GetIotAlertsQueryHandler : IRequestHandler<GetIotAlertsQuery, IEnum
 
     public async Task<IEnumerable<IotAlertDto>> Handle(GetIotAlertsQuery request, CancellationToken cancellationToken)
     {
-        var alerts = await _repo.GetIotAlertsAsync(request.DeviceId, cancellationToken);
+        var alerts = await _repo.GetIotAlertsAsync(request.DeviceId, request.BranchId, cancellationToken);
         return alerts.Select(a => new IotAlertDto
         {
             Id = a.Id,
@@ -19,6 +19,8 @@ public class GetIotAlertsQueryHandler : IRequestHandler<GetIotAlertsQuery, IEnum
             ComponentKey = a.ComponentKey,
             AlertInfo = a.AlertInfo,
             ResolutionInfo = a.ResolutionInfo,
+            BranchId = a.Device?.BranchId,
+            BranchName = a.Device?.Branch?.Name,
             CreatedAt = a.CreatedAt
         });
     }

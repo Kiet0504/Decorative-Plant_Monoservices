@@ -80,6 +80,12 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
             if (primaryAssignment != null)
             {
                 claims.Add(new Claim("branch_id", primaryAssignment.BranchId.ToString()));
+                
+                var branch = await _context.Branches.FindAsync(new object[] { primaryAssignment.BranchId }, cancellationToken);
+                if (branch != null)
+                {
+                    claims.Add(new Claim("branch_name", branch.Name));
+                }
             }
         }
 

@@ -36,6 +36,8 @@ public class BatchCareTaskDto
     public string Date { get; set; } = string.Empty;        // DueDate from Details
     public string Status { get; set; } = "Pending";         // Based on PerformedAt + Details.Status
     public string RepeatEvery { get; set; } = string.Empty; // From Details
+    public Guid? BranchId { get; set; }
+    public string? BranchName { get; set; }
 }
 
 public class BatchCareTaskDetailDto : BatchCareTaskDto

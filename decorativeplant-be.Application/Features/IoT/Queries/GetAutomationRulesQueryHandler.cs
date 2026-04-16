@@ -11,7 +11,7 @@ public class GetAutomationRulesQueryHandler : IRequestHandler<GetAutomationRules
 
     public async Task<IEnumerable<AutomationRuleDto>> Handle(GetAutomationRulesQuery request, CancellationToken cancellationToken)
     {
-        var rules = await _repo.GetAutomationRulesAsync(request.DeviceId, cancellationToken);
+        var rules = await _repo.GetAutomationRulesAsync(request.DeviceId, request.BranchId, cancellationToken);
         return rules.Select(ToDto);
     }
 
@@ -20,6 +20,8 @@ public class GetAutomationRulesQueryHandler : IRequestHandler<GetAutomationRules
         Id = r.Id, DeviceId = r.DeviceId, Name = r.Name,
         Priority = r.Priority, IsActive = r.IsActive,
         Schedule = r.Schedule, Conditions = r.Conditions, Actions = r.Actions,
+        BranchId = r.Device?.BranchId,
+        BranchName = r.Device?.Branch?.Name,
         CreatedAt = r.CreatedAt
     };
 }

@@ -4,6 +4,7 @@ namespace decorativeplant_be.Application.Features.HealthCheck.Queries;
 
 public class GetHealthSummaryQuery : IRequest<HealthSummaryDto>
 {
+    public Guid? BranchId { get; set; }
 }
 
 public class HealthSummaryDto

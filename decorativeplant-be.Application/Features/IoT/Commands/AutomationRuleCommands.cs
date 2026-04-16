@@ -19,7 +19,7 @@ public static class AutomationRuleMqttNotifier
         var device = await repo.GetIotDeviceByIdAsync(deviceId.Value, ct);
         if (device == null || string.IsNullOrEmpty(device.SecretKey)) return;
 
-        var rules = await repo.GetAutomationRulesAsync(deviceId.Value, ct);
+        var rules = await repo.GetAutomationRulesAsync(deviceId.Value, null, ct);
         var activeRules = rules.Where(r => r.IsActive).Select(ToDto).ToList();
         var json = JsonSerializer.Serialize(activeRules, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
         await mqttService.PublishRulesUpdateAsync(device.SecretKey, json, ct);

@@ -21,9 +21,9 @@ public class CareTasksController : BaseController
     /// </summary>
     [HttpGet]
     [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
-    public async Task<ActionResult<ApiResponse<PagedResultDto<BatchCareTaskDto>>>> GetCareTasks([FromQuery] string? status, [FromQuery] string? searchTerm, [FromQuery] string? sortOrder, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
+    public async Task<ActionResult<ApiResponse<PagedResultDto<BatchCareTaskDto>>>> GetCareTasks([FromQuery] string? status, [FromQuery] string? searchTerm, [FromQuery] string? sortOrder, [FromQuery] Guid? branchId, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
     {
-        var query = new GetBatchCareTasksQuery { Status = status, SearchTerm = searchTerm, SortOrder = sortOrder, Page = page, PageSize = pageSize };
+        var query = new GetBatchCareTasksQuery { Status = status, SearchTerm = searchTerm, SortOrder = sortOrder, BranchId = branchId, Page = page, PageSize = pageSize };
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<PagedResultDto<BatchCareTaskDto>>.SuccessResponse(result, "Care tasks retrieved."));
     }
@@ -36,9 +36,9 @@ public class CareTasksController : BaseController
     /// </summary>
     [HttpGet("summary")]
     [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
-    public async Task<ActionResult<ApiResponse<BatchCareTasksSummary>>> GetSummary()
+    public async Task<ActionResult<ApiResponse<BatchCareTasksSummary>>> GetSummary([FromQuery] Guid? branchId)
     {
-        var query = new GetBatchCareTasksSummaryQuery();
+        var query = new GetBatchCareTasksSummaryQuery { BranchId = branchId };
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<BatchCareTasksSummary>.SuccessResponse(result, "Summary retrieved."));
     }

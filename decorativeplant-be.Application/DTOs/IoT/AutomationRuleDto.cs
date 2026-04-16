@@ -12,6 +12,8 @@ public class AutomationRuleDto
     public JsonDocument? Schedule { get; set; }
     public JsonDocument? Conditions { get; set; }
     public JsonDocument? Actions { get; set; }
+    public Guid? BranchId { get; set; }
+    public string? BranchName { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
 

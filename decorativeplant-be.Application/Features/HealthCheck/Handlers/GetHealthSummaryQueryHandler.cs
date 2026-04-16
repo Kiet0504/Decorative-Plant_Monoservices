@@ -16,10 +16,19 @@ public class GetHealthSummaryQueryHandler : IRequestHandler<GetHealthSummaryQuer
 
     public async Task<HealthSummaryDto> Handle(GetHealthSummaryQuery request, CancellationToken cancellationToken)
     {
-        var totalBatch = await _context.PlantBatches.CountAsync(cancellationToken);
-        var totalPlant = await _context.PlantBatches.SumAsync(b => b.CurrentTotalQuantity ?? 0, cancellationToken);
-        var totalReportIncidents = await _context.HealthIncidents.CountAsync(cancellationToken);
-        var critical = await _context.HealthIncidents.CountAsync(i => i.Severity == "Critical", cancellationToken);
+        var batchQuery = _context.PlantBatches.AsNoTracking();
+        var incidentQuery = _context.HealthIncidents.AsNoTracking();
+
+        if (request.BranchId.HasValue)
+        {
+            batchQuery = batchQuery.Where(b => b.BranchId == request.BranchId.Value);
+            incidentQuery = incidentQuery.Where(i => i.Batch != null && i.Batch.BranchId == request.BranchId.Value);
+        }
+
+        var totalBatch = await batchQuery.CountAsync(cancellationToken);
+        var totalPlant = await batchQuery.SumAsync(b => b.CurrentTotalQuantity ?? 0, cancellationToken);
+        var totalReportIncidents = await incidentQuery.CountAsync(cancellationToken);
+        var critical = await incidentQuery.CountAsync(i => i.Severity == "Critical", cancellationToken);
 
         return new HealthSummaryDto
         {

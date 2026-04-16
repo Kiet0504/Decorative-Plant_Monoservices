@@ -23,7 +23,7 @@ public class GetDeviceRulesQueryHandler : IRequestHandler<GetDeviceRulesQuery, I
             throw new UnauthorizedAccessException("Invalid or inactive device.");
         }
 
-        var rules = await _repo.GetAutomationRulesAsync(device.Id, cancellationToken);
+        var rules = await _repo.GetAutomationRulesAsync(device.Id, null, cancellationToken);
         return rules.Where(r => r.IsActive).Select(ToDto);
     }
 

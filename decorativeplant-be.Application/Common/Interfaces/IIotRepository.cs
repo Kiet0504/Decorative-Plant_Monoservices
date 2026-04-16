@@ -16,14 +16,14 @@ public interface IIotRepository
     Task DeleteIotDeviceAsync(IotDevice device, CancellationToken cancellationToken);
 
     // CRUD for IotAlert
-    Task<IEnumerable<IotAlert>> GetIotAlertsAsync(Guid? deviceId, CancellationToken cancellationToken);
+    Task<IEnumerable<IotAlert>> GetIotAlertsAsync(Guid? deviceId, Guid? branchId, CancellationToken cancellationToken);
     Task<IotAlert?> GetIotAlertByIdAsync(Guid id, CancellationToken cancellationToken);
     Task<IotAlert> CreateIotAlertAsync(IotAlert alert, CancellationToken cancellationToken);
     Task UpdateIotAlertAsync(IotAlert alert, CancellationToken cancellationToken);
     Task DeleteIotAlertAsync(IotAlert alert, CancellationToken cancellationToken);
 
     // CRUD for AutomationRule
-    Task<IEnumerable<AutomationRule>> GetAutomationRulesAsync(Guid? deviceId, CancellationToken cancellationToken);
+    Task<IEnumerable<AutomationRule>> GetAutomationRulesAsync(Guid? deviceId, Guid? branchId, CancellationToken cancellationToken);
     Task<AutomationRule?> GetAutomationRuleByIdAsync(Guid id, CancellationToken cancellationToken);
     Task<AutomationRule> CreateAutomationRuleAsync(AutomationRule rule, CancellationToken cancellationToken);
     Task UpdateAutomationRuleAsync(AutomationRule rule, CancellationToken cancellationToken);

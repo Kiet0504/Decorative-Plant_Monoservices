@@ -33,9 +33,9 @@ public class IotController : BaseController
     }
 
     [HttpGet("devices")]
-    public async Task<ActionResult<IEnumerable<IotDeviceDto>>> GetDevices()
+    public async Task<ActionResult<IEnumerable<IotDeviceDto>>> GetDevices([FromQuery] Guid? branchId)
     {
-        var devices = await Mediator.Send(new GetIotDevicesQuery());
+        var devices = await Mediator.Send(new GetIotDevicesQuery { BranchId = branchId });
         return Ok(devices);
     }
 

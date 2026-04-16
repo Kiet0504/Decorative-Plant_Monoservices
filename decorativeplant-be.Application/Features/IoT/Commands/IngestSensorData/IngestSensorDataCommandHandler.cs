@@ -54,7 +54,7 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
         await _iotRepository.UpdateIotDeviceAsync(device, cancellationToken);
 
         // --- Automatic Alert Generation ---
-        var rules = await _iotRepository.GetAutomationRulesAsync(device.Id, cancellationToken);
+        var rules = await _iotRepository.GetAutomationRulesAsync(device.Id, null, cancellationToken);
         var activeRules = rules.Where(r => r.IsActive);
 
         foreach (var rule in activeRules)
