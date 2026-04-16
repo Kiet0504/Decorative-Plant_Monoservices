@@ -18,6 +18,11 @@ public class GetIotDevicesQueryHandler : IRequestHandler<GetIotDevicesQuery, IEn
     {
         var devices = await _iotRepository.GetIotDevicesAsync(cancellationToken);
         
+        if (request.BranchId.HasValue)
+        {
+            devices = devices.Where(d => d.BranchId == request.BranchId.Value).ToList();
+        }
+        
         return devices.Select(d => new IotDeviceDto
         {
             Id = d.Id,
@@ -29,6 +34,7 @@ public class GetIotDevicesQueryHandler : IRequestHandler<GetIotDevicesQuery, IEn
             Type = ExtractJsonField(d.DeviceInfo, "type"),
             LocationName = d.Location?.Name,
             Status = d.Status,
+            BranchName = d.Branch?.Name,
             ActivityLog = d.ActivityLog,
             Components = d.Components
         }).ToList();

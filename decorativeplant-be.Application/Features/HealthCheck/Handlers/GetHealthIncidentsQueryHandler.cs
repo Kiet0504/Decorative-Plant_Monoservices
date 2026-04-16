@@ -21,6 +21,7 @@ public class GetHealthIncidentsQueryHandler : IRequestHandler<GetHealthIncidents
     {
         var query = _context.HealthIncidents
             .Include(i => i.Batch)
+                .ThenInclude(b => b!.Branch)
             .AsNoTracking();
 
         if (request.BranchId.HasValue)

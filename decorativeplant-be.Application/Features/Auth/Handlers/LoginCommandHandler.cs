@@ -73,13 +73,20 @@ public class LoginCommandHandler : IRequestHandler<LoginCommand, TokenResponse>
         // Add branch_id claim for staff roles
         if (roleNorm != "admin" && roleNorm != "customer")
         {
-            var primaryAssignment = await _context.StaffAssignments
-                .Where(sa => sa.StaffId == user.Id && sa.IsPrimary)
+            var assignment = await _context.StaffAssignments
+                .Where(sa => sa.StaffId == user.Id)
+                .OrderByDescending(sa => sa.IsPrimary) // Primary first, then any
                 .FirstOrDefaultAsync(cancellationToken);
 
-            if (primaryAssignment != null)
+            if (assignment != null)
             {
-                claims.Add(new Claim("branch_id", primaryAssignment.BranchId.ToString()));
+                claims.Add(new Claim("branch_id", assignment.BranchId.ToString()));
+                
+                var branch = await _context.Branches.FindAsync(new object[] { assignment.BranchId }, cancellationToken);
+                if (branch != null)
+                {
+                    claims.Add(new Claim("branch_name", branch.Name));
+                }
             }
         }
 

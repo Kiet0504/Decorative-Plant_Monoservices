@@ -11,11 +11,11 @@ namespace decorativeplant_be.API.Controllers;
 [Authorize]
 public class AutomationRulesController : BaseController
 {
-    /// <summary>Get all automation rules. Filter by deviceId.</summary>
+    /// <summary>Get all automation rules. Filter by deviceId and branchId.</summary>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<AutomationRuleDto>>> GetRules([FromQuery] Guid? deviceId)
+    public async Task<ActionResult<IEnumerable<AutomationRuleDto>>> GetRules([FromQuery] Guid? deviceId, [FromQuery] Guid? branchId)
     {
-        var result = await Mediator.Send(new GetAutomationRulesQuery { DeviceId = deviceId });
+        var result = await Mediator.Send(new GetAutomationRulesQuery { DeviceId = deviceId, BranchId = branchId });
         return Ok(result);
     }
 

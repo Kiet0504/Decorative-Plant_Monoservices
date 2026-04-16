@@ -9,6 +9,8 @@ public class IotAlertDto
     public string? ComponentKey { get; set; }
     public JsonDocument? AlertInfo { get; set; }
     public JsonDocument? ResolutionInfo { get; set; }
+    public Guid? BranchId { get; set; }
+    public string? BranchName { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
 

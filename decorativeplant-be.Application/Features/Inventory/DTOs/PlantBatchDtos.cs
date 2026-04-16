@@ -18,6 +18,9 @@ public class PlantBatchDto
     // JSONB Fields
     public object? SourceInfo { get; set; }
     public object? Specs { get; set; }
+    // Display Fields
+    public string? HealthStatus { get; set; }
+    public string? Stage { get; set; }
     
     public int InitialQuantity { get; set; }
     public int CurrentTotalQuantity { get; set; }

@@ -27,8 +27,15 @@ public class GetBatchCareTasksQueryHandler : IRequestHandler<GetBatchCareTasksQu
         var query = _context.CultivationLogs
             .Include(c => c.Batch)
                 .ThenInclude(b => b!.Taxonomy)
+            .Include(c => c.Batch)
+                .ThenInclude(b => b!.Branch)
             .AsNoTracking()
             .AsQueryable();
+            
+        if (request.BranchId.HasValue)
+        {
+            query = query.Where(c => c.Batch != null && c.Batch.BranchId == request.BranchId.Value);
+        }
 
         // 1. Initial Filtering (Database Level)
         if (!string.IsNullOrEmpty(request.Status) && !request.Status.Equals("All Status", StringComparison.OrdinalIgnoreCase))

@@ -42,6 +42,7 @@ public class IotRepository : IIotRepository
     {
         return await _context.Set<IotDevice>().AsNoTracking()
             .Include(d => d.Location)
+            .Include(d => d.Branch)
             .ToListAsync(cancellationToken);
     }
 
@@ -49,6 +50,7 @@ public class IotRepository : IIotRepository
     {
         return await _context.Set<IotDevice>()
             .Include(d => d.Location)
+            .Include(d => d.Branch)
             .FirstOrDefaultAsync(d => d.Id == id, cancellationToken);
     }
 
@@ -71,12 +73,17 @@ public class IotRepository : IIotRepository
     }
 
     // --- IotAlert ---
-    public async Task<IEnumerable<IotAlert>> GetIotAlertsAsync(Guid? deviceId, CancellationToken cancellationToken)
+    public async Task<IEnumerable<IotAlert>> GetIotAlertsAsync(Guid? deviceId, Guid? branchId, CancellationToken cancellationToken)
     {
         var query = _context.Set<IotAlert>().AsNoTracking();
         if (deviceId.HasValue)
             query = query.Where(a => a.DeviceId == deviceId.Value);
-        return await query.OrderByDescending(a => a.CreatedAt).ToListAsync(cancellationToken);
+        if (branchId.HasValue)
+            query = query.Where(a => a.Device != null && a.Device.BranchId == branchId.Value);
+        return await query.OrderByDescending(a => a.CreatedAt)
+            .Include(a => a.Device)
+                .ThenInclude(d => d!.Branch)
+            .ToListAsync(cancellationToken);
     }
 
     public async Task<IotAlert?> GetIotAlertByIdAsync(Guid id, CancellationToken cancellationToken)
@@ -103,12 +110,17 @@ public class IotRepository : IIotRepository
     }
 
     // --- AutomationRule ---
-    public async Task<IEnumerable<AutomationRule>> GetAutomationRulesAsync(Guid? deviceId, CancellationToken cancellationToken)
+    public async Task<IEnumerable<AutomationRule>> GetAutomationRulesAsync(Guid? deviceId, Guid? branchId, CancellationToken cancellationToken)
     {
         var query = _context.Set<AutomationRule>().AsNoTracking();
         if (deviceId.HasValue)
             query = query.Where(r => r.DeviceId == deviceId.Value);
-        return await query.OrderByDescending(r => r.Priority).ToListAsync(cancellationToken);
+        if (branchId.HasValue)
+            query = query.Where(r => r.Device != null && r.Device.BranchId == branchId.Value);
+        return await query.OrderByDescending(r => r.Priority)
+            .Include(r => r.Device)
+                .ThenInclude(d => d!.Branch)
+            .ToListAsync(cancellationToken);
     }
 
     public async Task<AutomationRule?> GetAutomationRuleByIdAsync(Guid id, CancellationToken cancellationToken)

@@ -20,6 +20,8 @@ public class HealthIncidentDto
     public DateTime? ResolvedAt { get; set; }
     public Guid? ResolvedBy { get; set; }
     public string? ResolvedByName { get; set; }
+    public Guid? BranchId { get; set; }
+    public string? BranchName { get; set; }
 }
 
 public class CreateHealthIncidentDto

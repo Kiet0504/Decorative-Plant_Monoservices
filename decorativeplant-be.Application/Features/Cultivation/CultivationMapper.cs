@@ -54,7 +54,9 @@ public static class CultivationMapper
             Frequency = frequency,
             Date = dueDate,
             Status = status,
-            RepeatEvery = repeatEvery
+            RepeatEvery = repeatEvery,
+            BranchId = entity.Batch?.BranchId,
+            BranchName = entity.Batch?.Branch?.Name
         };
     }
 

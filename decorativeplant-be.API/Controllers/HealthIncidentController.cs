@@ -103,9 +103,9 @@ public class HealthIncidentController : BaseController
     /// </summary>
     [HttpGet("summary")]
     [Authorize(Roles = "admin,branch_manager,store_staff,cultivation_staff")]
-    public async Task<ActionResult<ApiResponse<HealthSummaryDto>>> GetSummary()
+    public async Task<ActionResult<ApiResponse<HealthSummaryDto>>> GetSummary([FromQuery] Guid? branchId)
     {
-        var result = await Mediator.Send(new GetHealthSummaryQuery());
+        var result = await Mediator.Send(new GetHealthSummaryQuery { BranchId = branchId });
         return Ok(ApiResponse<HealthSummaryDto>.SuccessResponse(result, "Health summary retrieved."));
     }
 }

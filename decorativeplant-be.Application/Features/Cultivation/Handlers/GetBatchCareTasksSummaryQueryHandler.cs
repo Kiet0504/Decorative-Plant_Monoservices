@@ -17,9 +17,15 @@ public class GetBatchCareTasksSummaryQueryHandler : IRequestHandler<GetBatchCare
 
     public async Task<BatchCareTasksSummary> Handle(GetBatchCareTasksSummaryQuery request, CancellationToken cancellationToken)
     {
-        var pendingTasks = await _context.CultivationLogs
+        var query = _context.CultivationLogs.AsNoTracking();
+        
+        if (request.BranchId.HasValue)
+        {
+            query = query.Where(c => c.Batch != null && c.Batch.BranchId == request.BranchId.Value);
+        }
+
+        var pendingTasks = await query
             .Where(c => c.PerformedAt == null)
-            .AsNoTracking()
             .ToListAsync(cancellationToken);
 
         return new BatchCareTasksSummary

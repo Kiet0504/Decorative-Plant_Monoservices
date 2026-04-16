@@ -12,6 +12,7 @@ public class IotDeviceDto
     public string? Name { get; set; }
     public string? Type { get; set; }
     public string? Status { get; set; }
+    public string? BranchName { get; set; }
     public string? LocationName { get; set; }
     public JsonDocument? ActivityLog { get; set; }
     public JsonDocument? Components { get; set; }

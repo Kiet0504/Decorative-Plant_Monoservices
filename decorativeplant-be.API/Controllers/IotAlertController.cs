@@ -12,11 +12,11 @@ namespace decorativeplant_be.API.Controllers;
 [Authorize]
 public class IotAlertController : BaseController
 {
-    /// <summary>Get all IoT alerts. Filter by deviceId.</summary>
+    /// <summary>Get all IoT alerts. Filter by deviceId and branchId.</summary>
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<IotAlertDto>>> GetAlerts([FromQuery] Guid? deviceId)
+    public async Task<ActionResult<IEnumerable<IotAlertDto>>> GetAlerts([FromQuery] Guid? deviceId, [FromQuery] Guid? branchId)
     {
-        var result = await Mediator.Send(new GetIotAlertsQuery { DeviceId = deviceId });
+        var result = await Mediator.Send(new GetIotAlertsQuery { DeviceId = deviceId, BranchId = branchId });
         return Ok(result);
     }
 
