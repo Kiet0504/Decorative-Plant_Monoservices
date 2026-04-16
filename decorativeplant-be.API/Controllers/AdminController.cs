@@ -558,6 +558,181 @@ public class AdminController : ControllerBase
         });
     }
 
+    // ─── Revenue ──────────────────────────────────────────────────────────
+
+    [HttpGet("revenue")]
+    public async Task<IActionResult> GetRevenue(CancellationToken ct)
+    {
+        var validStatuses = new[] { "confirmed", "processing", "shipping", "delivered", "completed" };
+
+        // 1. Load qualifying orders with items in one round-trip.
+        var orders = await _context.OrderHeaders
+            .AsNoTracking()
+            .Include(o => o.OrderItems)
+            .Where(o => o.Status != null && validStatuses.Contains(o.Status))
+            .ToListAsync(ct);
+
+        // Branch lookup
+        var branchMap = await _context.Branches.AsNoTracking()
+            .ToDictionaryAsync(b => b.Id, b => new { b.Name, Address = b.ContactInfo }, ct);
+
+        // 2. Per-order computation: parse financials once, then attribute items to branches.
+        var branchAgg = new Dictionary<Guid, (string Name, string Address, decimal Gross, decimal DiscountShare, int OrderIds)>();
+        var monthlyAgg = new Dictionary<string, decimal>(); // "2026-01" → net revenue
+        var productAgg = new Dictionary<string, (string Title, int UnitsSold, decimal UnitPrice, decimal Revenue)>();
+
+        decimal totalOrderRevenue = 0;
+        int totalOrderCount = orders.Count;
+
+        foreach (var order in orders)
+        {
+            // Parse order-level financials
+            decimal orderSubtotal = 0, orderDiscount = 0, orderTotal = 0;
+            if (order.Financials != null)
+            {
+                var fin = order.Financials.RootElement;
+                orderSubtotal = TryParseDecimal(fin, "subtotal");
+                orderDiscount = TryParseDecimal(fin, "discount");
+                orderTotal = TryParseDecimal(fin, "total");
+            }
+            totalOrderRevenue += orderTotal;
+
+            // Monthly bucket
+            var monthKey = (order.CreatedAt ?? DateTime.UtcNow).ToString("yyyy-MM");
+            monthlyAgg[monthKey] = monthlyAgg.GetValueOrDefault(monthKey) + orderTotal;
+
+            // Per-item attribution
+            foreach (var item in order.OrderItems)
+            {
+                decimal itemSubtotal = 0;
+                decimal itemUnitPrice = 0;
+                if (item.Pricing != null)
+                {
+                    var pr = item.Pricing.RootElement;
+                    itemSubtotal = TryParseDecimal(pr, "subtotal");
+                    itemUnitPrice = TryParseDecimal(pr, "unit_price");
+                }
+
+                // Pro-rata discount: branch share = orderDiscount × (itemSubtotal / orderSubtotal)
+                decimal discountShare = orderSubtotal > 0
+                    ? Math.Round(orderDiscount * (itemSubtotal / orderSubtotal), 0)
+                    : 0;
+
+                var branchId = item.BranchId ?? Guid.Empty;
+                if (!branchAgg.ContainsKey(branchId))
+                {
+                    var branchName = "Unknown";
+                    var branchAddress = "";
+                    if (branchId != Guid.Empty && branchMap.TryGetValue(branchId, out var bi))
+                    {
+                        branchName = bi.Name;
+                        if (bi.Address != null)
+                        {
+                            var addr = bi.Address.RootElement;
+                            branchAddress = addr.TryGetProperty("address", out var a) ? a.GetString() ?? "" : "";
+                        }
+                    }
+                    branchAgg[branchId] = (branchName, branchAddress, 0, 0, 0);
+                }
+                var cur = branchAgg[branchId];
+                branchAgg[branchId] = (cur.Name, cur.Address, cur.Gross + itemSubtotal, cur.DiscountShare + discountShare, cur.OrderIds);
+
+                // Product aggregation (by title snapshot for simplicity)
+                var title = "Unknown";
+                if (item.Snapshots != null && item.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
+                    title = ts.GetString() ?? "Unknown";
+
+                if (!productAgg.ContainsKey(title))
+                    productAgg[title] = (title, 0, itemUnitPrice, 0);
+                var pc = productAgg[title];
+                productAgg[title] = (pc.Title, pc.UnitsSold + item.Quantity, itemUnitPrice > 0 ? itemUnitPrice : pc.UnitPrice, pc.Revenue + itemSubtotal);
+            }
+
+            // Count distinct orders per branch
+            foreach (var branchId in order.OrderItems.Select(i => i.BranchId ?? Guid.Empty).Distinct())
+            {
+                if (branchAgg.ContainsKey(branchId))
+                {
+                    var c = branchAgg[branchId];
+                    branchAgg[branchId] = (c.Name, c.Address, c.Gross, c.DiscountShare, c.OrderIds + 1);
+                }
+            }
+        }
+
+        // 3. Subscription revenue
+        decimal subscriptionRevenue = 0;
+        var subs = await _context.UserSubscriptions.AsNoTracking()
+            .Where(s => s.Status == "Active" || s.Status == "Expired")
+            .ToListAsync(ct);
+        foreach (var s in subs)
+        {
+            if (decimal.TryParse(s.AmountPaid, System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out var amt))
+                subscriptionRevenue += amt;
+        }
+
+        // 4. Build response
+        var avgOrderValue = totalOrderCount > 0 ? Math.Round(totalOrderRevenue / totalOrderCount, 0) : 0;
+
+        var branchRevenue = branchAgg
+            .Where(kv => kv.Key != Guid.Empty)
+            .OrderByDescending(kv => kv.Value.Gross - kv.Value.DiscountShare)
+            .Select(kv => new
+            {
+                branchId = kv.Key,
+                branch = kv.Value.Name,
+                address = kv.Value.Address,
+                orders = kv.Value.OrderIds,
+                grossRevenue = kv.Value.Gross.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+                discountShare = kv.Value.DiscountShare.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+                netRevenue = (kv.Value.Gross - kv.Value.DiscountShare).ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+            })
+            .ToList();
+
+        var monthly = monthlyAgg
+            .OrderBy(kv => kv.Key)
+            .Select(kv => new { month = kv.Key, value = kv.Value.ToString("0", System.Globalization.CultureInfo.InvariantCulture) })
+            .ToList();
+
+        var topProducts = productAgg.Values
+            .OrderByDescending(p => p.Revenue)
+            .Take(10)
+            .Select(p => new
+            {
+                species = p.Title,
+                unitSold = p.UnitsSold,
+                unitPrice = p.UnitPrice.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+                revenue = p.Revenue.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+            })
+            .ToList();
+
+        return Ok(new
+        {
+            totalRevenue = (totalOrderRevenue + subscriptionRevenue).ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+            orderRevenue = totalOrderRevenue.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+            subscriptionRevenue = subscriptionRevenue.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+            avgOrderValue = avgOrderValue.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+            totalOrders = totalOrderCount,
+            branchRevenue,
+            monthly,
+            topProducts,
+        });
+    }
+
+    private static decimal TryParseDecimal(JsonElement el, string prop)
+    {
+        if (el.TryGetProperty(prop, out var v))
+        {
+            var raw = v.ValueKind == JsonValueKind.Number
+                ? v.GetDecimal().ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : v.GetString();
+            if (decimal.TryParse(raw, System.Globalization.NumberStyles.Any,
+                    System.Globalization.CultureInfo.InvariantCulture, out var d))
+                return d;
+        }
+        return 0;
+    }
+
     // ─── Helpers ────────────────────────────────────────────────────────────
 
     private static void SplitDisplayName(string? displayName, out string firstName, out string lastName)

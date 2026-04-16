@@ -73,6 +73,14 @@ public interface IApplicationDbContext
     /// This prevents race conditions during concurrent stock reservations.
     /// </summary>
     Task AcquireStockLockAsync(Guid listingId, CancellationToken ct = default);
-    
+
+    /// <summary>
+    /// Acquires a PostgreSQL row-level lock (FOR UPDATE) on the Voucher row
+    /// for the given voucherId. Must be called within a transaction scope.
+    /// Prevents concurrent checkouts from both incrementing <c>used_count</c>
+    /// past <c>usage_limit</c>.
+    /// </summary>
+    Task AcquireVoucherLockAsync(Guid voucherId, CancellationToken ct = default);
+
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

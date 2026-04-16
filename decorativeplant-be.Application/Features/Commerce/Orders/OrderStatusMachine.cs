@@ -21,6 +21,14 @@ public static class OrderStatusMachine
     public const string Returned   = "returned";
     public const string Expired    = "expired";
 
+    // BOPIS (Buy Online, Pickup In Store) flow. Runs parallel to the standard delivery flow:
+    //   deposit_paid → stock_transferring → ready_for_pickup → picked_up (terminal)
+    // Cancellation allowed while step < 2 (i.e. before stock physically lands at pickup branch).
+    public const string DepositPaid       = "deposit_paid";
+    public const string StockTransferring = "stock_transferring";
+    public const string ReadyForPickup    = "ready_for_pickup";
+    public const string PickedUp          = "picked_up";
+
     /// <summary>
     /// Canonical forward progression index. -1 = outside main flow.
     /// </summary>
@@ -33,6 +41,11 @@ public static class OrderStatusMachine
         [Shipped]    = 2,
         [Delivered]  = 3,
         [Completed]  = 4,
+        // BOPIS flow parallel to standard delivery flow
+        [DepositPaid]       = 0,
+        [StockTransferring] = 1,
+        [ReadyForPickup]    = 2,
+        [PickedUp]          = 4,
         [Cancelled]  = -1,
         [Returned]   = -1,
         [Expired]    = -1,
@@ -40,8 +53,24 @@ public static class OrderStatusMachine
 
     private static readonly HashSet<string> Terminal = new(StringComparer.OrdinalIgnoreCase)
     {
-        Completed, Cancelled, Returned, Expired
+        Completed, Cancelled, Returned, Expired, PickedUp
     };
+
+    // Split the active (non-terminal) states into two disjoint flows. CanTransition
+    // blocks crossing between them so e.g. deposit_paid cannot drift into confirmed.
+    private static readonly HashSet<string> BopisFlow = new(StringComparer.OrdinalIgnoreCase)
+    {
+        DepositPaid, StockTransferring, ReadyForPickup, PickedUp
+    };
+
+    private static readonly HashSet<string> StandardFlow = new(StringComparer.OrdinalIgnoreCase)
+    {
+        Pending, Confirmed, Processing, Shipping, Shipped, Delivered, Completed
+    };
+
+    /// <summary>True if the order is in the BOPIS pickup flow (not the delivery flow).</summary>
+    public static bool IsBopis(string? status) =>
+        status != null && BopisFlow.Contains(status);
 
     public static bool IsTerminal(string? status) =>
         status != null && Terminal.Contains(status);
@@ -65,14 +94,22 @@ public static class OrderStatusMachine
 
         if (dst == Cancelled)
         {
-            // Shopee: cancel only before the seller hands to carrier.
+            // Shopee: cancel only before the seller hands to carrier (delivery flow)
+            // or before stock lands at the pickup branch (BOPIS flow). Both rules
+            // reduce to step < 2 because BOPIS and standard flows share step numbers.
             return Step.TryGetValue(src, out var s) && s < 2;
         }
-        if (dst == Expired)  return src == Pending;
-        if (dst == Returned) return src is Delivered or Completed;
+        if (dst == Expired)  return src == Pending || src == DepositPaid;
+        if (dst == Returned) return src is Delivered or Completed or PickedUp;
 
         if (!Step.TryGetValue(src, out var srcStep) || srcStep < 0) return false;
         if (!Step.TryGetValue(dst, out var dstStep) || dstStep < 0) return false;
+
+        // Block crossing between BOPIS and standard delivery flows (e.g. deposit_paid → confirmed).
+        // Terminal side-exits (Cancelled/Expired/Returned) are already handled above.
+        var srcBopis = BopisFlow.Contains(src);
+        var dstBopis = BopisFlow.Contains(dst);
+        if (srcBopis != dstBopis) return false;
 
         return dstStep > srcStep;
     }

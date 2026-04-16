@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -8,6 +9,7 @@ using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders;
 using decorativeplant_be.Application.Features.Commerce.Returns.Commands;
 using decorativeplant_be.Application.Features.Commerce.Returns.Queries;
+using decorativeplant_be.Application.Features.Commerce.Vouchers;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 
@@ -143,7 +145,7 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
                 info["resolved_by"] = cmd.ActorUserId?.ToString();
                 entity.Info = JsonDocument.Parse(JsonSerializer.Serialize(info));
 
-                // On approval: transition order to returned + restore stock.
+                // On approval: transition order to returned + restore stock + free the voucher.
                 if (status == "approved" && order != null)
                 {
                     OrderStatusMachine.ApplyFromExternalSource(
@@ -154,6 +156,38 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
 
                     if (order.OrderItems != null)
                         await _stockService.RestoreOrderStockAsync(order.OrderItems, ct);
+
+                    if (order.VoucherId.HasValue)
+                        await VoucherUsageHelper.RollbackUsageAsync(_context, order.VoucherId.Value, ct);
+                }
+
+                // On refunded: book a pending offline refund PaymentTransaction so finance can
+                // reconcile the money movement. PayOS has no programmatic refund API — the
+                // actual payout happens out-of-band.
+                if (status == "refunded" && order != null)
+                {
+                    var paidAmount = ResolvePaidAmount(order);
+                    if (paidAmount > 0)
+                    {
+                        _context.PaymentTransactions.Add(new PaymentTransaction
+                        {
+                            Id = Guid.NewGuid(),
+                            OrderId = order.Id,
+                            TransactionCode = $"REF-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                            Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                            {
+                                provider = "payos",
+                                type = "refund",
+                                amount = paidAmount.ToString("0", CultureInfo.InvariantCulture),
+                                status = "pending",
+                                reason = cmd.Request.ResolutionNote ?? "Return refunded",
+                                refunded_by = cmd.ActorUserId,
+                                source = "ReturnRequestRefunded",
+                                return_id = entity.Id,
+                            })),
+                            CreatedAt = DateTime.UtcNow,
+                        });
+                    }
                 }
 
                 await _context.SaveChangesAsync(ct);
@@ -167,6 +201,16 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
         });
 
         return CreateReturnRequestHandler.MapToResponse(entity, order?.OrderCode);
+    }
+
+    private static decimal ResolvePaidAmount(OrderHeader order)
+    {
+        if (order.Financials == null) return 0;
+        var root = order.Financials.RootElement;
+        string? raw = null;
+        if (root.TryGetProperty("amount_paid", out var ap)) raw = ap.GetString();
+        else if (root.TryGetProperty("total", out var tt)) raw = tt.GetString();
+        return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0;
     }
 }
 

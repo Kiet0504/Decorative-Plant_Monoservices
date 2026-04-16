@@ -9,6 +9,7 @@ using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
+using decorativeplant_be.Application.Features.Commerce.Vouchers;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 using decorativeplant_be.Application.Features.Commerce.Orders;
@@ -93,12 +94,22 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             // 3. Resolve voucher (applied once to the whole order)
             decimal totalDiscount = 0;
             Voucher? voucher = null;
+            Guid? appliedVoucherId = null;
 
             if (!string.IsNullOrEmpty(req.VoucherCode))
             {
-                voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
+                var pending = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
+                if (pending != null)
+                {
+                    // Lock the voucher row inside this transaction, then re-fetch with AsNoTracking
+                    // discarded so the tracked entity reflects the locked row's latest state. Parallel
+                    // checkouts now serialize on this row and can't both pass the usage_limit check.
+                    await _context.AcquireVoucherLockAsync(pending.Id, ct);
+                    voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Id == pending.Id, ct);
+                }
                 if (voucher != null)
                 {
+
                     // For chain store model, voucher applies to the whole order
                     // (branch-specific vouchers are still checked for eligibility)
                     if (voucher.BranchId.HasValue)
@@ -154,6 +165,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                             rules["used_count"] = usedCount + 1;
                             voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
                         }
+                        appliedVoucherId = voucher.Id;
                     }
                     else
                     {
@@ -204,6 +216,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 Id = Guid.NewGuid(),
                 OrderCode = orderCode,
                 UserId = cmd.UserId,
+                VoucherId = appliedVoucherId,
                 TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
                 Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = cartSubtotal.ToString("0", CultureInfo.InvariantCulture), shipping = shippingFee.ToString("0", CultureInfo.InvariantCulture), discount = totalDiscount.ToString("0", CultureInfo.InvariantCulture), tax = "0", total = orderTotal.ToString("0", CultureInfo.InvariantCulture) })),
                 Status = "pending",
@@ -379,11 +392,19 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
 {
     private readonly IApplicationDbContext _context;
     private readonly IStockService _stockService;
+    private readonly IPayOSService _payOS;
+    private readonly ILogger<CancelOrderHandler> _logger;
 
-    public CancelOrderHandler(IApplicationDbContext context, IStockService stockService)
+    public CancelOrderHandler(
+        IApplicationDbContext context,
+        IStockService stockService,
+        IPayOSService payOS,
+        ILogger<CancelOrderHandler> logger)
     {
         _context = context;
         _stockService = stockService;
+        _payOS = payOS;
+        _logger = logger;
     }
 
     public async Task<OrderResponse> Handle(CancelOrderCommand cmd, CancellationToken ct)
@@ -401,6 +422,55 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
         if (cmd.UserId.HasValue && order.UserId != cmd.UserId)
             throw new BadRequestException("You can only cancel your own orders.");
 
+        // Paid orders past "pending" must go through the return/refund flow so money movement
+        // is explicit. OrderStatusMachine alone allows step<2 to cancel (i.e. confirmed → cancelled),
+        // but once money has settled we can't silently cancel — refuse here.
+        if (!string.Equals(order.Status, OrderStatusMachine.Pending, StringComparison.OrdinalIgnoreCase))
+        {
+            var orderPayments = await _context.PaymentTransactions
+                .Where(p => p.OrderId == order.Id && p.Details != null)
+                .ToListAsync(ct);
+            var hasPaidPayment = orderPayments.Any(p =>
+            {
+                var root = p.Details!.RootElement;
+                var status = root.TryGetProperty("status", out var st) ? st.GetString() : null;
+                var type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null;
+                return string.Equals(status, "paid", StringComparison.OrdinalIgnoreCase)
+                       && !string.Equals(type, "refund", StringComparison.OrdinalIgnoreCase);
+            });
+            if (hasPaidPayment)
+            {
+                throw new BadRequestException(
+                    "This order has already been paid. Please submit a return request instead of cancelling.");
+            }
+        }
+
+        var isBopis = OrderStatusMachine.IsBopis(order.Status);
+
+        // For BOPIS: if any linked StockTransfer has already shipped, stock is in transit
+        // and cancellation would strand it. Require admin reversal via the inventory flow instead.
+        if (isBopis)
+        {
+            var transfers = await _context.StockTransfers
+                .Where(t => t.LogisticsInfo != null)
+                .ToListAsync(ct);
+            var linked = transfers.Where(t =>
+                t.LogisticsInfo!.RootElement.TryGetProperty("order_id", out var oid)
+                && oid.TryGetGuid(out var g) && g == order.Id).ToList();
+            if (linked.Any(t => string.Equals(t.Status, "shipped", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(t.Status, "received", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new BadRequestException(
+                    "Cannot cancel: stock transfer already shipped. Reverse the transfer from the inventory module first.");
+            }
+            // Cancel the open transfer requests so stock isn't reserved downstream.
+            foreach (var t in linked)
+            {
+                if (!string.Equals(t.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    t.Status = "cancelled";
+            }
+        }
+
         OrderStatusMachine.Apply(order, OrderStatusMachine.Cancelled, cmd.UserId,
             reason: cmd.Request.CancellationReason, source: "CustomerCancel");
 
@@ -414,9 +484,53 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
         notes["cancellation_reason"] = cmd.Request.CancellationReason;
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
 
-        // Restore stock with pessimistic locking via StockService
-        if (order.OrderItems != null)
-            await _stockService.RestoreOrderStockAsync(order.OrderItems, ct);
+        if (isBopis)
+        {
+            // BOPIS did not reserve stock at creation (sourcing happens at StockTransfer-approve),
+            // so there is nothing to RestoreOrderStock. Instead, record a deposit refund for finance.
+            decimal depositPaid = 0;
+            if (order.Financials != null
+                && order.Financials.RootElement.TryGetProperty("amount_paid", out var apEl)
+                && decimal.TryParse(apEl.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var ap))
+            {
+                depositPaid = ap;
+            }
+            if (depositPaid > 0)
+            {
+                _context.PaymentTransactions.Add(new PaymentTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    OrderId = order.Id,
+                    TransactionCode = $"REF-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                    Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        provider = "offline",
+                        type = "refund",
+                        amount = depositPaid.ToString("0", CultureInfo.InvariantCulture),
+                        status = "pending", // actual refund handled out-of-band by finance
+                        reason = cmd.Request.CancellationReason,
+                        refunded_by = cmd.UserId
+                    })),
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+        }
+        else
+        {
+            // Standard delivery flow: restore reserved stock with pessimistic locking.
+            if (order.OrderItems != null)
+                await _stockService.RestoreOrderStockAsync(order.OrderItems, ct);
+        }
+
+        // Roll back voucher usage so the same user can re-apply the code.
+        if (order.VoucherId.HasValue)
+            await VoucherUsageHelper.RollbackUsageAsync(_context, order.VoucherId.Value, ct);
+
+        // Payment reconciliation:
+        //   - Unpaid PayOS link     → cancel the link so user can't still pay and land on a cancelled order.
+        //   - Already-paid PayOS    → record a pending refund PaymentTransaction for finance (PayOS has no
+        //                             programmatic refund; actual money movement is out-of-band).
+        await TryHandlePayOSOnCancelAsync(order, cmd.Request.CancellationReason, cmd.UserId, ct);
 
         await _context.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
@@ -428,6 +542,74 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
             throw;
         }
         }); // end strategy.ExecuteAsync
+    }
+
+    /// <summary>
+    /// Cancels the PayOS payment link if still unpaid, otherwise records a pending
+    /// offline refund PaymentTransaction so finance can reconcile. Swallows and logs
+    /// errors — gateway hiccups must not block order cancellation.
+    /// </summary>
+    private async Task TryHandlePayOSOnCancelAsync(
+        OrderHeader order,
+        string? reason,
+        Guid? actorId,
+        CancellationToken ct)
+    {
+        var payments = await _context.PaymentTransactions
+            .Where(p => p.OrderId == order.Id && p.Details != null)
+            .ToListAsync(ct);
+
+        foreach (var p in payments)
+        {
+            if (p.Details == null) continue;
+            var root = p.Details.RootElement;
+            var provider = root.TryGetProperty("provider", out var pv) ? pv.GetString() : null;
+            if (!string.Equals(provider, "payos", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var status = root.TryGetProperty("status", out var st) ? st.GetString() : null;
+            var amount = root.TryGetProperty("amount", out var am) ? am.GetString() : null;
+
+            if (string.Equals(status, "paid", StringComparison.OrdinalIgnoreCase))
+            {
+                _context.PaymentTransactions.Add(new PaymentTransaction
+                {
+                    Id = Guid.NewGuid(),
+                    OrderId = order.Id,
+                    TransactionCode = $"REF-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                    Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        provider = "payos",
+                        type = "refund",
+                        amount,
+                        status = "pending",
+                        reason,
+                        refunded_by = actorId,
+                        source_payment_id = p.Id,
+                    })),
+                    CreatedAt = DateTime.UtcNow,
+                });
+                continue;
+            }
+
+            // Unpaid link — cancel on PayOS so the user can't complete payment after cancellation.
+            if (!root.TryGetProperty("payos_order_code", out var pocEl)) continue;
+            long payosOrderCode = pocEl.ValueKind switch
+            {
+                JsonValueKind.Number => pocEl.GetInt64(),
+                JsonValueKind.String when long.TryParse(pocEl.GetString(), out var parsed) => parsed,
+                _ => 0,
+            };
+            if (payosOrderCode <= 0) continue;
+
+            try
+            {
+                await _payOS.CancelPaymentLinkAsync(payosOrderCode, reason, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "PayOS link cancel failed for order {OrderCode} (payos={PayOS}). Ignoring.", order.OrderCode, payosOrderCode);
+            }
+        }
     }
 }
 
@@ -514,7 +696,7 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
 public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopisOrderCommand, OrderResponse>
 {
     private readonly IApplicationDbContext _context;
-    
+
     public CreateOfflineBopisOrderHandler(IApplicationDbContext context)
     {
         _context = context;
@@ -523,74 +705,65 @@ public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopis
     public async Task<OrderResponse> Handle(CreateOfflineBopisOrderCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
-        
-        // 1. Calculate totals
+
         decimal cartSubtotal = req.Items.Sum(i => i.Quantity * i.UnitPrice);
         if (cartSubtotal <= 0)
-        {
             throw new BadRequestException("Order subtotal must be greater than 0");
-        }
 
-        // 2. Validate deposit (must be >= 30%)
         decimal minDeposit = cartSubtotal * 0.3m;
         if (req.DepositAmount < minDeposit)
-        {
             throw new BadRequestException($"Deposit amount must be at least 30% ({minDeposit.ToString("N0", CultureInfo.InvariantCulture)} VND)");
-        }
-        
-        decimal remainingBalance = cartSubtotal - req.DepositAmount;
-        if (remainingBalance < 0) remainingBalance = 0;
+
+        decimal remainingBalance = Math.Max(0, cartSubtotal - req.DepositAmount);
 
         var orderCode = $"BOPIS-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
         var orderId = Guid.NewGuid();
 
-        // 3. Create Order Items and Stock Transfers
         var orderItems = new List<OrderItem>();
         foreach (var itemReq in req.Items)
         {
-            // Note: BranchId is currently null for revenue purpose (awaiting admin approval)
-            var orderItem = new OrderItem
+            // BranchId stays null until ApproveStockTransferCommandHandler picks a source branch
+            // and back-fills it to attribute revenue.
+            orderItems.Add(new OrderItem
             {
                 Id = Guid.NewGuid(),
                 OrderId = orderId,
                 ListingId = itemReq.ListingId,
                 Quantity = itemReq.Quantity,
-                Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+                Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new {
                     unit_price = itemReq.UnitPrice.ToString("0", CultureInfo.InvariantCulture),
-                    subtotal = (itemReq.Quantity * itemReq.UnitPrice).ToString("0", CultureInfo.InvariantCulture) 
+                    subtotal = (itemReq.Quantity * itemReq.UnitPrice).ToString("0", CultureInfo.InvariantCulture)
                 }))
-            };
-            orderItems.Add(orderItem);
+            });
 
-            // Create a pending stock transfer (Sourcing request)
-            var stockTransfer = new StockTransfer
+            _context.StockTransfers.Add(new StockTransfer
             {
                 Id = Guid.NewGuid(),
                 TransferCode = $"REQ-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..6].ToUpper()}",
                 ToBranchId = req.PickupBranchId,
                 Quantity = itemReq.Quantity,
                 Status = "requested",
-                LogisticsInfo = JsonDocument.Parse(JsonSerializer.Serialize(new 
+                LogisticsInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
                 {
                     order_id = orderId,
                     order_code = orderCode,
                     listing_id = itemReq.ListingId
                 })),
                 CreatedAt = DateTime.UtcNow
-            };
-            _context.StockTransfers.Add(stockTransfer);
+            });
         }
 
-        // 4. Create Order Header
         var order = new OrderHeader
         {
             Id = orderId,
             OrderCode = orderCode,
-            TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { 
-                order_type = "offline", 
-                fulfillment_method = "bopis_transfer" 
+            UserId = req.CustomerUserId,
+            TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new {
+                order_type = "offline",
+                fulfillment_method = "bopis_transfer",
+                created_by = cmd.BrandManagerId
             })),
-            Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+            Financials = JsonDocument.Parse(JsonSerializer.Serialize(new {
                 subtotal = cartSubtotal.ToString("0", CultureInfo.InvariantCulture),
                 discount = "0",
                 tax = "0",
@@ -599,13 +772,13 @@ public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopis
                 amount_paid = req.DepositAmount.ToString("0", CultureInfo.InvariantCulture),
                 remaining_balance = remainingBalance.ToString("0", CultureInfo.InvariantCulture)
             })),
-            Status = "deposit_paid", 
-            DeliveryAddress = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+            Status = OrderStatusMachine.DepositPaid,
+            DeliveryAddress = JsonDocument.Parse(JsonSerializer.Serialize(new {
                 pickup_branch_id = req.PickupBranchId,
                 recipient_name = req.CustomerName,
                 phone = req.CustomerPhone
             })),
-            Notes = JsonDocument.Parse(JsonSerializer.Serialize(new { 
+            Notes = JsonDocument.Parse(JsonSerializer.Serialize(new {
                 payment_method = req.PaymentMethod,
                 sourcing_required = true
             })),
@@ -613,9 +786,134 @@ public class CreateOfflineBopisOrderHandler : IRequestHandler<CreateOfflineBopis
             OrderItems = orderItems
         };
 
+        OrderStatusMachine.AppendHistory(order,
+            from: null, to: OrderStatusMachine.DepositPaid,
+            changedBy: cmd.BrandManagerId,
+            reason: "Offline BOPIS order created",
+            source: "BrandManagerCreate");
+
         _context.OrderHeaders.Add(order);
+
+        // Record deposit as a completed PaymentTransaction so finance/reporting stays in parity
+        // with online orders. Remaining balance is collected on pickup (MarkPickedUp handler).
+        _context.PaymentTransactions.Add(new PaymentTransaction
+        {
+            Id = Guid.NewGuid(),
+            OrderId = orderId,
+            TransactionCode = $"DEP-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+            Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                provider = "offline",
+                method = req.PaymentMethod,
+                type = "deposit",
+                amount = req.DepositAmount.ToString("0", CultureInfo.InvariantCulture),
+                status = "completed",
+                collected_by = cmd.BrandManagerId
+            })),
+            CreatedAt = DateTime.UtcNow
+        });
+
         await _context.SaveChangesAsync(ct);
 
+        return CreateOrderHandler.MapToResponse(order);
+    }
+}
+
+/// <summary>
+/// Store staff marks a BOPIS order as picked up after collecting the remaining balance
+/// at the counter. Transitions ready_for_pickup → picked_up (terminal) and finalizes stock
+/// deduction for revenue recognition.
+/// </summary>
+public class MarkOrderPickedUpHandler : IRequestHandler<MarkOrderPickedUpCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly IStockService _stockService;
+
+    public MarkOrderPickedUpHandler(IApplicationDbContext context, IStockService stockService)
+    {
+        _context = context;
+        _stockService = stockService;
+    }
+
+    public async Task<OrderResponse> Handle(MarkOrderPickedUpCommand cmd, CancellationToken ct)
+    {
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == cmd.OrderId, ct)
+            ?? throw new NotFoundException($"Order {cmd.OrderId} not found.");
+
+        if (!OrderStatusMachine.IsBopis(order.Status))
+            throw new BadRequestException("Only BOPIS orders can be marked as picked up.");
+
+        if (order.Status != OrderStatusMachine.ReadyForPickup)
+            throw new BadRequestException(
+                $"Order must be in '{OrderStatusMachine.ReadyForPickup}' state to mark as picked up (current: '{order.Status}').");
+
+        // Validate that the collected balance matches the outstanding amount.
+        decimal expected = 0;
+        if (order.Financials != null
+            && order.Financials.RootElement.TryGetProperty("remaining_balance", out var rbEl)
+            && decimal.TryParse(rbEl.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var rb))
+        {
+            expected = rb;
+        }
+        if (cmd.Request.BalanceCollected != expected)
+            throw new BadRequestException(
+                $"Collected amount {cmd.Request.BalanceCollected} does not match remaining balance {expected}.");
+
+        OrderStatusMachine.Apply(order, OrderStatusMachine.PickedUp, cmd.StaffUserId,
+            reason: "Customer picked up order", source: "StaffMarkPickedUp");
+
+        // Zero out remaining_balance and bump amount_paid to the order total.
+        if (order.Financials != null)
+        {
+            var fin = new Dictionary<string, object?>();
+            foreach (var p in order.Financials.RootElement.EnumerateObject())
+            {
+                fin[p.Name] = p.Value.ValueKind == JsonValueKind.String
+                    ? p.Value.GetString()
+                    : JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
+            }
+            if (fin.TryGetValue("total", out var totalObj)
+                && totalObj is string totalStr
+                && decimal.TryParse(totalStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var total))
+            {
+                fin["amount_paid"] = total.ToString("0", CultureInfo.InvariantCulture);
+            }
+            fin["remaining_balance"] = "0";
+            order.Financials = JsonDocument.Parse(JsonSerializer.Serialize(fin));
+        }
+
+        // Finalize stock: deduct reserved quantities so available/reserved line up.
+        // Safe for BOPIS because ApproveStockTransfer set OrderItem.BranchId to the source branch
+        // and ShipStockTransfer already decremented BatchStock. RestoreOrderStock path is NOT taken
+        // here — we just record the sale.
+        if (order.OrderItems != null && order.OrderItems.Count > 0)
+        {
+            await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
+        }
+
+        // Record the balance collection as a PaymentTransaction (skip if prepaid in full).
+        if (cmd.Request.BalanceCollected > 0)
+        {
+            _context.PaymentTransactions.Add(new PaymentTransaction
+            {
+                Id = Guid.NewGuid(),
+                OrderId = order.Id,
+                TransactionCode = $"BAL-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                {
+                    provider = "offline",
+                    method = cmd.Request.PaymentMethod,
+                    type = "balance",
+                    amount = cmd.Request.BalanceCollected.ToString("0", CultureInfo.InvariantCulture),
+                    status = "completed",
+                    collected_by = cmd.StaffUserId
+                })),
+                CreatedAt = DateTime.UtcNow
+            });
+        }
+
+        await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);
     }
 }

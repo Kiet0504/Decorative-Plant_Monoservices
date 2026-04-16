@@ -34,3 +34,10 @@ public class CreateOfflineBopisOrderCommand : IRequest<OrderResponse>
     public Guid BrandManagerId { get; set; }
     public CreateOfflineBopisRequest Request { get; set; } = null!;
 }
+
+public class MarkOrderPickedUpCommand : IRequest<OrderResponse>
+{
+    public Guid OrderId { get; set; }
+    public Guid StaffUserId { get; set; }
+    public MarkOrderPickedUpRequest Request { get; set; } = null!;
+}

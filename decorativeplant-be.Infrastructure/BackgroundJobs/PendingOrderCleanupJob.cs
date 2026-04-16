@@ -1,5 +1,6 @@
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders;
+using decorativeplant_be.Application.Features.Commerce.Vouchers;
 using decorativeplant_be.Application.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -100,6 +101,10 @@ public class PendingOrderCleanupJob : BackgroundService
                             var stockService = scope.ServiceProvider.GetRequiredService<IStockService>();
                             await stockService.RestoreOrderStockAsync(order.OrderItems, cancellationToken);
                         }
+
+                        // Roll back voucher usage so the code stays redeemable after expiration.
+                        if (order.VoucherId.HasValue)
+                            await VoucherUsageHelper.RollbackUsageAsync(context, order.VoucherId.Value, cancellationToken);
 
                         await context.SaveChangesAsync(cancellationToken);
                         await transaction.CommitAsync(cancellationToken);
