@@ -11,6 +11,7 @@ public class OrderHeader
     public Guid Id { get; set; }
     public string? OrderCode { get; set; }
     public Guid? UserId { get; set; }
+    public Guid? VoucherId { get; set; }
 
     public JsonDocument? TypeInfo { get; set; }
     public JsonDocument? Financials { get; set; }
@@ -22,6 +23,7 @@ public class OrderHeader
     public DateTime? ConfirmedAt { get; set; }
 
     public UserAccount? User { get; set; }
+    public Voucher? Voucher { get; set; }
 
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
     public ICollection<PaymentTransaction> PaymentTransactions { get; set; } = new List<PaymentTransaction>();

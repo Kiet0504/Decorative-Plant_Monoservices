@@ -44,6 +44,8 @@ public class CreateOfflineBopisRequest
     public Guid PickupBranchId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
     public string CustomerPhone { get; set; } = string.Empty;
+    // Optional: link the offline order to an existing customer account (walk-ins leave null).
+    public Guid? CustomerUserId { get; set; }
     public decimal DepositAmount { get; set; }
     public string PaymentMethod { get; set; } = "cash";
     public List<CreateOfflineBopisItemRequest> Items { get; set; } = new();
@@ -54,6 +56,14 @@ public class CreateOfflineBopisItemRequest
     public Guid ListingId { get; set; }
     public int Quantity { get; set; }
     public decimal UnitPrice { get; set; }
+}
+
+public class MarkOrderPickedUpRequest
+{
+    // Collected at the counter when the customer arrives. Must equal order.remaining_balance
+    // unless the order was fully prepaid, in which case 0 is accepted.
+    public decimal BalanceCollected { get; set; }
+    public string PaymentMethod { get; set; } = "cash";
 }
 
 // ── Response DTOs ──

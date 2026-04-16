@@ -2,6 +2,7 @@ using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Commands;
+using decorativeplant_be.Application.Features.Commerce.Orders;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -70,13 +71,28 @@ public class ApproveStockTransferCommandHandler : IRequestHandler<ApproveStockTr
                     {
                         query = query.Where(oi => oi.ListingId == listingId.Value);
                     }
-                    
+
                     var orderItem = await query.FirstOrDefaultAsync(cancellationToken);
-                    
+
                     if (orderItem != null)
                     {
                         // ATTRIBUTE REVENUE to the source branch!
                         orderItem.BranchId = transfer.FromBranchId;
+                    }
+
+                    // Advance linked BOPIS order: deposit_paid → stock_transferring.
+                    // Idempotent: Apply is a no-op when from == to, and CanTransition blocks
+                    // non-BOPIS orders (this transfer could exist for any kind of replenishment).
+                    var order = await _context.OrderHeaders
+                        .FirstOrDefaultAsync(o => o.Id == orderId, cancellationToken);
+                    if (order != null
+                        && OrderStatusMachine.IsBopis(order.Status)
+                        && order.Status == OrderStatusMachine.DepositPaid)
+                    {
+                        OrderStatusMachine.Apply(order, OrderStatusMachine.StockTransferring,
+                            changedBy: null,
+                            reason: $"Stock transfer {transfer.TransferCode} approved",
+                            source: "StockTransferApprove");
                     }
                 }
             }

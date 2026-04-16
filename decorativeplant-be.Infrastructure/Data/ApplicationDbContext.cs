@@ -86,6 +86,13 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
             new object[] { listingId }, ct);
     }
 
+    public async Task AcquireVoucherLockAsync(Guid voucherId, CancellationToken ct = default)
+    {
+        await Database.ExecuteSqlRawAsync(
+            "SELECT 1 FROM \"voucher\" WHERE \"Id\" = {0} FOR UPDATE",
+            new object[] { voucherId }, ct);
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);

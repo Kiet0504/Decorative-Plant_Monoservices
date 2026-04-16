@@ -1,4 +1,6 @@
 using decorativeplant_be.Application.Common.Interfaces;
+using decorativeplant_be.Application.Features.Commerce.Orders;
+using decorativeplant_be.Application.Features.Commerce.Vouchers;
 using decorativeplant_be.Application.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -75,17 +77,18 @@ public class PendingOrderCleanupJob : BackgroundService
                     using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
                     try
                     {
-                        order.Status = "expired";
+                        OrderStatusMachine.Apply(order, OrderStatusMachine.Expired,
+                            changedBy: null,
+                            reason: "Auto-expired due to payment timeout",
+                            source: "PendingOrderCleanupJob");
 
-                        // Add note about expiration
                         var notes = new Dictionary<string, object?>();
                         if (order.Notes != null)
                         {
                             foreach (var p in order.Notes.RootElement.EnumerateObject())
                             {
-                                notes[p.Name] = p.Value.ValueKind == JsonValueKind.String
-                                    ? p.Value.GetString()
-                                    : p.Value.GetRawText();
+                                if (p.Value.ValueKind == JsonValueKind.String) notes[p.Name] = p.Value.GetString();
+                                else notes[p.Name] = JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
                             }
                         }
                         notes["cancellation_reason"] = "Auto-expired due to payment timeout.";
@@ -98,6 +101,10 @@ public class PendingOrderCleanupJob : BackgroundService
                             var stockService = scope.ServiceProvider.GetRequiredService<IStockService>();
                             await stockService.RestoreOrderStockAsync(order.OrderItems, cancellationToken);
                         }
+
+                        // Roll back voucher usage so the code stays redeemable after expiration.
+                        if (order.VoucherId.HasValue)
+                            await VoucherUsageHelper.RollbackUsageAsync(context, order.VoucherId.Value, cancellationToken);
 
                         await context.SaveChangesAsync(cancellationToken);
                         await transaction.CommitAsync(cancellationToken);

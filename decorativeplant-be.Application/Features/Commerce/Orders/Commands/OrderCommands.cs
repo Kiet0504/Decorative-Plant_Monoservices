@@ -12,6 +12,7 @@ public class CreateOrderCommand : IRequest<List<OrderResponse>>
 public class UpdateOrderStatusCommand : IRequest<OrderResponse>
 {
     public Guid Id { get; set; }
+    public Guid? ActorUserId { get; set; }
     public UpdateOrderStatusRequest Request { get; set; } = null!;
 }
 
@@ -32,4 +33,11 @@ public class CreateOfflineBopisOrderCommand : IRequest<OrderResponse>
 {
     public Guid BrandManagerId { get; set; }
     public CreateOfflineBopisRequest Request { get; set; } = null!;
+}
+
+public class MarkOrderPickedUpCommand : IRequest<OrderResponse>
+{
+    public Guid OrderId { get; set; }
+    public Guid StaffUserId { get; set; }
+    public MarkOrderPickedUpRequest Request { get; set; } = null!;
 }

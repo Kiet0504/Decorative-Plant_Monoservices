@@ -2,6 +2,7 @@ using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using decorativeplant_be.Application.Features.Inventory.Commands;
+using decorativeplant_be.Application.Features.Commerce.Orders;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -114,6 +115,27 @@ public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTr
 
         // Update Transfer
         transfer.Status = "received";
+
+        // Advance linked BOPIS order: stock_transferring → ready_for_pickup.
+        // Non-BOPIS transfers (plain replenishment) have no linked order — skip.
+        if (transfer.LogisticsInfo != null
+            && transfer.LogisticsInfo.RootElement.TryGetProperty("order_id", out var orderIdEl)
+            && orderIdEl.TryGetGuid(out Guid linkedOrderId))
+        {
+            var linkedOrder = await _context.OrderHeaders
+                .FirstOrDefaultAsync(o => o.Id == linkedOrderId, cancellationToken);
+            if (linkedOrder != null
+                && OrderStatusMachine.IsBopis(linkedOrder.Status)
+                && linkedOrder.Status == OrderStatusMachine.StockTransferring)
+            {
+                // request.ReceivedBy is a free-form staff name string, so record it in the
+                // source/reason rather than the typed changedBy guid slot.
+                OrderStatusMachine.Apply(linkedOrder, OrderStatusMachine.ReadyForPickup,
+                    changedBy: null,
+                    reason: $"Stock transfer {transfer.TransferCode} received by {request.ReceivedBy ?? "staff"}",
+                    source: "StockTransferReceive");
+            }
+        }
         
         // Update Logistics Info
         transfer.LogisticsInfo = InventoryMapper.BuildLogisticsInfo(

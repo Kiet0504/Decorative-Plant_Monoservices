@@ -15,6 +15,7 @@ using decorativeplant_be.Infrastructure.Cache;
 using decorativeplant_be.Infrastructure.Email;
 using decorativeplant_be.Infrastructure.Services;
 using decorativeplant_be.Infrastructure.Ghn;
+using decorativeplant_be.Infrastructure.Ghtk;
 using decorativeplant_be.Infrastructure.Storage.S3;
 using decorativeplant_be.Infrastructure.Auth;
 using Amazon.S3;
@@ -80,6 +81,10 @@ public static class InfrastructureServiceRegistration
         services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
         services.AddHttpClient<IShippingService, GhnService>();
 
+        // Configure GHTK (Giao Hang Tiet Kiem) — parallel carrier. Docs: https://api.ghtk.vn/docs/
+        services.Configure<GhtkSettings>(configuration.GetSection(GhtkSettings.SectionName));
+        services.AddHttpClient<IGhtkShippingService, GhtkService>();
+
         // Register Branch Allocation Service (Chain Store model)
         services.AddScoped<decorativeplant_be.Application.Services.IBranchAllocationService,
                            decorativeplant_be.Application.Services.BranchAllocationService>();
@@ -94,6 +99,7 @@ public static class InfrastructureServiceRegistration
         // Register Background Jobs
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.MonthlyQuotaResetJob>();
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.PendingOrderCleanupJob>();
+        services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.AutoCompleteDeliveredOrdersJob>();
 
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();
