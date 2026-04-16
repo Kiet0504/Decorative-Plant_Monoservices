@@ -213,6 +213,10 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 OrderItems = orderItems
             };
 
+            // Seed status history
+            OrderStatusMachine.AppendHistory(order, from: null, to: OrderStatusMachine.Pending,
+                changedBy: cmd.UserId, reason: "Order created", source: "CreateOrder");
+
             _context.OrderHeaders.Add(order);
             _logger.LogInformation("Created unified Order {OrderCode} with {ItemCount} items from {BranchCount} branch(es)",
                 orderCode, orderItems.Count,
@@ -323,34 +327,51 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
         var normalizedStatus = cmd.Request.Status?.ToLowerInvariant() ?? "";
 
         // Block staff from setting "completed" — only the customer may do that via POST /confirm-receipt
-        if (normalizedStatus == "completed")
+        if (normalizedStatus == OrderStatusMachine.Completed)
             throw new BadRequestException("Only the customer can mark an order as completed (via Confirm Receipt).");
 
-        order.Status = normalizedStatus;
-        if (normalizedStatus == "confirmed") order.ConfirmedAt = DateTime.UtcNow;
+        // Validate + append audit entry
+        OrderStatusMachine.Apply(order, normalizedStatus, cmd.ActorUserId,
+            reason: cmd.Request.RejectionReason ?? cmd.Request.InternalNote,
+            source: "StaffUpdate");
 
-        var notesDict = new Dictionary<string, object?>();
-        if (order.Notes != null)
-        {
-            foreach (var p in order.Notes.RootElement.EnumerateObject())
-                notesDict[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
-        }
-
-        if (!string.IsNullOrEmpty(cmd.Request.InternalNote)) notesDict["internal_note"] = cmd.Request.InternalNote;
-        if (!string.IsNullOrEmpty(cmd.Request.RejectionReason)) notesDict["rejection_reason"] = cmd.Request.RejectionReason;
-        if (!string.IsNullOrEmpty(cmd.Request.TrackingCode)) notesDict["tracking_code"] = cmd.Request.TrackingCode;
-        if (!string.IsNullOrEmpty(cmd.Request.CarrierName)) notesDict["carrier_name"] = cmd.Request.CarrierName;
-
+        // Merge side-note fields (internal_note, tracking_code, carrier_name) while preserving history.
+        var notesDict = MergeNotes(order,
+            internalNote: cmd.Request.InternalNote,
+            rejectionReason: cmd.Request.RejectionReason,
+            trackingCode: cmd.Request.TrackingCode,
+            carrierName: cmd.Request.CarrierName);
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
 
         // If order is confirmed, try to create GHN shipments
-        if (normalizedStatus == "confirmed")
+        if (normalizedStatus == OrderStatusMachine.Confirmed)
         {
             await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
         }
 
         await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);
+    }
+
+    private static Dictionary<string, object?> MergeNotes(
+        OrderHeader order,
+        string? internalNote, string? rejectionReason,
+        string? trackingCode, string? carrierName)
+    {
+        var dict = new Dictionary<string, object?>();
+        if (order.Notes != null)
+        {
+            foreach (var p in order.Notes.RootElement.EnumerateObject())
+            {
+                if (p.Value.ValueKind == JsonValueKind.String) dict[p.Name] = p.Value.GetString();
+                else dict[p.Name] = JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
+            }
+        }
+        if (!string.IsNullOrEmpty(internalNote))     dict["internal_note"]    = internalNote;
+        if (!string.IsNullOrEmpty(rejectionReason))  dict["rejection_reason"] = rejectionReason;
+        if (!string.IsNullOrEmpty(trackingCode))     dict["tracking_code"]    = trackingCode;
+        if (!string.IsNullOrEmpty(carrierName))      dict["carrier_name"]     = carrierName;
+        return dict;
     }
 }
 
@@ -380,14 +401,16 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
         if (cmd.UserId.HasValue && order.UserId != cmd.UserId)
             throw new BadRequestException("You can only cancel your own orders.");
 
-        if (order.Status != "pending")
-            throw new BadRequestException("Only pending orders can be cancelled.");
+        OrderStatusMachine.Apply(order, OrderStatusMachine.Cancelled, cmd.UserId,
+            reason: cmd.Request.CancellationReason, source: "CustomerCancel");
 
-        order.Status = "cancelled";
         var notes = new Dictionary<string, object?>();
         if (order.Notes != null)
             foreach (var p in order.Notes.RootElement.EnumerateObject())
-                notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+            {
+                if (p.Value.ValueKind == JsonValueKind.String) notes[p.Name] = p.Value.GetString();
+                else notes[p.Name] = JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
+            }
         notes["cancellation_reason"] = cmd.Request.CancellationReason;
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
 
@@ -421,16 +444,16 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
         if (order.UserId != cmd.UserId)
             throw new BadRequestException("You can only confirm receipt for your own orders.");
 
-        var currentStatus = order.Status?.ToLowerInvariant();
-        if (currentStatus != "delivered" && currentStatus != "shipped")
-            throw new BadRequestException("Only delivered or shipped orders can be confirmed as received.");
-
-        order.Status = "completed";
+        OrderStatusMachine.Apply(order, OrderStatusMachine.Completed, cmd.UserId,
+            reason: "Customer confirmed receipt", source: "ConfirmReceipt");
 
         var notesDict = new Dictionary<string, object?>();
         if (order.Notes != null)
             foreach (var p in order.Notes.RootElement.EnumerateObject())
-                notesDict[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+            {
+                if (p.Value.ValueKind == JsonValueKind.String) notesDict[p.Name] = p.Value.GetString();
+                else notesDict[p.Name] = JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
+            }
         notesDict["completed_at"] = DateTime.UtcNow.ToString("o");
 
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));

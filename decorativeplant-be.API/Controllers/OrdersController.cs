@@ -7,6 +7,7 @@ using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
+using decorativeplant_be.Domain.Entities;
 using Microsoft.AspNetCore.RateLimiting;
 
 namespace decorativeplant_be.API.Controllers;
@@ -271,7 +272,11 @@ public class OrdersController : BaseController
 
         var mappedOrderStatus = MapGhnStatusToOrderStatus(request.TargetStatus);
         if (mappedOrderStatus != null)
-            order.Status = mappedOrderStatus;
+        {
+            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
+                .ApplyFromExternalSource(order, mappedOrderStatus, source: "GHN",
+                    reason: $"GHN status: {request.TargetStatus}");
+        }
 
         await context.SaveChangesAsync(CancellationToken.None);
 
@@ -304,7 +309,7 @@ public class OrdersController : BaseController
     [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
     public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateOrderStatusRequest request)
     {
-        var result = await Mediator.Send(new UpdateOrderStatusCommand { Id = id, Request = request });
+        var result = await Mediator.Send(new UpdateOrderStatusCommand { Id = id, ActorUserId = GetUserId(), Request = request });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
 
@@ -324,6 +329,71 @@ public class OrdersController : BaseController
         if (userId == null) return Unauthorized();
         var result = await Mediator.Send(new ConfirmReceiptCommand { OrderId = id, UserId = userId.Value });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order confirmed as received"));
+    }
+
+    /// <summary>
+    /// Webhook endpoint GHN calls when shipment status changes. Public — do not
+    /// rely on this for auth. Payload (minimal): { OrderCode, Status, Description }
+    /// where OrderCode is the GHN tracking code.
+    /// </summary>
+    [HttpPost("ghn/webhook")]
+    [AllowAnonymous]
+    public async Task<IActionResult> GhnWebhook(
+        [FromBody] GhnWebhookRequest payload,
+        [FromServices] IApplicationDbContext context)
+    {
+        if (string.IsNullOrWhiteSpace(payload.OrderCode) || string.IsNullOrWhiteSpace(payload.Status))
+            return BadRequest(ApiResponse<object>.ErrorResponse("Missing OrderCode or Status"));
+
+        // Find the OrderHeader containing this tracking code inside Notes.shipments[].
+        // JSON query avoided for Postgres portability; load candidates by Shipping row first.
+        var shipping = await context.Shippings
+            .FirstOrDefaultAsync(s => s.TrackingCode == payload.OrderCode);
+
+        OrderHeader? order = null;
+        if (shipping?.OrderId != null)
+        {
+            order = await context.OrderHeaders.Include(o => o.OrderItems)
+                .FirstOrDefaultAsync(o => o.Id == shipping.OrderId);
+        }
+
+        if (order == null)
+        {
+            // Fallback: scan Notes.shipments[].tracking_code in-app (small table).
+            var all = await context.OrderHeaders
+                .Where(o => o.Notes != null)
+                .ToListAsync();
+            order = all.FirstOrDefault(o =>
+                o.Notes != null &&
+                o.Notes.RootElement.TryGetProperty("shipments", out var sh) &&
+                sh.ValueKind == JsonValueKind.Array &&
+                sh.EnumerateArray().Any(s =>
+                    s.TryGetProperty("tracking_code", out var tc) &&
+                    tc.GetString() == payload.OrderCode));
+        }
+
+        if (order == null)
+            return NotFound(ApiResponse<object>.ErrorResponse("Order for tracking code not found"));
+
+        if (shipping != null) shipping.Status = payload.Status;
+
+        var mapped = MapGhnStatusToOrderStatus(payload.Status);
+        if (mapped != null)
+        {
+            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
+                .ApplyFromExternalSource(order, mapped, source: "GhnWebhook",
+                    reason: payload.Description ?? payload.Status);
+        }
+
+        await context.SaveChangesAsync(CancellationToken.None);
+        return Ok(ApiResponse<object>.SuccessResponse(new { orderId = order.Id, status = order.Status }));
+    }
+
+    public class GhnWebhookRequest
+    {
+        public string OrderCode { get; set; } = string.Empty; // GHN tracking code
+        public string Status { get; set; } = string.Empty;    // GHN status name
+        public string? Description { get; set; }
     }
 
     [HttpPost("offline-bopis-request")]

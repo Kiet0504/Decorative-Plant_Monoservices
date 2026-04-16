@@ -29,6 +29,9 @@ public interface IApplicationDbContext
     // Module 7: Reviews
     DbSet<ProductReview> ProductReviews { get; }
 
+    // Module 5: Returns
+    DbSet<ReturnRequest> ReturnRequests { get; }
+
     // Module 4: Inventory
     DbSet<PlantCategory> PlantCategories { get; }
     DbSet<BatchStock> BatchStocks { get; }

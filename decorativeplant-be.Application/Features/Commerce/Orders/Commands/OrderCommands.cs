@@ -12,6 +12,7 @@ public class CreateOrderCommand : IRequest<List<OrderResponse>>
 public class UpdateOrderStatusCommand : IRequest<OrderResponse>
 {
     public Guid Id { get; set; }
+    public Guid? ActorUserId { get; set; }
     public UpdateOrderStatusRequest Request { get; set; } = null!;
 }
 

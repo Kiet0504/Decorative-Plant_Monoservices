@@ -334,12 +334,19 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                         {
                             if (order.Status == "pending")
                             {
-                                order.Status = "cancelled";
+                                decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
+                                    .ApplyFromExternalSource(order,
+                                        decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Cancelled,
+                                        source: "PayOSWebhook",
+                                        reason: $"Payment failed (Code: {cmd.Webhook.Code})");
 
                                 var notes = new Dictionary<string, object?>();
                                 if (order.Notes != null)
                                     foreach (var p in order.Notes.RootElement.EnumerateObject())
-                                        notes[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+                                    {
+                                        if (p.Value.ValueKind == JsonValueKind.String) notes[p.Name] = p.Value.GetString();
+                                        else notes[p.Name] = JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
+                                    }
 
                                 notes["cancellation_reason"] = $"Payment failed or cancelled via PayOS Webhook (Code: {cmd.Webhook.Code}).";
                                 order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));

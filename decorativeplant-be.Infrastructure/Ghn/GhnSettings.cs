@@ -10,4 +10,11 @@ public class GhnSettings
     // Default origin address for shipments (HCM - Q1 - Ben Nghe)
     public int FromDistrictId { get; set; } = 1454;
     public string FromWardCode { get; set; } = "21211";
+
+    /// <summary>
+    /// Shared secret GHN sends as the "Token" header on every webhook call.
+    /// Configure in the GHN dashboard's "Hook Orders" setting and mirror here
+    /// via appsettings / env (GhnSettings__WebhookToken). Empty disables check.
+    /// </summary>
+    public string WebhookToken { get; set; } = string.Empty;
 }
