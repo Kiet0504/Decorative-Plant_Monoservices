@@ -24,7 +24,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
     {
         var batch = await _context.PlantBatches
             .Include(x => x.Taxonomy)
-                .ThenInclude(t => t.Category)
+                .ThenInclude(t => t!.Category)
             .Include(x => x.Branch)
             .FirstOrDefaultAsync(x => x.Id == request.BatchId, ct)
             ?? throw new NotFoundException($"Batch {request.BatchId} not found.");
@@ -70,7 +70,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
         // 3. CONSOLIDATION LOGIC: Find all stock records for this batch at this branch
         var allStocks = await _context.BatchStocks
             .Include(s => s.Location)
-            .Where(x => x.BatchId == batch.Id && x.Location.BranchId == batch.BranchId)
+            .Where(x => x.BatchId == batch.Id && x.Location!.BranchId == batch.BranchId)
             .ToListAsync(ct);
 
         int totalAvailable = 0;

@@ -49,7 +49,7 @@ public class GetHealthIncidentsQueryHandler : IRequestHandler<GetHealthIncidents
         {
             var search = request.SearchTerm.ToLower();
             query = query.Where(i => 
-                (i.Batch != null && i.Batch.BatchCode.ToLower().Contains(search)) ||
+                (i.Batch != null && i.Batch.BatchCode != null && i.Batch.BatchCode.ToLower().Contains(search)) ||
                 (i.IncidentType != null && i.IncidentType.ToLower().Contains(search)) ||
                 (i.Description != null && i.Description.ToLower().Contains(search)));
         }
