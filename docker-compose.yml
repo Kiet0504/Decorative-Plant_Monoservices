@@ -95,6 +95,19 @@ services:
       - AiDiagnosis__GeminiApiKey=${AiDiagnosis__GeminiApiKey:-}
       - AiDiagnosis__GeminiModel=${AiDiagnosis__GeminiModel:-gemini-2.5-flash}
       - AiDiagnosis__GeminiBaseUrl=${AiDiagnosis__GeminiBaseUrl:-https://generativelanguage.googleapis.com}
+      # When true, all IOllamaClient traffic and room-scan Ollama fallbacks use Gemini (requires AiDiagnosis__GeminiApiKey)
+      - AiRouting__UseGeminiOnly=${AiRouting__UseGeminiOnly:-false}
+      # Room scan — default Gemini for photo + rank; optional RoomScan__RankProvider=Ollama for local ranking only
+      - RoomScan__GeminiApiKey=${RoomScan__GeminiApiKey:-}
+      - RoomScan__GeminiModel=${RoomScan__GeminiModel:-}
+      - RoomScan__GeminiBaseUrl=${RoomScan__GeminiBaseUrl:-}
+      - RoomScan__RequestTimeoutSeconds=${RoomScan__RequestTimeoutSeconds:-120}
+      - RoomScan__MaxCatalogSnippets=${RoomScan__MaxCatalogSnippets:-48}
+      - RoomScan__MaxRecommendations=${RoomScan__MaxRecommendations:-5}
+      - RoomScan__RankProvider=${RoomScan__RankProvider:-Gemini}
+      - RoomScan__OllamaRankModel=${RoomScan__OllamaRankModel:-}
+      - RoomScan__OllamaVisionModel=${RoomScan__OllamaVisionModel:-}
+      - RoomScan__PipelineMode=${RoomScan__PipelineMode:-hybrid}
       - GhnSettings__BaseUrl=${GhnSettings__BaseUrl:-https://dev-online-gateway.ghn.vn}
       - GhnSettings__Token=${GhnSettings__Token:-}
       - GhnSettings__ShopId=${GhnSettings__ShopId:-0}
@@ -120,6 +133,10 @@ services:
       # Optional: JSON intent routing for image+caption (empty = keyword-only). May match Ollama__Model e.g. llama3.1:8b.
       - Ollama__IntentClassificationModel=${Ollama__IntentClassificationModel:-}
       - Ollama__IntentClassificationTimeoutSeconds=${Ollama__IntentClassificationTimeoutSeconds:-12}
+      # AI chat: block harmful / illegal phrasing before LLM calls (set false only for local debugging)
+      - ContentSafety__Enabled=${ContentSafety__Enabled:-true}
+      # AI chat: restrict replies to plants, shop, My Garden, room scan, diagnosis (set false only for local debugging)
+      - PlantAssistantScope__Enabled=${PlantAssistantScope__Enabled:-true}
       - AiCare__CacheTtlHours=${AiCare__CacheTtlHours:-24}
     ports:
       - "8080:8080"
