@@ -55,6 +55,7 @@ public static class CultivationMapper
             Date = dueDate,
             Status = status,
             RepeatEvery = repeatEvery,
+            BatchId = entity.BatchId,
             BranchId = entity.Batch?.BranchId,
             BranchName = entity.Batch?.Branch?.Name
         };
@@ -73,6 +74,9 @@ public static class CultivationMapper
             Date = baseDto.Date,
             Status = baseDto.Status,
             RepeatEvery = baseDto.RepeatEvery,
+            BatchId = baseDto.BatchId,
+            BranchId = baseDto.BranchId,
+            BranchName = baseDto.BranchName,
             Description = entity.Description ?? string.Empty,
             CareRequirement = ExtractValue(entity.Details, "care_requirement") ?? string.Empty
         };

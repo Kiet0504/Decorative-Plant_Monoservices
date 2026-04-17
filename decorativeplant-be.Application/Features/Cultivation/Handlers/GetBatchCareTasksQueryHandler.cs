@@ -51,28 +51,37 @@ public class GetBatchCareTasksQueryHandler : IRequestHandler<GetBatchCareTasksQu
             }
         }
 
-        // 2. Count Total (Database Level)
-        var totalCount = await query.CountAsync(cancellationToken);
+        // Fetch all items into memory since we need complex deduplication
+        var items = await query.ToListAsync(cancellationToken);
 
-        // 3. Sorting and Pagination
-        if (request.SortOrder?.ToLower() == "asc")
-        {
-            query = query.OrderBy(c => c.PerformedAt ?? DateTime.MaxValue);
-        }
-        else
-        {
-            query = query.OrderByDescending(c => c.PerformedAt ?? DateTime.MaxValue);
-        }
-
-        var items = await query
-            .Skip((request.Page - 1) * request.PageSize)
-            .Take(request.PageSize)
-            .ToListAsync(cancellationToken);
-
-        // 4. Mapping to DTO
+        // Map to DTO
         var dtos = items.Select(CultivationMapper.ToTaskDto).ToList();
 
-        // 5. In-Memory Post filtering (for JSONB properties)
+        // Deduplicate identical tasks in same batch (Rule: prioritize pending, otherwise newest done)
+        var deduplicatedDtos = new List<BatchCareTaskDto>();
+        foreach (var group in dtos.GroupBy(d => new { d.Batch, d.Activity }))
+        {
+            var tasksInGroup = group.ToList();
+            
+            // Sort by date descending
+            tasksInGroup = tasksInGroup.OrderByDescending(t => 
+                DateTime.TryParse(t.Date, out var date) ? date : DateTime.MinValue).ToList();
+
+            var pendingTask = tasksInGroup.FirstOrDefault(t => !t.Status.Equals("Done", StringComparison.OrdinalIgnoreCase));
+            
+            if (pendingTask != null)
+            {
+                deduplicatedDtos.Add(pendingTask);
+            }
+            else
+            {
+                deduplicatedDtos.Add(tasksInGroup.First());
+            }
+        }
+
+        dtos = deduplicatedDtos;
+
+        // In-Memory Post filtering
         if (!string.IsNullOrEmpty(request.Status) && 
             !request.Status.Equals("Done", StringComparison.OrdinalIgnoreCase) && 
             !request.Status.Equals("All Status", StringComparison.OrdinalIgnoreCase) &&
@@ -91,9 +100,17 @@ public class GetBatchCareTasksQueryHandler : IRequestHandler<GetBatchCareTasksQu
             ).ToList();
         }
 
+        var totalCount = dtos.Count;
+
+        // Apply pagination
+        var pagedDtos = dtos
+            .Skip((request.Page - 1) * request.PageSize)
+            .Take(request.PageSize)
+            .ToList();
+
         return new PagedResultDto<BatchCareTaskDto>
         {
-            Items = dtos,
+            Items = pagedDtos,
             TotalCount = totalCount,
             Page = request.Page,
             PageSize = request.PageSize
