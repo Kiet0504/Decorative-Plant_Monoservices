@@ -12,19 +12,36 @@ public class SubmitDiagnosisCommandHandler : IRequestHandler<SubmitDiagnosisComm
     private readonly IGardenRepository _gardenRepository;
     private readonly IAiDiagnosisService _aiDiagnosisService;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IUserContentSafetyService _contentSafety;
+    private readonly IPlantAssistantScopeService _plantScope;
 
     public SubmitDiagnosisCommandHandler(
         IGardenRepository gardenRepository,
         IAiDiagnosisService aiDiagnosisService,
-        IUnitOfWork unitOfWork)
+        IUnitOfWork unitOfWork,
+        IUserContentSafetyService contentSafety,
+        IPlantAssistantScopeService plantScope)
     {
         _gardenRepository = gardenRepository;
         _aiDiagnosisService = aiDiagnosisService;
         _unitOfWork = unitOfWork;
+        _contentSafety = contentSafety;
+        _plantScope = plantScope;
     }
 
     public async Task<PlantDiagnosisDto> Handle(SubmitDiagnosisCommand request, CancellationToken cancellationToken)
     {
+        if (!_contentSafety.IsAllowed(request.UserDescription))
+        {
+            throw new ValidationException(_contentSafety.BlockedApiMessage);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.UserDescription) &&
+            !_plantScope.IsInScopeForPlainUserText(request.UserDescription))
+        {
+            throw new ValidationException(_plantScope.OutOfScopeApiMessage);
+        }
+
         if (request.GardenPlantId.HasValue)
         {
             var plant = await _gardenRepository.GetPlantByIdAsync(request.GardenPlantId.Value, includeTaxonomy: false, cancellationToken);

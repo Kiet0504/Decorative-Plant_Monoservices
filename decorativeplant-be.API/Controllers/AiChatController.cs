@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace decorativeplant_be.API.Controllers;
 
-/// <summary>Personalized plant assistant chat (Ollama).</summary>
+/// <summary>Personalized plant assistant chat (local Ollama or Gemini when <c>AiRouting:UseGeminiOnly</c> is true).</summary>
 [ApiController]
 [Route("api/ai")]
 [Authorize]
@@ -36,7 +36,8 @@ public class AiChatController : BaseController
             Messages = request.Messages ?? new List<AiChatMessageDto>(),
             GardenPlantId = request.GardenPlantId,
             AttachedImageBase64 = request.AttachedImageBase64,
-            AttachedImageMimeType = request.AttachedImageMimeType
+            AttachedImageMimeType = request.AttachedImageMimeType,
+            RoomScanFollowUp = request.RoomScanFollowUp
         };
 
         var result = await Mediator.Send(command);

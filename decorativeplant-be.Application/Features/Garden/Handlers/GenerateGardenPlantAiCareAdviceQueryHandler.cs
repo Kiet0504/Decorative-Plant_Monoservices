@@ -6,6 +6,7 @@ using decorativeplant_be.Application.Common.DTOs.Garden;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Common.Settings;
+using decorativeplant_be.Application.Features.Garden;
 using decorativeplant_be.Application.Features.Garden.Queries;
 using decorativeplant_be.Application.Services;
 using MediatR;
@@ -28,19 +29,28 @@ public sealed class GenerateGardenPlantAiCareAdviceQueryHandler
     private readonly IOllamaClient _ollama;
     private readonly IUnitOfWork _unitOfWork;
     private readonly AiCareAdviceSettings _settings;
+    private readonly AiRoutingSettings _aiRouting;
+    private readonly IUserContentSafetyService _contentSafety;
+    private readonly IPlantAssistantScopeService _plantScope;
 
     public GenerateGardenPlantAiCareAdviceQueryHandler(
         IGardenRepository gardenRepository,
         IUserAccountService userAccountService,
         IOllamaClient ollama,
         IUnitOfWork unitOfWork,
-        IOptions<AiCareAdviceSettings> settings)
+        IOptions<AiCareAdviceSettings> settings,
+        IOptions<AiRoutingSettings> aiRouting,
+        IUserContentSafetyService contentSafety,
+        IPlantAssistantScopeService plantScope)
     {
         _gardenRepository = gardenRepository;
         _userAccountService = userAccountService;
         _ollama = ollama;
         _unitOfWork = unitOfWork;
         _settings = settings.Value;
+        _aiRouting = aiRouting.Value;
+        _contentSafety = contentSafety;
+        _plantScope = plantScope;
     }
 
     public async Task<AiCareAdviceDto> Handle(GenerateGardenPlantAiCareAdviceQuery request, CancellationToken cancellationToken)
@@ -55,6 +65,20 @@ public sealed class GenerateGardenPlantAiCareAdviceQueryHandler
         if (user == null)
         {
             throw new ValidationException("User not found.");
+        }
+
+        var detailsDto = GardenPlantMapper.DeserializeDetails(plant.Details);
+        if (!_contentSafety.IsAllowed(new[] { user.DisplayName, detailsDto.Nickname, detailsDto.Location }))
+        {
+            throw new ValidationException(_contentSafety.BlockedApiMessage);
+        }
+
+        var profileForScope = string.Join(
+            ' ',
+            new[] { user.DisplayName, detailsDto.Nickname, detailsDto.Location }.Where(s => !string.IsNullOrWhiteSpace(s)));
+        if (!_plantScope.IsInScopeForPlainUserText(profileForScope))
+        {
+            throw new ValidationException(_plantScope.OutOfScopeApiMessage);
         }
 
         var now = DateTime.UtcNow;
@@ -78,11 +102,18 @@ public sealed class GenerateGardenPlantAiCareAdviceQueryHandler
             ex is JsonException ||
             ex is InvalidOperationException)
         {
-            // Graceful degradation: avoid 500 if Ollama is unavailable.
+            // Graceful degradation: avoid 500 if the configured AI backend is unavailable.
             return new AiCareAdviceDto
             {
-                Summary = "AI tips are temporarily unavailable. Please start the local Ollama server and try again.",
-                Do = new List<string> { "Start Ollama (e.g. `ollama serve`) and ensure it is reachable from the API container." },
+                Summary = _aiRouting.UseGeminiOnly
+                    ? "AI tips are temporarily unavailable. Check AiDiagnosis:GeminiApiKey and Google API connectivity."
+                    : "AI tips are temporarily unavailable. Please start the local Ollama server and try again.",
+                Do = new List<string>
+                {
+                    _aiRouting.UseGeminiOnly
+                        ? "Verify AiDiagnosis:GeminiApiKey and that the API can reach generativelanguage.googleapis.com."
+                        : "Start Ollama (e.g. `ollama serve`) and ensure it is reachable from the API container."
+                },
                 Dont = new List<string>(),
                 RiskNotes = new List<string>(),
                 Confidence = "low",

@@ -55,8 +55,8 @@ public sealed class OllamaDiagnosisReasoningService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Ollama diagnosis reasoning failed.");
-            return (new List<string>(), "Local reasoning is temporarily unavailable. Detection above is from the vision model only; consult a plant expert if unsure.");
+            _logger.LogError(ex, "Diagnosis reasoning step failed (Ollama or Gemini JSON per configuration).");
+            return (new List<string>(), "Care reasoning is temporarily unavailable. Detection above is from the vision model only; consult a plant expert if unsure.");
         }
     }
 

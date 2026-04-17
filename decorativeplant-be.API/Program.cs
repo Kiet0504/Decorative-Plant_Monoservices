@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using DotNetEnv;
 using decorativeplant_be.Application;
+using decorativeplant_be.Application.Common.Settings;
 using decorativeplant_be.Infrastructure;
 using decorativeplant_be.Infrastructure.Data;
 using decorativeplant_be.API.Extensions;
@@ -120,6 +121,12 @@ try
 
     // Add Application services (MediatR, AutoMapper, FluentValidation)
     builder.Services.AddApplicationServices();
+    builder.Services.Configure<RoomScanHandlerOptions>(
+        builder.Configuration.GetSection(RoomScanHandlerOptions.SectionName));
+    builder.Services.Configure<ContentSafetySettings>(
+        builder.Configuration.GetSection(ContentSafetySettings.SectionName));
+    builder.Services.Configure<PlantAssistantScopeSettings>(
+        builder.Configuration.GetSection(PlantAssistantScopeSettings.SectionName));
 
     // Add Infrastructure services (DbContext, Identity, JWT, Repositories, etc.)
     builder.Services.AddInfrastructureServices(builder.Configuration);
@@ -134,6 +141,13 @@ try
         options.AddFixedWindowLimiter("CartAndOrderPolicy", opt =>
         {
             opt.PermitLimit = 30; // 30 requests per minute
+            opt.Window = TimeSpan.FromMinutes(1);
+            opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+            opt.QueueLimit = 0;
+        });
+        options.AddFixedWindowLimiter("AiRoomScanPolicy", opt =>
+        {
+            opt.PermitLimit = 20;
             opt.Window = TimeSpan.FromMinutes(1);
             opt.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
             opt.QueueLimit = 0;
@@ -208,6 +222,8 @@ app.UseAuthentication();
     app.UseMiddleware<BranchScopedAccessMiddleware>(); // Branch-scoped access control - after UseAuthentication, before UseAuthorization
     app.UseMiddleware<SoftPaywallMiddleware>();
     app.UseAuthorization();
+
+    app.UseRateLimiter();
 
     app.MapControllers();
 

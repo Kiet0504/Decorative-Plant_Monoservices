@@ -28,6 +28,16 @@ public interface IOllamaClient
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Vision + JSON: one user turn with base64 images (no data: prefix) and <c>format: json</c> (Ollama <c>/api/chat</c>).
+    /// </summary>
+    Task<JsonDocument> ChatJsonWithImagesAsync(
+        string systemPrompt,
+        string userPrompt,
+        IReadOnlyList<string> imagesBase64,
+        OllamaJsonRequestOptions? options,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Multi-turn chat with plain-text assistant output (no JSON format constraint).
     /// Messages must include a system message as the first entry when required by the caller.
     /// </summary>

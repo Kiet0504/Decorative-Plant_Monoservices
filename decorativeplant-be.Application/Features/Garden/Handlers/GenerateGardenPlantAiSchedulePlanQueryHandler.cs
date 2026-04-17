@@ -20,15 +20,21 @@ public sealed class GenerateGardenPlantAiSchedulePlanQueryHandler
     private readonly IGardenRepository _gardenRepository;
     private readonly IUserAccountService _userAccountService;
     private readonly IOllamaClient _ollama;
+    private readonly IUserContentSafetyService _contentSafety;
+    private readonly IPlantAssistantScopeService _plantScope;
 
     public GenerateGardenPlantAiSchedulePlanQueryHandler(
         IGardenRepository gardenRepository,
         IUserAccountService userAccountService,
-        IOllamaClient ollama)
+        IOllamaClient ollama,
+        IUserContentSafetyService contentSafety,
+        IPlantAssistantScopeService plantScope)
     {
         _gardenRepository = gardenRepository;
         _userAccountService = userAccountService;
         _ollama = ollama;
+        _contentSafety = contentSafety;
+        _plantScope = plantScope;
     }
 
     public async Task<AiSchedulePlanDto> Handle(GenerateGardenPlantAiSchedulePlanQuery request, CancellationToken cancellationToken)
@@ -57,6 +63,43 @@ public sealed class GenerateGardenPlantAiSchedulePlanQueryHandler
 
         var recentLogs = await _gardenRepository.GetRecentCareLogsByPlantIdAsync(request.PlantId, limit: 12, cancellationToken);
         var recentLogsJson = BuildRecentLogsJson(recentLogs);
+
+        var safetyParts = new List<string?> { user.DisplayName, user.LocationCity };
+        foreach (var log in recentLogs)
+        {
+            if (log.LogInfo == null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var root = log.LogInfo.RootElement;
+                if (root.TryGetProperty("observations", out var obs) && obs.ValueKind == JsonValueKind.String)
+                {
+                    safetyParts.Add(obs.GetString());
+                }
+
+                if (root.TryGetProperty("mood", out var mood) && mood.ValueKind == JsonValueKind.String)
+                {
+                    safetyParts.Add(mood.GetString());
+                }
+            }
+            catch
+            {
+                // ignore malformed log JSON
+            }
+        }
+
+        if (!_contentSafety.IsAllowed(safetyParts))
+        {
+            throw new ValidationException(_contentSafety.BlockedApiMessage);
+        }
+
+        if (!_plantScope.IsInScopeForPlainUserText(string.Join('\n', safetyParts)))
+        {
+            throw new ValidationException(_plantScope.OutOfScopeApiMessage);
+        }
 
         var systemPrompt = """
 You are a careful plant-care scheduler.

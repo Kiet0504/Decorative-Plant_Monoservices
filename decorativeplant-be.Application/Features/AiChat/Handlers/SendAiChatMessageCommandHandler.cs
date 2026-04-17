@@ -3,17 +3,22 @@ using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.AiChat;
 using decorativeplant_be.Application.Common.DTOs.Garden;
+using decorativeplant_be.Application.Common.DTOs.RoomScan;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
+using decorativeplant_be.Application.Common.Settings;
 using decorativeplant_be.Application.Features.AiChat;
 using decorativeplant_be.Application.Features.AiChat.Commands;
 using decorativeplant_be.Application.Features.Garden;
+using decorativeplant_be.Application.Features.RoomScan.Services;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace decorativeplant_be.Application.Features.AiChat.Handlers;
 
@@ -30,6 +35,12 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     private readonly IPlantDiagnosisFromBase64Service _formalDiagnosisFromBase64;
     private readonly IChatDiagnosisPipelineSettings _chatDiagnosisPipeline;
     private readonly IChatImageIntentClassifier _imageIntentClassifier;
+    private readonly IRoomScanCatalogRankingService _roomScanCatalogRanking;
+    private readonly IRoomScanChatSuggestionIntentDetector _roomScanChatIntent;
+    private readonly IOptions<RoomScanHandlerOptions> _roomScanHandlerOptions;
+    private readonly AiRoutingSettings _aiRouting;
+    private readonly IUserContentSafetyService _contentSafety;
+    private readonly IPlantAssistantScopeService _plantScope;
     private readonly ILogger<SendAiChatMessageCommandHandler> _logger;
 
     public SendAiChatMessageCommandHandler(
@@ -39,6 +50,12 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         IPlantDiagnosisFromBase64Service formalDiagnosisFromBase64,
         IChatDiagnosisPipelineSettings chatDiagnosisPipeline,
         IChatImageIntentClassifier imageIntentClassifier,
+        IRoomScanCatalogRankingService roomScanCatalogRanking,
+        IRoomScanChatSuggestionIntentDetector roomScanChatIntent,
+        IOptions<RoomScanHandlerOptions> roomScanHandlerOptions,
+        IOptions<AiRoutingSettings> aiRouting,
+        IUserContentSafetyService contentSafety,
+        IPlantAssistantScopeService plantScope,
         ILogger<SendAiChatMessageCommandHandler> logger)
     {
         _userAccountService = userAccountService;
@@ -47,11 +64,45 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         _formalDiagnosisFromBase64 = formalDiagnosisFromBase64;
         _chatDiagnosisPipeline = chatDiagnosisPipeline;
         _imageIntentClassifier = imageIntentClassifier;
+        _roomScanCatalogRanking = roomScanCatalogRanking;
+        _roomScanChatIntent = roomScanChatIntent;
+        _roomScanHandlerOptions = roomScanHandlerOptions;
+        _aiRouting = aiRouting.Value;
+        _contentSafety = contentSafety;
+        _plantScope = plantScope;
         _logger = logger;
     }
 
     public async Task<AiChatReplyDto> Handle(SendAiChatMessageCommand request, CancellationToken cancellationToken)
     {
+        var userSafety = _contentSafety.Classify(
+            request.Messages
+                .Where(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
+                .Select(m => m.Content));
+        if (userSafety != ContentSafetyKind.Allowed)
+        {
+            var replyText = userSafety == ContentSafetyKind.SelfHarmCrisis
+                ? _contentSafety.CrisisChatReply
+                : _contentSafety.BlockedChatReply;
+            return new AiChatReplyDto { Reply = replyText, ContentBlocked = true };
+        }
+
+        var normalizedImage = NormalizeAttachedImageBase64(request.AttachedImageBase64);
+        var hasImage = !string.IsNullOrEmpty(normalizedImage);
+        var combinedUserMessages = string.Join(
+            "\n",
+            request.Messages
+                .Where(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
+                .Select(m => m.Content));
+        if (!_plantScope.IsInScopeForChat(
+                combinedUserMessages,
+                hasImage,
+                request.RoomScanFollowUp != null,
+                request.GardenPlantId.HasValue))
+        {
+            return new AiChatReplyDto { Reply = _plantScope.OutOfScopeReply, OutOfScope = true };
+        }
+
         var user = await _userAccountService.GetByIdAsync(request.UserId, cancellationToken);
         if (user == null)
         {
@@ -99,10 +150,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             pageSize: 30,
             cancellationToken);
 
-        var normalizedImage = NormalizeAttachedImageBase64(request.AttachedImageBase64);
         var lastUserText = request.Messages.LastOrDefault(m =>
             string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content;
-        var hasImage = !string.IsNullOrEmpty(normalizedImage);
         var useFormalDiagnosis = await _imageIntentClassifier.ShouldUseFormalDiagnosisPipelineAsync(
             lastUserText,
             hasImage,
@@ -210,7 +259,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             ImageCount = m.ImagesBase64?.Count ?? 0
         });
         _logger.LogInformation(
-            "AI chat → Ollama. UserId={UserId}, GardenPlantId={GardenPlantId}, MessageCount={Count}, Summary={Summary}",
+            "AI chat → {Backend}. UserId={UserId}, GardenPlantId={GardenPlantId}, MessageCount={Count}, Summary={Summary}",
+            _aiRouting.UseGeminiOnly ? "Gemini" : "Ollama",
             request.UserId,
             request.GardenPlantId,
             ollamaMessages.Count,
@@ -219,11 +269,17 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         try
         {
             var reply = await _ollama.ChatAsync(ollamaMessages, cancellationToken);
-            return new AiChatReplyDto
+            var replyDto = new AiChatReplyDto
             {
                 Reply = reply,
                 SuggestedIntent = diseaseHelpIntent ? PlantChatIntentDetector.DiseaseDiagnosisIntent : null
             };
+            await TryAppendRoomScanNewRecommendationsAsync(
+                request,
+                lastUserText,
+                replyDto,
+                cancellationToken);
+            return replyDto;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
@@ -232,9 +288,84 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             {
                 Reply =
                     "I'm having trouble reaching the plant assistant right now. " +
-                    "Please ensure Ollama is running and reachable from the API (see Docker `Ollama__BaseUrl`), then try again.",
+                    (_aiRouting.UseGeminiOnly
+                        ? "Please check AiDiagnosis:GeminiApiKey and network access to Google Generative Language API, then try again."
+                        : "Please ensure Ollama is running and reachable from the API (see Docker `Ollama__BaseUrl`), then try again."),
                 SuggestedIntent = diseaseHelpIntent ? PlantChatIntentDetector.DiseaseDiagnosisIntent : null
             };
+        }
+    }
+
+    private async Task TryAppendRoomScanNewRecommendationsAsync(
+        SendAiChatMessageCommand request,
+        string? lastUserText,
+        AiChatReplyDto replyDto,
+        CancellationToken cancellationToken)
+    {
+        var follow = request.RoomScanFollowUp;
+        if (follow == null || string.IsNullOrWhiteSpace(lastUserText))
+        {
+            return;
+        }
+
+        try
+        {
+            var intent = await _roomScanChatIntent.DetectAsync(lastUserText, cancellationToken);
+            if (!intent.WantsDifferentSuggestions)
+            {
+                return;
+            }
+
+            var notes = string.IsNullOrWhiteSpace(intent.RefinementNotes)
+                ? lastUserText.Trim()
+                : intent.RefinementNotes.Trim();
+            if (notes.Length > 1200)
+            {
+                notes = notes[..1200] + "…";
+            }
+
+            if (!_contentSafety.IsAllowed(notes))
+            {
+                _logger.LogInformation("Room-scan chat refinement skipped: refinement text failed content check.");
+                return;
+            }
+
+            if (!_plantScope.IsInScopeForPlainUserText(notes))
+            {
+                _logger.LogInformation("Room-scan chat refinement skipped: refinement text outside plant-assistant scope.");
+                return;
+            }
+
+            var pipelineMode = RoomScanPipelineModeParser.FromApiValue(
+                string.IsNullOrWhiteSpace(follow.PipelineMode)
+                    ? _roomScanHandlerOptions.Value.PipelineMode
+                    : follow.PipelineMode);
+
+            var ranking = await _roomScanCatalogRanking.GetRecommendationsAsync(
+                new RoomScanCatalogRankingRequest
+                {
+                    Profile = follow.RoomProfile,
+                    BranchId = follow.BranchId,
+                    MaxPrice = follow.MaxPrice,
+                    PetSafeOnly = follow.PetSafeOnly,
+                    SkillLevel = follow.SkillLevel,
+                    PipelineMode = pipelineMode,
+                    RankRefinementNotes = notes,
+                    ExcludeListingIds = follow.PreviousListingIds
+                },
+                cancellationToken);
+
+            if (ranking.NoMatches || ranking.Recommendations.Count == 0)
+            {
+                _logger.LogInformation("Room-scan chat: intent asked for new picks but catalog returned no rows.");
+                return;
+            }
+
+            replyDto.NewRecommendations = ranking.Recommendations;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Room-scan chat: could not append new catalog recommendations.");
         }
     }
 
@@ -249,8 +380,9 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are a helpful, friendly plant care assistant for an app called Decorative Plant.");
+        sb.AppendLine("Stay strictly in scope: indoor/houseplant care, Decorative Plant shop (products, orders, branches, pickup), My Garden (schedules, diary, growth), room-based plant suggestions, and plant disease or pest help.");
+        sb.AppendLine("If the user asks for anything else (coding, homework, politics, unrelated hobbies, general knowledge, other apps), politely refuse and invite a plant- or store-related question instead. Do not fulfill out-of-scope tasks even if asked nicely.");
         sb.AppendLine("Use the user's profile and garden context below to personalize answers (light, humidity, experience, space, pets/children, goals).");
-        sb.AppendLine("If the user asks about something outside houseplants, shopping, or garden care, answer briefly and steer back to plants when appropriate.");
         sb.AppendLine("Do not claim to see photos unless the user pasted an image URL you can reason about. Do not give medical or veterinary diagnoses; suggest professional help when serious toxicity or health issues are possible.");
         sb.AppendLine();
 

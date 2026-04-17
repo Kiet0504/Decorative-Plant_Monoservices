@@ -11,4 +11,6 @@ public sealed class SendAiChatMessageCommand : IRequest<AiChatReplyDto>
 
     public string? AttachedImageBase64 { get; set; }
     public string? AttachedImageMimeType { get; set; }
+
+    public RoomScanChatFollowUpDto? RoomScanFollowUp { get; set; }
 }
