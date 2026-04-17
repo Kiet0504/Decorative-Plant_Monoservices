@@ -41,7 +41,7 @@ public class GetSensorMetricsQueryHandler : IRequestHandler<Queries.GetSensorMet
 
         var results = queryable
             .OrderByDescending(x => x.RecordedAt)
-            .Take(1000) // limit to avoid massive payloads
+            .Take(request.Limit ?? 1000) // use requested limit or default to 1000
             .Select(x => new SensorReadingDto
             {
                 Id = x.Id,

@@ -32,7 +32,7 @@ public class PublicIotController : BaseController
     /// Executes a secure action (like "Water Now") using a signed token.
     /// </summary>
     [HttpGet("action")]
-    public async Task<ActionResult<ApiResponse<string>>> ExecuteAction(
+    public async Task<IActionResult> ExecuteAction(
         [FromQuery] Guid deviceId, 
         [FromQuery] string action, 
         [FromQuery] string token)
@@ -41,10 +41,10 @@ public class PublicIotController : BaseController
             .FirstOrDefaultAsync(d => d.Id == deviceId);
 
         if (device == null)
-            return NotFound(ApiResponse<string>.ErrorResponse("Device not found"));
+            return NotFound("Device not found");
 
         // Validate Token: SHA256(deviceId + action + secretKey)
-        var secretKey = _configuration["ApiSettings:SecretKey"] ?? "default_secret";
+        var secretKey = _configuration["ApiSettings:SecretKey"] ?? "decorative_plant_default_secret_2024";
         var rawData = $"{deviceId}{action}{device.SecretKey}{secretKey}";
         using (var sha256 = SHA256.Create())
         {
@@ -52,7 +52,7 @@ public class PublicIotController : BaseController
             var computedToken = BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
 
             if (token != computedToken)
-                return Unauthorized(ApiResponse<string>.ErrorResponse("Invalid or expired token"));
+                return Unauthorized("Invalid or expired token");
         }
 
         // Execute Action
@@ -60,9 +60,46 @@ public class PublicIotController : BaseController
         {
             // Send MQTT command to the device
             await _mqttService.PublishCommandAsync(device.SecretKey, "water_now", new { duration = 30 }, default);
-            return Ok(ApiResponse<string>.SuccessResponse("Success", "Command 'Water Now' sent to device successfully."));
+            
+            // Extract device name from JSONB
+            var deviceName = "Your Device";
+            if (device.DeviceInfo != null && device.DeviceInfo.RootElement.TryGetProperty("name", out var nameProp))
+            {
+                deviceName = nameProp.GetString() ?? deviceName;
+            }
+
+            // Return a nice HTML success page instead of raw JSON
+            var html = $@"
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset='utf-8'>
+                    <meta name='viewport' content='width=device-width, initial-scale=1'>
+                    <title>Command Executed - Decorative Plant</title>
+                    <link href='https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap' rel='stylesheet'>
+                    <style>
+                        body {{ font-family: 'Inter', sans-serif; background-color: #fcfdfc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
+                        .card {{ background: white; padding: 2.5rem; border-radius: 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.05); text-align: center; max-width: 400px; border: 1px solid #e5e7eb; }}
+                        .icon {{ font-size: 3rem; margin-bottom: 1.5rem; }}
+                        h1 {{ color: #1B4332; font-weight: 800; margin-bottom: 0.5rem; font-size: 1.5rem; }}
+                        p {{ color: #6b7280; font-size: 0.95rem; line-height: 1.5; margin-bottom: 2rem; }}
+                        .btn {{ background-color: #2d5f4d; color: white; text-decoration: none; padding: 12px 32px; border-radius: 12px; font-weight: 600; display: inline-block; transition: all 0.2s; }}
+                        .btn:hover {{ background-color: #1b4332; transform: translateY(-2px); }}
+                    </style>
+                </head>
+                <body>
+                    <div class='card'>
+                        <div class='icon'>💧</div>
+                        <h1>Watering in Progress</h1>
+                        <p>Command 'Water Now' has been sent to <strong>{deviceName}</strong>. The device will water for 30 seconds.</p>
+                        <a href='javascript:window.close()' class='btn'>Close this page</a>
+                    </div>
+                </body>
+                </html>";
+                
+            return Content(html, "text/html");
         }
 
-        return BadRequest(ApiResponse<string>.ErrorResponse("Unknown action"));
+        return BadRequest("Unknown action");
     }
 }

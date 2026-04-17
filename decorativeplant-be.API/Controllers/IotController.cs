@@ -73,6 +73,7 @@ public class IotController : BaseController
     [HttpGet("sensors/metrics")]
     public async Task<ActionResult<IEnumerable<SensorReadingDto>>> GetSensorMetrics(
         [FromQuery] Guid deviceId,
+        [FromQuery] int? limit,
         [FromQuery] string? componentKey,
         [FromQuery] DateTime? startTime,
         [FromQuery] DateTime? endTime)
@@ -80,6 +81,7 @@ public class IotController : BaseController
         var query = new decorativeplant_be.Application.Features.IoT.Queries.GetSensorMetricsQuery
         {
             DeviceId = deviceId,
+            Limit = limit,
             ComponentKey = componentKey,
             StartTime = startTime,
             EndTime = endTime

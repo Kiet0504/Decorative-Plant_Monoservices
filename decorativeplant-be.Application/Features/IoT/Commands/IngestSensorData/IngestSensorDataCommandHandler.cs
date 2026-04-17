@@ -63,29 +63,44 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
 
             try
             {
-                var conditions = JsonSerializer.Deserialize<List<JsonElement>>(rule.Conditions.RootElement.GetRawText());
-                if (conditions == null) continue;
+                var root = rule.Conditions.RootElement;
+                List<JsonElement> rulesList = new();
 
-                foreach (var condition in conditions)
+                if (root.ValueKind == JsonValueKind.Array)
                 {
-                    var compKey = condition.GetProperty("component_key").GetString();
+                    rulesList = root.EnumerateArray().ToList();
+                }
+                else if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("rules", out var rulesProp))
+                {
+                    rulesList = rulesProp.EnumerateArray().ToList();
+                }
+
+                if (rulesList.Count == 0) continue;
+
+                foreach (var condition in rulesList)
+                {
+                    if (!condition.TryGetProperty("component_key", out var compKeyProp)) continue;
+                    var compKey = compKeyProp.GetString();
                     if (compKey != request.ComponentKey) continue;
 
-                    var op = condition.GetProperty("operator").GetString();
+                    if (!condition.TryGetProperty("operator", out var opProp)) continue;
+                    var op = opProp.GetString();
 
                     decimal threshold = 0;
-                    var thresholdProp = condition.GetProperty("threshold");
-                    if (thresholdProp.ValueKind == JsonValueKind.Number)
+                    if (condition.TryGetProperty("threshold", out var thresholdProp))
                     {
-                        threshold = thresholdProp.GetDecimal();
-                    }
-                    else if (thresholdProp.ValueKind == JsonValueKind.String)
-                    {
-                        if (!decimal.TryParse(thresholdProp.GetString(), out threshold)) continue;
-                    }
-                    else
-                    {
-                        continue;
+                        if (thresholdProp.ValueKind == JsonValueKind.Number)
+                        {
+                            threshold = thresholdProp.GetDecimal();
+                        }
+                        else if (thresholdProp.ValueKind == JsonValueKind.String)
+                        {
+                            if (!decimal.TryParse(thresholdProp.GetString(), out threshold)) continue;
+                        }
+                        else
+                        {
+                            continue;
+                        }
                     }
 
                     bool triggered = op switch
@@ -93,6 +108,7 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
                         ">" => request.Value > threshold,
                         "<" => request.Value < threshold,
                         "=" => request.Value == threshold,
+                        "==" => request.Value == threshold,
                         ">=" => request.Value >= threshold,
                         "<=" => request.Value <= threshold,
                         _ => false
