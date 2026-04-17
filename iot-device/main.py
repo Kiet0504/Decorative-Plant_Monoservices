@@ -29,10 +29,10 @@ active_rules = []
 # =============================================
 #  CAU HINH MQTT (Real-time Automation)
 # =============================================
-MQTT_BROKER = config.env.get("MQTT_BROKER", "0a9920b213a841478a7b3913ec583d22.s1.eu.hivemq.cloud")
-MQTT_PORT = int(config.env.get("MQTT_PORT", "8883"))
-MQTT_USERNAME = config.env.get("MQTT_USERNAME", "your_username_here")
-MQTT_PASSWORD = config.env.get("MQTT_PASSWORD", "your_password_here")
+MQTT_BROKER = config.env.get("MQTT_BROKER") or "broker.hivemq.com"
+MQTT_PORT = int(config.env.get("MQTT_PORT") or 1883)
+MQTT_USERNAME = config.env.get("MQTT_USERNAME") or ""
+MQTT_PASSWORD = config.env.get("MQTT_PASSWORD") or ""
 
 MQTT_CLIENT_ID = "esp32_" + DEVICE_SECRET[:8]
 MQTT_TOPIC_RULES = "decorativeplant/device/{}/rules".format(DEVICE_SECRET).encode('utf-8')
