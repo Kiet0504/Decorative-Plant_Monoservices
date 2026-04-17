@@ -20,4 +20,5 @@ public class CreatePlantBatchCommand : IRequest<PlantBatchDto>
     public Dictionary<string, object>? Specs { get; set; }
     
     public int InitialQuantity { get; set; }
+    public decimal? PurchaseCost { get; set; }
 }

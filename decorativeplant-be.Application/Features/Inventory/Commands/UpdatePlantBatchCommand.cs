@@ -16,4 +16,5 @@ public class UpdatePlantBatchCommand : IRequest<PlantBatchDto>
     public string? Price { get; set; }
     public Dictionary<string, object>? SourceInfo { get; set; }
     public Dictionary<string, object>? Specs { get; set; }
+    public decimal? PurchaseCost { get; set; }
 }
