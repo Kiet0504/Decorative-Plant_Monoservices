@@ -15,7 +15,8 @@ public class MediaController : ControllerBase
     {
         "image/jpeg",
         "image/png",
-        "image/webp"
+        "image/webp",
+        "application/pdf"
     };
 
     private readonly IMediaStorageService _mediaStorage;
@@ -50,6 +51,7 @@ public class MediaController : ControllerBase
         {
             ext = file.ContentType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase) ? ".jpg"
                 : file.ContentType.Equals("image/png", StringComparison.OrdinalIgnoreCase) ? ".png"
+                : file.ContentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase) ? ".pdf"
                 : ".webp";
         }
 

@@ -81,8 +81,8 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
 
             // 4. Generate Security Token for Action
             const string action = "water_now";
-            var apiSecretKey = _configuration["ApiSettings:SecretKey"] ?? "default_secret";
-            var baseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:5031";
+            var apiSecretKey = _configuration["ApiSettings:SecretKey"] ?? "decorative_plant_default_secret_2024";
+            var baseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:8080";
             
             var rawData = $"{device.Id}{action}{device.SecretKey}{apiSecretKey}";
             string computedToken;
@@ -96,7 +96,7 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
             {
                 { "Severity", severity },
                 { "AlertMessage", alertMessage },
-                { "ActionUrl", $"{baseUrl}/api/public/iot/action?deviceId={device.Id}" },
+                { "ActionUrl", $"{baseUrl}/api/public/iot/action?deviceId={device.Id}&action={action}&token={computedToken}" },
                 { "ActionToken", computedToken }
             };
 

@@ -8,15 +8,21 @@ API_URL_RULES = config.env.get("API_URL", "").replace("/sensors/ingest", "/senso
 API_URL_LOGS = config.env.get("API_URL", "").replace("/sensors/ingest", "/sensors/logs")
 DEVICE_SECRET = config.env.get("DEVICE_SECRET", "")
 
-# Cau hinh chan GPIO
-RELAY_PUMP = Pin(18, Pin.OUT)
-
-# CAU HINH MUC TIN HIEU (High Level Trigger: 1 = ON, 0 = OFF)
+# MUC TIN HIEU CHUAN
 LEVEL_ON  = 1
 LEVEL_OFF = 0
 
-# Dam bao mac dinh la TAT luc moi khoi dong
-RELAY_PUMP.value(LEVEL_OFF)
+# --- 2. KHOI TAO PHAN CUNG ---
+RELAY_PUMP   = Pin(18, Pin.OUT, value=0)
+BUZZER_WATER = Pin(19, Pin.OUT, value=0)
+FAN          = Pin(23, Pin.OUT, value=0)
+BUZZER_FAN   = Pin(27, Pin.OUT, value=0) # Chuyển sang chân 27 tránh nhiễu
+
+# Dam bao mac dinh la TAT
+RELAY_PUMP.value(0)
+BUZZER_WATER.value(0)
+FAN.value(0)
+BUZZER_FAN.value(0)
 
 # Flag de chong chay chong (Concurrency Lock)
 _is_watering = False
@@ -24,8 +30,11 @@ _is_watering = False
 class HardwareActions:
     @staticmethod
     def all_off():
-        """Cuong buc TAT tat ca thiet bi dau ra (Relay)"""
+        """Cuong buc TAT tat ca thiet bi"""
         RELAY_PUMP.value(LEVEL_OFF)
+        BUZZER_WATER.value(LEVEL_OFF)
+        FAN.value(LEVEL_OFF)
+        BUZZER_FAN.value(LEVEL_OFF)
         print("[Action] All outputs forced OFF.")
 
     @staticmethod
@@ -75,9 +84,14 @@ class HardwareActions:
             if is_on and action_name in ["turn_on_pump", "water_pump", "water_now"]:
                 if duration <= 0:
                     duration = 5 
-                    print("[Safety] No duration specified for water command. Using default 5s.")
+                
+                # --- Tieng tit canh bao truoc khi tuoi (1.5s) ---
+                BUZZER_WATER.value(LEVEL_ON)
+                time.sleep(1.5)
+                BUZZER_WATER.value(LEVEL_OFF)
+                time.sleep(0.5)
 
-                print("[Action] Pump STARTING ({})...".format(LEVEL_ON))
+                print("[Action] Pump STARTING...")
                 _is_watering = True
                 RELAY_PUMP.value(LEVEL_ON) 
                 success = True
@@ -88,10 +102,8 @@ class HardwareActions:
                 start_wait = time.time()
                 while (time.time() - start_wait) < duration:
                     if mqtt_client:
-                        try:
-                            mqtt_client.check_msg()
-                        except:
-                            pass
+                        try: mqtt_client.check_msg()
+                        except: pass
                     time.sleep(0.5)
                 
                 RELAY_PUMP.value(LEVEL_OFF) 
@@ -99,11 +111,27 @@ class HardwareActions:
                 msg += " and then AUTO-OFF"
                 print("[Action] Pump AUTO-OFF.")
                 
-            elif action_name == "turn_off_pump" or (action_name == "water_pump" and is_off):
-                RELAY_PUMP.value(LEVEL_OFF) 
-                _is_watering = False
+            elif is_on and action_name in ["fan", "motor", "cooling_fan"]:
+                print("[Action] Fan Warning (1.5s)...")
+                BUZZER_FAN.value(1) # 1 là Bật còi
+                time.sleep(1.5)
+                BUZZER_FAN.value(0) # 0 là Tắt còi
+                time.sleep(0.5)
+
+                print("[Action] Fan STARTING")
+                FAN.value(LEVEL_ON)
                 success = True
-                msg = "Pump turned OFF"
+                msg = "Fan turned ON"
+
+            elif is_on and action_name in ["buzzer", "alarm", "beep"]:
+                BUZZER_WATER.value(LEVEL_ON)
+                success = True
+                msg = "Buzzer ON"
+
+            elif is_off:
+                HardwareActions.all_off()
+                success = True
+                msg = "All devices turned OFF"
             else:
                 msg = "Action unknown: {}/{}".format(action_name, action_value)
         except Exception as e:
@@ -280,11 +308,9 @@ def _check_single_condition(r, sensor_data):
     return res
 
 def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
-    if not is_time_synced():
-        print("[Engine] Dang cho dong bo gio (NTP)... Automation tam dung.")
-        return
-
-    print("[Engine] Bat dau kiem tra {} rules...".format(len(active_rules)))
+    if active_rules:
+        print("[Engine] Checking {} rules for sensors...".format(len(active_rules)))
+    
     for rule in active_rules:
         rule_name = rule.get('name', 'Unknown')
         conditions = rule.get("conditions", {}) or {}
