@@ -53,6 +53,7 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
             CareInfo = careInfoJson,
             GrowthInfo = growthInfoJson,
             ImageUrl = request.ImageUrl,
+            DefaultPrice = request.DefaultPrice,
             CategoryId = finalCategoryId
         };
 
