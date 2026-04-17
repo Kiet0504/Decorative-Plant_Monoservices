@@ -43,12 +43,16 @@ public class GetTopProductRevenueQueryHandler : IRequestHandler<GetTopProductRev
                 int unitsSold = 0;
                 string speciesName = "Unknown";
                 string unitPrice = "0";
+                string? imageUrl = null;
 
                 if (firstItem.Snapshots != null && firstItem.Snapshots.RootElement.TryGetProperty("title_snapshot", out var titleProp))
                     speciesName = titleProp.GetString() ?? "Unknown";
 
                 if (firstItem.Pricing != null && firstItem.Pricing.RootElement.TryGetProperty("unit_price", out var upProp))
                     unitPrice = upProp.GetString() ?? "0";
+
+                if (firstItem.Snapshots != null && firstItem.Snapshots.RootElement.TryGetProperty("image_snapshot", out var imageProp))
+                    imageUrl = imageProp.GetString();
 
                 foreach (var item in g)
                 {
@@ -66,7 +70,8 @@ public class GetTopProductRevenueQueryHandler : IRequestHandler<GetTopProductRev
                     SpeciesName = speciesName,
                     UnitsSold = unitsSold,
                     UnitPrice = unitPrice,
-                    TotalRevenue = productRevenue.ToString("0", CultureInfo.InvariantCulture)
+                    TotalRevenue = productRevenue.ToString("0", CultureInfo.InvariantCulture),
+                    ImageUrl = imageUrl
                 };
             })
             .OrderByDescending(p => decimal.Parse(p.TotalRevenue))

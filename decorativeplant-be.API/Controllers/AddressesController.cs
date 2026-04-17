@@ -10,6 +10,8 @@ namespace decorativeplant_be.API.Controllers;
 public class AddressDto
 {
     public string Id { get; set; } = Guid.NewGuid().ToString();
+    /// <summary>Optional user-facing name, e.g. Home, Office.</summary>
+    public string? Label { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Phone { get; set; } = string.Empty;
     public string AddressDetail { get; set; } = string.Empty;
@@ -108,6 +110,7 @@ public class AddressesController : BaseController
         var existing = addresses.FirstOrDefault(a => a.Id == id);
         if (existing == null) return NotFound(ApiResponse<AddressDto>.ErrorResponse("Address not found"));
 
+        existing.Label = request.Label;
         existing.Name = request.Name;
         existing.Phone = request.Phone;
         existing.AddressDetail = request.AddressDetail;
