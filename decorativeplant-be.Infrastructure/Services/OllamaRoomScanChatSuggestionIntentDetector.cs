@@ -9,20 +9,33 @@ using Microsoft.Extensions.Options;
 namespace decorativeplant_be.Infrastructure.Services;
 
 /// <summary>
-/// Uses the configured small Ollama JSON model (<see cref="OllamaSettings.IntentClassificationModel"/>) when set; otherwise keyword heuristics.
+/// Decides whether to re-rank catalog picks after a room scan. Prefers an LLM (intent model or main <see cref="OllamaSettings.Model"/>);
+/// keyword heuristics are a fast path and fallback.
 /// </summary>
 public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSuggestionIntentDetector
 {
     private const string SystemPrompt =
         """
-        You classify the user's latest message in a plant shopping chat after they received room-based catalog suggestions.
+        The user already received room-based plant suggestions from our shop catalog. They are continuing in text (no new photo required).
+        Decide if they want the app to show a NEW or ALTERNATIVE shortlist of products (re-rank the catalog for this room), or if they only want chat without changing picks.
+
         Reply with ONE JSON object only, no markdown:
         {"wantsDifferentSuggestions": true|false, "refinementNotes": string|null}
-        wantsDifferentSuggestions=true when they want other, alternative, or additional product options from the shop
-        (e.g. different plants, show me more, not these, something else, cheaper, pet-safe, easier care, taller, smaller, succulent, flowering).
-        wantsDifferentSuggestions=false when they ask how to care for a plant, compare care, watering schedule, identify a species from the name,
-        order/shipping questions, or general chat not asking to change the product shortlist.
-        refinementNotes: short English phrase for the catalog ranker (constraints or style), or null if none beyond "alternatives".
+
+        wantsDifferentSuggestions=TRUE when they want shopping/curation help, including:
+        - Asking for other, more, different, or additional plants to buy from the store; alternatives; "not these"; "something else".
+        - Asking what to buy, what would fit, what you recommend purchasing for this room/space/corner, best options from the catalog, ideas for plants to order.
+        - Changing constraints: cheaper, budget, pet-safe, non-toxic, easier care, smaller/taller, succulent, flowering, colorful, style.
+        - Comparing which listing to choose or asking for more ideas like those picks.
+        - Vietnamese examples: gợi ý khác, cây khác, nên mua cây gì, cây nào hợp phòng này, đề xuất thêm, rẻ hơn, an toàn cho thú cưng.
+
+        wantsDifferentSuggestions=FALSE when they only want:
+        - Care instructions (watering, light, repotting, soil) for a plant they mentioned without asking to refresh shop suggestions.
+        - Disease/pest help without asking for different products to buy.
+        - Order/shipping/store hours/account questions without asking for different plant picks.
+        - Short thanks, hello, or acknowledgement with no shopping ask.
+
+        refinementNotes: short phrase capturing constraints for the ranker (English or Vietnamese), or null if generic "alternatives" is enough.
         """;
 
     private readonly IOllamaClient _ollama;
@@ -39,32 +52,32 @@ public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSu
         _logger = logger;
     }
 
-    public Task<RoomScanChatSuggestionIntentResult> DetectAsync(
+    /// <summary>Model for JSON intent: dedicated intent model if set, otherwise main chat model.</summary>
+    private string? ResolveIntentModel()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.IntentClassificationModel))
+        {
+            return _settings.IntentClassificationModel.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(_settings.Model) ? null : _settings.Model.Trim();
+    }
+
+    public async Task<RoomScanChatSuggestionIntentResult> DetectAsync(
         string? latestUserMessage,
         CancellationToken cancellationToken = default)
     {
         var text = latestUserMessage?.Trim() ?? string.Empty;
         if (text.Length == 0)
         {
-            return Task.FromResult(new RoomScanChatSuggestionIntentResult { WantsDifferentSuggestions = false });
+            return new RoomScanChatSuggestionIntentResult { WantsDifferentSuggestions = false };
         }
 
-        if (string.IsNullOrWhiteSpace(_settings.IntentClassificationModel))
-        {
-            return Task.FromResult(HeuristicResult(text));
-        }
-
-        return DetectWithLlmAsync(text, cancellationToken);
-    }
-
-    private async Task<RoomScanChatSuggestionIntentResult> DetectWithLlmAsync(
-        string text,
-        CancellationToken cancellationToken)
-    {
         var clipped = text.Length > 1500 ? text[..1500] + "…" : text;
 
-        if (LooksLikeCareQuestionOnly(clipped))
+        if (LooksLikeObviousNoCatalogRefresh(clipped))
         {
+            _logger.LogDebug("Room-scan chat intent: obvious no refresh (thanks/greeting/shipping-only).");
             return new RoomScanChatSuggestionIntentResult { WantsDifferentSuggestions = false };
         }
 
@@ -78,9 +91,39 @@ public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSu
             };
         }
 
+        if (HeuristicImplicitShoppingOrCurationAsk(clipped) && !LooksLikePureCareQuestion(clipped))
+        {
+            _logger.LogDebug("Room-scan chat intent: implicit shopping/curation ask.");
+            return new RoomScanChatSuggestionIntentResult
+            {
+                WantsDifferentSuggestions = true,
+                RefinementNotes = clipped.Length > 400 ? clipped[..400] + "…" : clipped
+            };
+        }
+
+        if (ResolveIntentModel() == null)
+        {
+            _logger.LogDebug("Room-scan chat intent: no model configured; heuristic fallback.");
+            return HeuristicResult(clipped);
+        }
+
+        return await DetectWithLlmAsync(clipped, cancellationToken);
+    }
+
+    private async Task<RoomScanChatSuggestionIntentResult> DetectWithLlmAsync(
+        string clipped,
+        CancellationToken cancellationToken)
+    {
+        if (LooksLikePureCareQuestion(clipped) && !HeuristicImplicitShoppingOrCurationAsk(clipped))
+        {
+            return new RoomScanChatSuggestionIntentResult { WantsDifferentSuggestions = false };
+        }
+
         var userBlock = new StringBuilder();
         userBlock.AppendLine("Latest user message:");
         userBlock.AppendLine(clipped);
+
+        var model = ResolveIntentModel()!;
 
         try
         {
@@ -89,7 +132,7 @@ public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSu
                 userBlock.ToString(),
                 new OllamaJsonRequestOptions
                 {
-                    Model = _settings.IntentClassificationModel.Trim(),
+                    Model = model,
                     TimeoutSeconds = Math.Clamp(_settings.IntentClassificationTimeoutSeconds, 3, 60),
                     LogFailuresAsWarnings = true,
                     Temperature = 0f,
@@ -122,7 +165,10 @@ public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSu
     private static RoomScanChatSuggestionIntentResult HeuristicResult(string text) =>
         new()
         {
-            WantsDifferentSuggestions = HeuristicWantsDifferent(text) && !HeuristicWantsCareNotShopping(text),
+            WantsDifferentSuggestions =
+                (HeuristicWantsDifferent(text) || HeuristicImplicitShoppingOrCurationAsk(text)) &&
+                !HeuristicWantsCareNotShopping(text) &&
+                !LooksLikePureCareQuestion(text),
             RefinementNotes = text.Length > 400 ? text[..400] + "…" : text
         };
 
@@ -184,23 +230,58 @@ public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSu
         return null;
     }
 
-    private static bool LooksLikeCareQuestionOnly(string lower)
+    /// <summary>Short thanks / hello — no catalog refresh.</summary>
+    private static bool LooksLikeObviousNoCatalogRefresh(string t)
     {
-        var t = lower.ToLowerInvariant();
-        if (t.Contains("how often", StringComparison.Ordinal) && t.Contains("water", StringComparison.Ordinal))
+        var s = t.Trim();
+        if (s.Length > 80)
+        {
+            return false;
+        }
+
+        var lower = s.ToLowerInvariant();
+        var trivial = new[]
+        {
+            "thanks", "thank you", "thankyou", "thx", "ty", "ok", "okay", "great", "cool",
+            "hi", "hello", "hey", "bye", "goodbye",
+        };
+
+        return trivial.Any(x => lower == x || lower.StartsWith(x + " ", StringComparison.Ordinal) || lower.StartsWith(x + ".", StringComparison.Ordinal));
+    }
+
+    /// <summary>Care-only questions that should not trigger a new shortlist (unless mixed with shopping — caller combines with ImplicitShopping).</summary>
+    private static bool LooksLikePureCareQuestion(string t)
+    {
+        var lower = t.ToLowerInvariant();
+
+        if (lower.Contains("how often", StringComparison.Ordinal) && lower.Contains("water", StringComparison.Ordinal))
         {
             return true;
         }
 
-        if (t.Contains("how do i water", StringComparison.Ordinal) ||
-            t.Contains("when should i water", StringComparison.Ordinal))
+        if (lower.Contains("how do i water", StringComparison.Ordinal) ||
+            lower.Contains("when should i water", StringComparison.Ordinal))
         {
             return true;
         }
 
-        return t.Contains("how much light", StringComparison.Ordinal) &&
-               !t.Contains("suggest", StringComparison.Ordinal) &&
-               !t.Contains("show me", StringComparison.Ordinal);
+        if (lower.Contains("how much light", StringComparison.Ordinal) &&
+            !lower.Contains("suggest", StringComparison.Ordinal) &&
+            !lower.Contains("recommend", StringComparison.Ordinal) &&
+            !lower.Contains("show me", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // Vietnamese: pure care how-to
+        if (lower.Contains("bao lâu tưới", StringComparison.Ordinal) ||
+            lower.Contains("cách tưới", StringComparison.Ordinal) ||
+            lower.Contains("cách chăm", StringComparison.Ordinal) && !lower.Contains("mua", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static bool HeuristicWantsCareNotShopping(string t)
@@ -214,6 +295,7 @@ public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSu
                lower.Contains("bug");
     }
 
+    /// <summary>Explicit "other picks" phrasing.</summary>
     private static bool HeuristicWantsDifferent(string t)
     {
         var lower = t.ToLowerInvariant();
@@ -227,6 +309,67 @@ public sealed class OllamaRoomScanChatSuggestionIntentDetector : IRoomScanChatSu
             "flowering", "colorful", "another one", "what else", "any other", "other ideas",
         };
 
-        return shopping.Any(s => lower.Contains(s, StringComparison.Ordinal));
+        if (shopping.Any(s => lower.Contains(s, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var vi = new[]
+        {
+            "gợi ý khác", "xem thêm", "cây khác", "loại khác", "không thích", "không phải", "thay thế",
+            "rẻ hơn", "dễ chăm", "cây nhỏ", "cây to", "sen đá", "xương rồng",
+        };
+
+        return vi.Any(s => lower.Contains(s, StringComparison.Ordinal));
+    }
+
+    /// <summary>Natural asks for what to buy / what fits — refresh picks without fixed phrases (narrow enough to avoid pure-care asks).</summary>
+    private static bool HeuristicImplicitShoppingOrCurationAsk(string t)
+    {
+        var lower = t.ToLowerInvariant();
+
+        var en = new[]
+        {
+            "what should i get", "what to get", "what to buy", "what plant should", "which plant should",
+            "what plant would", "which plant would", "best plant for", "plants for this", "plant for this",
+            "plants for my", "plant for my", "fit this room", "fit my room", "for this room", "for this space",
+            "for this corner", "ideas for plants", "options for plants",
+            "from your shop", "from the catalog", "from your catalog",
+            "in stock", "buy a plant", "buy plants", "purchase a plant", "order a plant",
+            "more plants", "other plants", "any plants for",
+            "recommend a plant", "recommend plants", "recommend something for", "what do you recommend for",
+            "what would you recommend", "can you recommend a plant", "can you recommend plants",
+            "suggest a plant", "suggest plants", "suggest something for", "suggest for this room",
+            "curate", "shortlist",
+            "what else would work", "what would work here", "good choices for", "pick for me",
+            "another option for", "shopping for",
+        };
+
+        if (en.Any(s => lower.Contains(s, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        // "recommend/suggest" + room/shop/buy context (avoid "recommend a schedule")
+        if ((lower.Contains("recommend", StringComparison.Ordinal) || lower.Contains("suggest", StringComparison.Ordinal)) &&
+            (lower.Contains("room", StringComparison.Ordinal) ||
+             lower.Contains("space", StringComparison.Ordinal) ||
+             lower.Contains("corner", StringComparison.Ordinal) ||
+             lower.Contains("buy", StringComparison.Ordinal) ||
+             lower.Contains("catalog", StringComparison.Ordinal) ||
+             lower.Contains("shop", StringComparison.Ordinal) ||
+             lower.Contains("plant", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var vi = new[]
+        {
+            "nên mua", "nên chọn", "cây gì", "loại nào", "mua cây", "cây nào hợp",
+            "phù hợp phòng", "phù hợp góc", "trong shop", "trong cửa hàng",
+        };
+
+        return vi.Any(s => lower.Contains(s, StringComparison.Ordinal));
     }
 }
+

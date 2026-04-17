@@ -181,6 +181,8 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<IChatImageIntentClassifier, OllamaChatImageIntentClassifier>();
         services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IRoomScanChatSuggestionIntentDetector,
             OllamaRoomScanChatSuggestionIntentDetector>();
+        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IAiChatProfileShopIntentDetector,
+            OllamaAiChatProfileShopIntentDetector>();
 
         services.Configure<AiCareAdviceSettings>(configuration.GetSection(AiCareAdviceSettings.SectionName));
 

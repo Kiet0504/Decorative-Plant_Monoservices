@@ -62,6 +62,12 @@ public sealed class AiChatReplyDto
     /// <summary>Fresh catalog picks after a room-scan follow-up chat (e.g. user asked for other suggestions).</summary>
     public List<RoomScanRecommendationDto>? NewRecommendations { get; set; }
 
+    /// <summary>
+    /// How the server routed this turn: <c>profile_shop</c>, <c>conversational</c>, <c>room_scan_thread</c>, <c>formal_diagnosis</c>.
+    /// Clients may use this with <see cref="NewRecommendations"/> to show shop UI.
+    /// </summary>
+    public string? ResolvedIntent { get; set; }
+
     /// <summary>True when the message was rejected by server content checks (no LLM call for the main reply).</summary>
     public bool ContentBlocked { get; set; }
 
