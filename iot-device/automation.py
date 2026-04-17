@@ -8,21 +8,21 @@ API_URL_RULES = config.env.get("API_URL", "").replace("/sensors/ingest", "/senso
 API_URL_LOGS = config.env.get("API_URL", "").replace("/sensors/ingest", "/sensors/logs")
 DEVICE_SECRET = config.env.get("DEVICE_SECRET", "")
 
-# Cau hinh chan GPIO
-RELAY_PUMP   = Pin(18, Pin.OUT)
-BUZZER_WATER = Pin(19, Pin.OUT)
-FAN          = Pin(23, Pin.OUT)
-BUZZER_FAN   = Pin(25, Pin.OUT)
-
-# CAU HINH MUC TIN HIEU (Active High: 1 = ON, 0 = OFF)
+# MUC TIN HIEU CHUAN
 LEVEL_ON  = 1
 LEVEL_OFF = 0
 
-# Dam bao mac dinh la TAT luc moi khoi dong
-RELAY_PUMP.value(LEVEL_OFF)
-BUZZER_WATER.value(LEVEL_OFF)
-FAN.value(LEVEL_OFF)
-BUZZER_FAN.value(LEVEL_OFF)
+# --- 2. KHOI TAO PHAN CUNG ---
+RELAY_PUMP   = Pin(18, Pin.OUT, value=0)
+BUZZER_WATER = Pin(19, Pin.OUT, value=0)
+FAN          = Pin(23, Pin.OUT, value=0)
+BUZZER_FAN   = Pin(27, Pin.OUT, value=0) # Chuyển sang chân 27 tránh nhiễu
+
+# Dam bao mac dinh la TAT
+RELAY_PUMP.value(0)
+BUZZER_WATER.value(0)
+FAN.value(0)
+BUZZER_FAN.value(0)
 
 # Flag de chong chay chong (Concurrency Lock)
 _is_watering = False
@@ -30,8 +30,11 @@ _is_watering = False
 class HardwareActions:
     @staticmethod
     def all_off():
-        """Cuong buc TAT tat ca thiet bi dau ra (Relay)"""
+        """Cuong buc TAT tat ca thiet bi"""
         RELAY_PUMP.value(LEVEL_OFF)
+        BUZZER_WATER.value(LEVEL_OFF)
+        FAN.value(LEVEL_OFF)
+        BUZZER_FAN.value(LEVEL_OFF)
         print("[Action] All outputs forced OFF.")
 
     @staticmethod
@@ -82,9 +85,9 @@ class HardwareActions:
                 if duration <= 0:
                     duration = 5 
                 
-                # --- Tieng tit canh bao truoc khi tuoi ---
+                # --- Tieng tit canh bao truoc khi tuoi (1.5s) ---
                 BUZZER_WATER.value(LEVEL_ON)
-                time.sleep(1)
+                time.sleep(1.5)
                 BUZZER_WATER.value(LEVEL_OFF)
                 time.sleep(0.5)
 
@@ -109,9 +112,14 @@ class HardwareActions:
                 print("[Action] Pump AUTO-OFF.")
                 
             elif is_on and action_name in ["fan", "motor", "cooling_fan"]:
-                print("[Action] Fan & Alarm Fan ON")
+                print("[Action] Fan Warning (1.5s)...")
+                BUZZER_FAN.value(1) # 1 là Bật còi
+                time.sleep(1.5)
+                BUZZER_FAN.value(0) # 0 là Tắt còi
+                time.sleep(0.5)
+
+                print("[Action] Fan STARTING")
                 FAN.value(LEVEL_ON)
-                BUZZER_FAN.value(LEVEL_ON)
                 success = True
                 msg = "Fan turned ON"
 
@@ -121,11 +129,7 @@ class HardwareActions:
                 msg = "Buzzer ON"
 
             elif is_off:
-                RELAY_PUMP.value(LEVEL_OFF) 
-                BUZZER_WATER.value(LEVEL_OFF)
-                FAN.value(LEVEL_OFF)
-                BUZZER_FAN.value(LEVEL_OFF)
-                _is_watering = False
+                HardwareActions.all_off()
                 success = True
                 msg = "All devices turned OFF"
             else:
