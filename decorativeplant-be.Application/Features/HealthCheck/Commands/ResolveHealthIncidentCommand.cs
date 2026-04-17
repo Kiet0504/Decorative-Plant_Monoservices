@@ -13,4 +13,5 @@ public class ResolveHealthIncidentCommand : IRequest<HealthIncidentDto>
     
     // Internal
     public Guid? ResolvedBy { get; set; }
+    public bool IsManagerApproval { get; set; } = false;
 }

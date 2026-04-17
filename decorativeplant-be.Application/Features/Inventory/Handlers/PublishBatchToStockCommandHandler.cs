@@ -271,18 +271,18 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
 
                 var batchInfo = new Dictionary<string, string>
                 {
-                    { "Lô cây (Batch)", batch.BatchCode ?? "N/A" },
-                    { "Sản phẩm (Species)", targetTitle },
-                    { "Chi nhánh (Branch)", batch.Branch?.Name ?? "N/A" },
-                    { "Nhà cung cấp (Supplier)", batch.Supplier?.Name ?? "N/A" },
-                    { "Số lượng (Quantity)", request.Quantity.ToString() },
-                    { "Giá nhập kho (Purchase Cost)", cost == 0 ? "Chưa khai báo" : cost.ToString("N0") + " VND" },
-                    { "Thời gian (Timestamp)", DateTime.Now.ToString("dd/MM/yyyy HH:mm") }
+                    { "Batch Code", batch.BatchCode ?? "N/A" },
+                    { "Species", targetTitle },
+                    { "Branch", batch.Branch?.Name ?? "N/A" },
+                    { "Supplier", batch.Supplier?.Name ?? "N/A" },
+                    { "Quantity", request.Quantity.ToString() },
+                    { "Purchase Cost", cost == 0 ? "Not declared" : cost.ToString("N0") + " VND" },
+                    { "Timestamp", DateTime.Now.ToString("MM/dd/yyyy HH:mm") }
                 };
 
                 var emailBody = $@"
-                    <h2>Thành phẩm mới đã được gửi lên kệ bán lẻ</h2>
-                    <p>Kính gửi Admin, một lô cây đã được hoàn tất quá trình nuôi trồng và chuyển sang kho bán lẻ. Vui lòng xem xét các chi phí và giá nhập kho để thiết lập mức giá bán niêm yết phù hợp.</p>
+                    <h2>New Finished Plants Dispatched to Sales</h2>
+                    <p>Dear Admin, a cultivation batch has just been finished and dispatched to the sales floor. Please review the costs to establish the appropriate retail price.</p>
                     <table style='width:100%; border-collapse: collapse;'>
                         {string.Join("", batchInfo.Select(x => $@"
                             <tr style='border-bottom: 1px solid #eee;'>
@@ -291,7 +291,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                             </tr>
                         "))}
                     </table>
-                    <p style='margin-top: 20px; color: #666;'>Đây là email tự động từ hệ thống quản lý Decorative Plant.</p>";
+                    <p style='margin-top: 20px; color: #666;'>This is an automated email from the Decorative Plant Management System.</p>";
 
                 foreach (var email in adminEmails)
                 {
@@ -300,7 +300,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                         To = email,
                         Subject = subject,
                         BodyHtml = emailBody,
-                        BodyPlainText = $"Thành phẩm mới: {batch.BatchCode} - {targetTitle}. Chi nhánh: {batch.Branch?.Name}. Giá nhập: {cost}. Vui lòng xem dashboard admin."
+                        BodyPlainText = $"New Finished Plants: {batch.BatchCode} - {targetTitle}. Branch: {batch.Branch?.Name}. Purchase Cost: {cost}. Please review the admin dashboard."
                     }, ct);
                 }
                 

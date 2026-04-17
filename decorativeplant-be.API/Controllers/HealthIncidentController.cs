@@ -61,6 +61,30 @@ public class HealthIncidentController : BaseController
     }
 
     /// <summary>
+    /// Approve a health incident resolution directly from an email link.
+    /// </summary>
+    [HttpGet("{id}/approve-via-email")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ApproveViaEmail(Guid id)
+    {
+        var command = new ResolveHealthIncidentCommand
+        {
+            Id = id,
+            Status = "Resolved",
+            ResolvedAt = DateTime.UtcNow,
+            IsManagerApproval = true
+        };
+
+        await Mediator.Send(command);
+        return Content("<html><body style='font-family: Arial, sans-serif; padding: 50px; text-align: center; background-color: #f9fafb;'>" +
+                       "<div style='background: white; max-width: 500px; margin: 0 auto; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);'>" +
+                       "<h1 style='color: #10b981; margin-top: 0;'>✓ Incident Approved</h1>" +
+                       "<p style='color: #4b5563; font-size: 16px;'>The health incident has been officially marked as <strong>Resolved</strong>.</p>" +
+                       "<p style='color: #9ca3af; font-size: 14px; margin-top: 30px;'>You may now close this window.</p>" +
+                       "</div></body></html>", "text/html");
+    }
+
+    /// <summary>
     /// Get health history for a specific batch.
     /// </summary>
     [HttpGet("batches/{batchId}/history")] // Note: Route is structured under batches logic but controller handles incidents
