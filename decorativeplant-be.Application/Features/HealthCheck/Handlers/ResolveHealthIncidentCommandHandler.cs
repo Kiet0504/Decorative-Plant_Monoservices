@@ -60,6 +60,12 @@ public class ResolveHealthIncidentCommandHandler : IRequestHandler<ResolveHealth
         // Update Status Info
         // We need to preserve existing info (like reported_at) or merge.
         // Since we are using JsonDocument, we must deserialize, update, serialize.
+        if (request.ImageUrls != null && request.ImageUrls.Count > 0)
+        {
+            var imagesPayload = new { urls = request.ImageUrls };
+            entity.Images = JsonSerializer.SerializeToDocument(imagesPayload, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
+        }
+
         var statusDict = new Dictionary<string, object>();
         if (entity.StatusInfo != null)
         {
@@ -121,11 +127,24 @@ public class ResolveHealthIncidentCommandHandler : IRequestHandler<ResolveHealth
                     string imageUrl = "";
                     if (entity.Images != null)
                     {
-                        try {
-                            var urlArray = JsonSerializer.Deserialize<string[]>(entity.Images.RootElement.GetRawText());
-                            if (urlArray != null && urlArray.Length > 0) imageUrl = urlArray[0];
-                        } catch {}
+                        try 
+                        {
+                            if (entity.Images.RootElement.TryGetProperty("urls", out var urls) && urls.ValueKind == JsonValueKind.Array && urls.GetArrayLength() > 0)
+                            {
+                                imageUrl = urls[0].GetString() ?? "";
+                            }
+                            else if (entity.Images.RootElement.ValueKind == JsonValueKind.Array && entity.Images.RootElement.GetArrayLength() > 0)
+                            {
+                                imageUrl = entity.Images.RootElement[0].GetString() ?? "";
+                            }
+                        } 
+                        catch {}
                     }
+                    if (!string.IsNullOrEmpty(imageUrl) && !imageUrl.StartsWith("http"))
+                    {
+                        imageUrl = $"http://localhost:8080/{imageUrl.TrimStart('/')}";
+                    }
+                    
                     string imageHtml = string.IsNullOrEmpty(imageUrl) ? "" : $"<div style='margin-bottom: 15px;'><img src='{imageUrl}' style='max-width: 300px; border-radius: 8px; border: 1px solid #ccc;' /></div>";
 
                     var subject = $"Action Required: Health Incident Pending Approval for Batch {entity.Batch.BatchCode}";

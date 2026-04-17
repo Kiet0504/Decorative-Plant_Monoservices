@@ -9,6 +9,7 @@ public class ResolveHealthIncidentCommand : IRequest<HealthIncidentDto>
     public string? Status { get; set; }
     public string ResolutionNotes { get; set; } = string.Empty;
     public Dictionary<string, object>? TreatmentDetails { get; set; }
+    public List<string>? ImageUrls { get; set; }
     public DateTime? ResolvedAt { get; set; }
     
     // Internal

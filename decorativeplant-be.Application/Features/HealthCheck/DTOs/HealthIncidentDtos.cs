@@ -40,5 +40,6 @@ public class ResolveHealthIncidentDto
     public string? Status { get; set; } // New field to support InTreatment, Monitoring, etc.
     public string ResolutionNotes { get; set; } = string.Empty;
     public Dictionary<string, object>? TreatmentDetails { get; set; }
+    public List<string>? ImageUrls { get; set; }
     public DateTime? ResolvedAt { get; set; }
 }
