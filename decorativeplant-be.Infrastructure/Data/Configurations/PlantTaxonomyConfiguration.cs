@@ -18,6 +18,7 @@ public class PlantTaxonomyConfiguration : IEntityTypeConfiguration<PlantTaxonomy
         builder.Property(p => p.CareInfo).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(p => p.GrowthInfo).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(p => p.ImageUrl).HasMaxLength(500);
+        builder.Property(p => p.DefaultPrice).HasColumnType("numeric(18,2)");
         builder.Property(p => p.CreatedAt).HasDefaultValueSql("now()");
         builder.HasOne(p => p.Category).WithMany(c => c.PlantTaxonomies).HasForeignKey(p => p.CategoryId).OnDelete(DeleteBehavior.SetNull);
     }
