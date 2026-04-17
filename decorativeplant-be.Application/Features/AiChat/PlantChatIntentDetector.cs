@@ -29,7 +29,7 @@ public static class PlantChatIntentDetector
             "rust", "blight", "rot", "root rot", "stem rot", "leaf spot", "spots on", "yellowing",
             "browning", "wilting", "pest", "aphid", "mealybug", "scale insect", "spider mite", "mite",
             "caterpillar", "snail", "slug", "infection", "infected", "dying", "black spot", "anthracnose",
-            "diagnos", "what's wrong", "whats wrong", "is my plant", "looks sick", "looks bad", "look bad",
+            "diagnos", "is my plant", "looks sick", "looks bad", "look bad",
             "weird mark", "strange mark", "odd mark", "mark on", "this mark", "dark mark", "brown mark",
             "holes in leaves", "chewed", "discoloration", "tumor", "gall", "canker", "edema",
             "bacterial", "viral", "nematode", "white fuzz", "brown spots", "yellow leaves",

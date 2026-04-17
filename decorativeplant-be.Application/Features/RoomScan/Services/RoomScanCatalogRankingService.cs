@@ -6,6 +6,7 @@ using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Common.Settings;
 using decorativeplant_be.Application.Features.Commerce.ProductListings.Queries;
 using MediatR;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace decorativeplant_be.Application.Features.RoomScan.Services;
@@ -15,15 +16,18 @@ public sealed class RoomScanCatalogRankingService : IRoomScanCatalogRankingServi
     private readonly IMediator _mediator;
     private readonly IRoomScanGeminiClient _gemini;
     private readonly RoomScanHandlerOptions _options;
+    private readonly ILogger<RoomScanCatalogRankingService> _logger;
 
     public RoomScanCatalogRankingService(
         IMediator mediator,
         IRoomScanGeminiClient gemini,
-        IOptions<RoomScanHandlerOptions> options)
+        IOptions<RoomScanHandlerOptions> options,
+        ILogger<RoomScanCatalogRankingService> logger)
     {
         _mediator = mediator;
         _gemini = gemini;
         _options = options.Value;
+        _logger = logger;
     }
 
     public async Task<RoomScanCatalogRankingResult> GetRecommendationsAsync(
@@ -43,16 +47,37 @@ public sealed class RoomScanCatalogRankingService : IRoomScanCatalogRankingServi
         var paged = await _mediator.Send(catalogQuery, cancellationToken);
         var listings = paged.Items.ToList();
 
+        // Optional filters: never reduce to zero listings when the shop has stock — otherwise AI chat
+        // returns no `newRecommendations` and the client cannot show "Suggested from our shop".
         if (request.MaxPrice is { } maxP && maxP > 0)
         {
-            listings = listings.Where(p => ParsePrice(p.Price) <= maxP).ToList();
+            var withinBudget = listings.Where(p => ParsePrice(p.Price) <= maxP).ToList();
+            if (withinBudget.Count > 0)
+            {
+                listings = withinBudget;
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Room catalog ranking: max price {MaxPrice} removed all {Count} listings; ranking with full catalog.",
+                    maxP,
+                    listings.Count);
+            }
         }
 
         if (request.PetSafeOnly)
         {
-            listings = listings
-                .Where(p => !LooksToxic(CareGrowthText(p)))
-                .ToList();
+            var safe = listings.Where(p => !LooksToxic(CareGrowthText(p))).ToList();
+            if (safe.Count > 0)
+            {
+                listings = safe;
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Room catalog ranking: pet-safe filter removed all {Count} listings; ranking with unfiltered catalog.",
+                    listings.Count);
+            }
         }
 
         var exclude = request.ExcludeListingIds?
@@ -86,15 +111,23 @@ public sealed class RoomScanCatalogRankingService : IRoomScanCatalogRankingServi
         var snippetIds = snippets.Select(s => s.Id).ToHashSet();
         var maxRec = Math.Clamp(_options.MaxRecommendations, 1, 10);
 
-        var ranked = await _gemini.RankListingsAsync(
-            request.Profile,
-            snippets,
-            request.PetSafeOnly,
-            request.SkillLevel,
-            maxRec,
-            request.PipelineMode,
-            request.RankRefinementNotes,
-            cancellationToken);
+        IReadOnlyList<RoomScanGeminiRankItem>? ranked = null;
+        try
+        {
+            ranked = await _gemini.RankListingsAsync(
+                request.Profile,
+                snippets,
+                request.PetSafeOnly,
+                request.SkillLevel,
+                maxRec,
+                request.PipelineMode,
+                request.RankRefinementNotes,
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Room catalog ranking: Gemini rank failed; using fallback ordering.");
+        }
 
         var recommendations = MergeRecommendations(
             ranked,
@@ -332,15 +365,43 @@ public sealed class RoomScanCatalogRankingService : IRoomScanCatalogRankingServi
         return score;
     }
 
+    /// <summary>
+    /// Heuristic for pet-safe filtering. Must NOT treat "non-toxic" / "pet safe" as toxic — naive
+    /// <c>Contains("toxic")</c> matches the substring inside "non-toxic" and would drop safe plants.
+    /// </summary>
     private static bool LooksToxic(string careText)
     {
+        if (string.IsNullOrWhiteSpace(careText))
+        {
+            return false;
+        }
+
         var lower = careText.ToLowerInvariant();
-        if (lower.Contains("toxic") || lower.Contains("poison"))
+        if (lower.Contains("non-toxic", StringComparison.Ordinal) ||
+            lower.Contains("non toxic", StringComparison.Ordinal) ||
+            lower.Contains("not toxic", StringComparison.Ordinal) ||
+            lower.Contains("pet safe", StringComparison.Ordinal) ||
+            lower.Contains("pet-safe", StringComparison.Ordinal) ||
+            lower.Contains("safe for pets", StringComparison.Ordinal) ||
+            lower.Contains("safe around pets", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (lower.Contains("toxic to cat", StringComparison.Ordinal) ||
+            lower.Contains("toxic to dog", StringComparison.Ordinal) ||
+            lower.Contains("toxic to pets", StringComparison.Ordinal) ||
+            lower.Contains("poisonous", StringComparison.Ordinal))
         {
             return true;
         }
 
-        return lower.Contains("toxic to cat") || lower.Contains("toxic to dog");
+        if (lower.Contains("toxic", StringComparison.Ordinal) || lower.Contains("poison", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string CareGrowthText(ProductListingResponse p)

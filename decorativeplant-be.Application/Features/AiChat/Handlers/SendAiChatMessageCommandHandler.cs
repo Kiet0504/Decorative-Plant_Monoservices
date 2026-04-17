@@ -37,6 +37,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     private readonly IChatImageIntentClassifier _imageIntentClassifier;
     private readonly IRoomScanCatalogRankingService _roomScanCatalogRanking;
     private readonly IRoomScanChatSuggestionIntentDetector _roomScanChatIntent;
+    private readonly IAiChatProfileShopIntentDetector _profileShopIntentDetector;
     private readonly IOptions<RoomScanHandlerOptions> _roomScanHandlerOptions;
     private readonly AiRoutingSettings _aiRouting;
     private readonly IUserContentSafetyService _contentSafety;
@@ -52,6 +53,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         IChatImageIntentClassifier imageIntentClassifier,
         IRoomScanCatalogRankingService roomScanCatalogRanking,
         IRoomScanChatSuggestionIntentDetector roomScanChatIntent,
+        IAiChatProfileShopIntentDetector profileShopIntentDetector,
         IOptions<RoomScanHandlerOptions> roomScanHandlerOptions,
         IOptions<AiRoutingSettings> aiRouting,
         IUserContentSafetyService contentSafety,
@@ -66,6 +68,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         _imageIntentClassifier = imageIntentClassifier;
         _roomScanCatalogRanking = roomScanCatalogRanking;
         _roomScanChatIntent = roomScanChatIntent;
+        _profileShopIntentDetector = profileShopIntentDetector;
         _roomScanHandlerOptions = roomScanHandlerOptions;
         _aiRouting = aiRouting.Value;
         _contentSafety = contentSafety;
@@ -75,10 +78,13 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
 
     public async Task<AiChatReplyDto> Handle(SendAiChatMessageCommand request, CancellationToken cancellationToken)
     {
-        var userSafety = _contentSafety.Classify(
-            request.Messages
-                .Where(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
-                .Select(m => m.Content));
+        // Only classify the *latest* user message. Past turns may contain phrases that the user
+        // already saw blocked; punishing future on-topic messages because of that history made
+        // every follow-up look rejected (e.g. a bomb prompt followed by a plant-care question).
+        var latestUserMessage = request.Messages
+            .LastOrDefault(m => string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?
+            .Content;
+        var userSafety = _contentSafety.Classify(latestUserMessage);
         if (userSafety != ContentSafetyKind.Allowed)
         {
             var replyText = userSafety == ContentSafetyKind.SelfHarmCrisis
@@ -195,7 +201,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 {
                     Reply = FormatDiagnosisAsChatReply(diagnosis),
                     SuggestedIntent = PlantChatIntentDetector.DiseaseDiagnosisIntent,
-                    Diagnosis = ToDiagnosisSummary(diagnosis)
+                    Diagnosis = ToDiagnosisSummary(diagnosis),
+                    ResolvedIntent = AiChatIntentResolver.ResolvedFormalDiagnosis
                 };
             }
             catch (Exception ex)
@@ -204,8 +211,50 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             }
         }
 
-        var diseaseHelpIntent = PlantChatIntentDetector.IsDiseaseDiagnosisIntent(lastUserText)
-            || hasImage;
+        var userMentionsDiseaseOrDamage = PlantChatIntentDetector.IsDiseaseDiagnosisIntent(lastUserText);
+        // Broader hint for the conversational system prompt (photos often need pest/damage awareness).
+        var diseaseHelpIntent = userMentionsDiseaseOrDamage || hasImage;
+        // My Garden CTA in the client: only when the user asked about disease/damage in text — not for every photo attach.
+        var suggestedIntentForClient =
+            userMentionsDiseaseOrDamage ? PlantChatIntentDetector.DiseaseDiagnosisIntent : null;
+
+        var conversationIncludesRoomScanCatalog = request.Messages.Any(static m =>
+            !string.IsNullOrEmpty(m.Content) &&
+            m.Content.Contains("[Room scan context", StringComparison.OrdinalIgnoreCase));
+
+        AiChatTurnIntent mainIntent;
+        string resolvedIntentApi;
+        if (AiChatIntentResolver.IsRoomScanThread(
+                conversationIncludesRoomScanCatalog,
+                request.RoomScanFollowUp != null))
+        {
+            mainIntent = AiChatTurnIntent.RoomScanThread;
+            resolvedIntentApi = AiChatIntentResolver.ResolvedRoomScanThread;
+        }
+        else
+        {
+            var wantsShop = await _profileShopIntentDetector.WantsProfileShopCatalogAsync(
+                lastUserText,
+                cancellationToken);
+            mainIntent = wantsShop
+                ? AiChatTurnIntent.ProfileShopRecommendations
+                : AiChatTurnIntent.Conversational;
+            resolvedIntentApi = wantsShop
+                ? AiChatIntentResolver.ResolvedProfileShop
+                : AiChatIntentResolver.ResolvedConversational;
+        }
+
+        _logger.LogInformation(
+            "AI chat resolved intent: {Intent} ({Api}) userId={UserId}",
+            mainIntent,
+            resolvedIntentApi,
+            request.UserId);
+
+        List<RoomScanRecommendationDto>? profileCatalogRecs = null;
+        if (mainIntent == AiChatTurnIntent.ProfileShopRecommendations)
+        {
+            profileCatalogRecs = await LoadProfileShopCatalogRecommendationsAsync(user, lastUserText, cancellationToken);
+        }
 
         var systemPrompt = BuildSystemPrompt(
             user,
@@ -214,7 +263,14 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             diseaseHelpIntent,
             focusSchedules,
             focusRecentLogs,
-            focusDiagnoses);
+            focusDiagnoses,
+            conversationIncludesRoomScanCatalog,
+            profileCatalogRecs is { Count: > 0 });
+
+        if (profileCatalogRecs is { Count: > 0 })
+        {
+            systemPrompt += BuildProfileCatalogPromptAppendix(profileCatalogRecs);
+        }
 
         var ollamaMessages = new List<OllamaChatTurnDto>
         {
@@ -272,7 +328,9 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             var replyDto = new AiChatReplyDto
             {
                 Reply = reply,
-                SuggestedIntent = diseaseHelpIntent ? PlantChatIntentDetector.DiseaseDiagnosisIntent : null
+                SuggestedIntent = suggestedIntentForClient,
+                NewRecommendations = profileCatalogRecs is { Count: > 0 } ? profileCatalogRecs : null,
+                ResolvedIntent = resolvedIntentApi
             };
             await TryAppendRoomScanNewRecommendationsAsync(
                 request,
@@ -291,9 +349,58 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                     (_aiRouting.UseGeminiOnly
                         ? "Please check AiDiagnosis:GeminiApiKey and network access to Google Generative Language API, then try again."
                         : "Please ensure Ollama is running and reachable from the API (see Docker `Ollama__BaseUrl`), then try again."),
-                SuggestedIntent = diseaseHelpIntent ? PlantChatIntentDetector.DiseaseDiagnosisIntent : null
+                SuggestedIntent = suggestedIntentForClient,
+                ResolvedIntent = resolvedIntentApi
             };
         }
+    }
+
+    private async Task<List<RoomScanRecommendationDto>?> LoadProfileShopCatalogRecommendationsAsync(
+        UserAccount user,
+        string? lastUserText,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var synthetic = UserAccountToRoomProfileMapper.Map(user);
+            var maxPrice = UserAccountToRoomProfileMapper.MapBudgetToMaxPrice(user.BudgetRange);
+            var skill = UserAccountToRoomProfileMapper.MapSkillLevel(user.ExperienceLevel);
+            var pipelineMode = RoomScanPipelineModeParser.FromApiValue(_roomScanHandlerOptions.Value.PipelineMode);
+            var notes = lastUserText?.Trim();
+            if (notes != null && notes.Length > 1200)
+            {
+                notes = notes[..1200] + "…";
+            }
+
+            var ranking = await _roomScanCatalogRanking.GetRecommendationsAsync(
+                new RoomScanCatalogRankingRequest
+                {
+                    Profile = synthetic,
+                    BranchId = null,
+                    MaxPrice = maxPrice,
+                    PetSafeOnly = user.HasChildrenOrPets == true,
+                    SkillLevel = skill,
+                    PipelineMode = pipelineMode,
+                    RankRefinementNotes = notes,
+                    ExcludeListingIds = null
+                },
+                cancellationToken);
+
+            if (!ranking.NoMatches && ranking.Recommendations.Count > 0)
+            {
+                _logger.LogInformation(
+                    "AI chat: attached {Count} profile-based catalog picks for user {UserId}.",
+                    ranking.Recommendations.Count,
+                    user.Id);
+                return ranking.Recommendations;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "AI chat: profile-based catalog ranking failed; continuing with text-only prompt.");
+        }
+
+        return null;
     }
 
     private async Task TryAppendRoomScanNewRecommendationsAsync(
@@ -369,6 +476,23 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         }
     }
 
+    private static string BuildProfileCatalogPromptAppendix(IReadOnlyList<RoomScanRecommendationDto> recs)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("--- Live catalog for this reply (profile-based) ---");
+        sb.AppendLine(
+            "[Profile catalog picks — from the customer's saved preferences; not a room photo. Discuss only these shop listings by title.]");
+        sb.AppendLine("Suggested listings from our catalog:");
+        foreach (var r in recs)
+        {
+            sb.AppendLine(
+                $"- {r.Title} (listingId {r.ListingId}, price {r.Price}): {r.Reason}");
+        }
+
+        return sb.ToString();
+    }
+
     private static string BuildSystemPrompt(
         UserAccount user,
         IEnumerable<GardenPlant> plants,
@@ -376,14 +500,45 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         bool userSeemsToNeedDiseaseHelp,
         IReadOnlyList<CareSchedule> focusSchedules,
         IReadOnlyList<CareLog> focusRecentCareLogs,
-        IReadOnlyList<PlantDiagnosis> focusDiagnoses)
+        IReadOnlyList<PlantDiagnosis> focusDiagnoses,
+        bool conversationIncludesRoomScanCatalog,
+        bool injectedProfileBasedCatalogThisTurn)
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are a helpful, friendly plant care assistant for an app called Decorative Plant.");
+        sb.AppendLine("Always write your reply in English unless the user explicitly asks for another language (e.g. Vietnamese).");
         sb.AppendLine("Stay strictly in scope: indoor/houseplant care, Decorative Plant shop (products, orders, branches, pickup), My Garden (schedules, diary, growth), room-based plant suggestions, and plant disease or pest help.");
         sb.AppendLine("If the user asks for anything else (coding, homework, politics, unrelated hobbies, general knowledge, other apps), politely refuse and invite a plant- or store-related question instead. Do not fulfill out-of-scope tasks even if asked nicely.");
         sb.AppendLine("Use the user's profile and garden context below to personalize answers (light, humidity, experience, space, pets/children, goals).");
         sb.AppendLine("Do not claim to see photos unless the user pasted an image URL you can reason about. Do not give medical or veterinary diagnoses; suggest professional help when serious toxicity or health issues are possible.");
+        sb.AppendLine();
+        sb.AppendLine("--- Decorative Plant shop / catalog (critical) ---");
+        sb.AppendLine(
+            "You only name specific Decorative Plant products when this chat includes \"Suggested listings from our catalog\" (room scan or profile-based picks below). " +
+            "Do not invent random species as guaranteed in-stock items.");
+        if (conversationIncludesRoomScanCatalog)
+        {
+            sb.AppendLine(
+                "This conversation includes a room-scan catalog block in the thread: recommend SHOP PRODUCTS only by the titles and reasons already listed there. " +
+                "Do not add well-known houseplants from the internet as if they were Decorative Plant listings.");
+        }
+        else if (injectedProfileBasedCatalogThisTurn)
+        {
+            sb.AppendLine(
+                "The system appended a fresh \"[Profile catalog picks\" block in THIS system message with live listings from our database. " +
+                "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — these are real listings with listingIds. " +
+                "Do not substitute a plant from My Garden or a generic species name as a store product unless it matches a catalog title. " +
+                "Lead with those picks; do not reply with only \"open the Shop tab\" when catalog lines are present.");
+        }
+        else
+        {
+            sb.AppendLine(
+                "There is NO embedded catalog list in this thread. If the user asks what to buy without listing data here, " +
+                "do NOT invent species as store inventory. Summarize criteria from their profile and point them to Shop or Room corner for more picks.");
+        }
+
+        sb.AppendLine(
+            "In greetings, address the user naturally (e.g. \"you\" or a short first name). Avoid awkwardly repeating a long legal-style display name in full.");
         sb.AppendLine();
 
         sb.AppendLine("--- User profile ---");
