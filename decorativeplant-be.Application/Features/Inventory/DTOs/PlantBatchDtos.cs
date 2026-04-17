@@ -22,7 +22,10 @@ public class PlantBatchDto
     public string? HealthStatus { get; set; }
     public string? Stage { get; set; }
     
+    [JsonPropertyName("initialQuantity")]
     public int InitialQuantity { get; set; }
+
+    [JsonPropertyName("currentTotalQuantity")]
     public int CurrentTotalQuantity { get; set; }
     public decimal? PurchaseCost { get; set; }
     public string? ImageUrl { get; set; }
@@ -37,6 +40,10 @@ public class PlantBatchSummaryDto
     public string? BranchName { get; set; } // Added
     public string? HealthStatus { get; set; }
     public string? Stage { get; set; }
+    [JsonPropertyName("initialQuantity")]
+    public int InitialQuantity { get; set; }
+
+    [JsonPropertyName("currentTotalQuantity")]
     public int CurrentTotalQuantity { get; set; }
     public DateTime? CreatedAt { get; set; }
 }

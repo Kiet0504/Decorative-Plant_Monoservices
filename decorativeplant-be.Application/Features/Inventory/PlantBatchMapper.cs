@@ -60,6 +60,7 @@ public static class PlantBatchMapper
             BranchName = entity.Branch?.Name, // Added
             HealthStatus = NormalizeValue(ExtractSpec(entity.Specs, "health_status") ?? "Healthy"),
             Stage = NormalizeValue(ExtractSpec(entity.Specs, "maturity_stage") ?? "Stable"),
+            InitialQuantity = entity.InitialQuantity ?? 0,
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             CreatedAt = entity.CreatedAt
         };

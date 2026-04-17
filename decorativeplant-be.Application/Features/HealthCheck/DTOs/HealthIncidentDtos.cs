@@ -1,26 +1,62 @@
+using System.Text.Json.Serialization;
 using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Features.HealthCheck.DTOs;
 
 public class HealthIncidentDto
 {
+    [JsonPropertyName("id")]
     public Guid Id { get; set; }
+
+    [JsonPropertyName("batchId")]
     public Guid? BatchId { get; set; }
+
+    [JsonPropertyName("batchCode")]
     public string? BatchCode { get; set; }
-    public string IncidentType { get; set; } = string.Empty; // Pest, Disease, Nutrient, Physical
-    public string Severity { get; set; } = string.Empty; // Low, Medium, High, Critical
-    public string Status { get; set; } = string.Empty; // Reported, InTreatment, Resolved
+
+    [JsonPropertyName("incidentType")]
+    public string IncidentType { get; set; } = string.Empty;
+
+    [JsonPropertyName("severity")]
+    public string Severity { get; set; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("description")]
     public string? Description { get; set; }
-    public object? TreatmentDetails { get; set; } // JSONB
-    public object? EvidenceImages { get; set; } // JSONB
+
+    [JsonPropertyName("treatmentDetails")]
+    public object? TreatmentDetails { get; set; }
+
+    [JsonPropertyName("evidenceImages")]
+    public object? EvidenceImages { get; set; }
+
+    [JsonPropertyName("imageUrl")]
     public string? ImageUrl { get; set; }
+
+    [JsonPropertyName("reportedAt")]
     public DateTime? ReportedAt { get; set; }
+
+    [JsonPropertyName("reportedBy")]
     public Guid? ReportedBy { get; set; }
+
+    [JsonPropertyName("reportedByName")]
     public string? ReportedByName { get; set; }
+
+    [JsonPropertyName("resolvedAt")]
     public DateTime? ResolvedAt { get; set; }
+
+    [JsonPropertyName("resolvedBy")]
     public Guid? ResolvedBy { get; set; }
+
+    [JsonPropertyName("resolvedByName")]
     public string? ResolvedByName { get; set; }
+
+    [JsonPropertyName("branchId")]
     public Guid? BranchId { get; set; }
+
+    [JsonPropertyName("branchName")]
     public string? BranchName { get; set; }
 }
 
