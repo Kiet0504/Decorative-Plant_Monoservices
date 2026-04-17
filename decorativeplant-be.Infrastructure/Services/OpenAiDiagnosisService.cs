@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -12,19 +13,27 @@ public class OpenAiDiagnosisService : IAiDiagnosisService
     private readonly AiDiagnosisSettings _settings;
     private readonly ILogger<OpenAiDiagnosisService> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IUserContentSafetyService _contentSafety;
 
     public OpenAiDiagnosisService(
         IOptions<AiDiagnosisSettings> settings,
         ILogger<OpenAiDiagnosisService> logger,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        IUserContentSafetyService contentSafety)
     {
         _settings = settings.Value;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _contentSafety = contentSafety;
     }
 
     public async Task<AiDiagnosisResultDto> AnalyzePlantImageAsync(string imageUrl, string? userDescription, CancellationToken cancellationToken = default)
     {
+        if (!_contentSafety.IsAllowed(userDescription))
+        {
+            throw new ValidationException(_contentSafety.BlockedApiMessage);
+        }
+
         if (string.IsNullOrWhiteSpace(_settings.ApiKey))
         {
             _logger.LogWarning("AiDiagnosis ApiKey not configured. Returning mock result.");

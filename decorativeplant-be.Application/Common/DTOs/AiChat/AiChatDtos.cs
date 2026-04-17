@@ -1,3 +1,5 @@
+using decorativeplant_be.Application.Common.DTOs.RoomScan;
+
 namespace decorativeplant_be.Application.Common.DTOs.AiChat;
 
 /// <summary>Single turn in a client-side chat (no system role; server injects personalization).</summary>
@@ -21,6 +23,28 @@ public sealed class AiChatRequestDto
 
     /// <summary>MIME type hint, e.g. image/jpeg (optional if data-URL).</summary>
     public string? AttachedImageMimeType { get; set; }
+
+    /// <summary>
+    /// When set, the server may re-rank catalog picks for this room profile when chat intent asks for different suggestions.
+    /// </summary>
+    public RoomScanChatFollowUpDto? RoomScanFollowUp { get; set; }
+}
+
+/// <summary>Context from a completed room scan so /ai/chat can refresh recommendations without re-uploading a photo.</summary>
+public sealed class RoomScanChatFollowUpDto
+{
+    public RoomProfileDto RoomProfile { get; set; } = new();
+
+    public Guid? BranchId { get; set; }
+    public decimal? MaxPrice { get; set; }
+    public bool PetSafeOnly { get; set; }
+    public string? SkillLevel { get; set; }
+
+    /// <summary>Optional override; default is server <c>RoomScan:PipelineMode</c>.</summary>
+    public string? PipelineMode { get; set; }
+
+    /// <summary>Earlier suggestion ids to deprioritize or exclude when picking alternatives.</summary>
+    public List<Guid>? PreviousListingIds { get; set; }
 }
 
 public sealed class AiChatReplyDto
@@ -34,6 +58,15 @@ public sealed class AiChatReplyDto
 
     /// <summary>Populated when the formal Gemini + Ollama diagnosis pipeline ran for this message.</summary>
     public AiChatDiagnosisSummaryDto? Diagnosis { get; set; }
+
+    /// <summary>Fresh catalog picks after a room-scan follow-up chat (e.g. user asked for other suggestions).</summary>
+    public List<RoomScanRecommendationDto>? NewRecommendations { get; set; }
+
+    /// <summary>True when the message was rejected by server content checks (no LLM call for the main reply).</summary>
+    public bool ContentBlocked { get; set; }
+
+    /// <summary>True when the message was off-topic for this app (plants, shop, garden, diagnosis only).</summary>
+    public bool OutOfScope { get; set; }
 }
 
 public sealed class AiChatDiagnosisSummaryDto

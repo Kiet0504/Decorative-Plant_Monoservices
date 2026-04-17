@@ -162,6 +162,8 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<IPlantDiagnosisFromBase64Service>(sp =>
             sp.GetRequiredService<GeminiOllamaDiagnosisService>());
         services.AddScoped<IChatDiagnosisPipelineSettings, ChatDiagnosisPipelineSettings>();
+        services.Configure<RoomScanSettings>(configuration.GetSection(RoomScanSettings.SectionName));
+        services.AddScoped<IRoomScanGeminiClient, GeminiRoomScanClient>();
         services.AddScoped<IAiDiagnosisService>(sp =>
         {
             var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiDiagnosisSettings>>().Value;
@@ -170,10 +172,15 @@ public static class InfrastructureServiceRegistration
                 : sp.GetRequiredService<OpenAiDiagnosisService>();
         });
 
-        // Local AI (Ollama) for personalized care guidance + diagnosis reasoning when Provider=GeminiOllama
+        // Local AI (Ollama) or Gemini-only when AiRouting:UseGeminiOnly=true (see OllamaOrGeminiClient)
+        services.Configure<AiRoutingSettings>(configuration.GetSection(AiRoutingSettings.SectionName));
         services.Configure<OllamaSettings>(configuration.GetSection(OllamaSettings.SectionName));
-        services.AddScoped<IOllamaClient, OllamaClient>();
+        services.AddScoped<OllamaClient>();
+        services.AddScoped<GeminiGenerativeContentClient>();
+        services.AddScoped<IOllamaClient, OllamaOrGeminiClient>();
         services.AddScoped<IChatImageIntentClassifier, OllamaChatImageIntentClassifier>();
+        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IRoomScanChatSuggestionIntentDetector,
+            OllamaRoomScanChatSuggestionIntentDetector>();
 
         services.Configure<AiCareAdviceSettings>(configuration.GetSection(AiCareAdviceSettings.SectionName));
 

@@ -3,6 +3,10 @@ using FluentValidation;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using decorativeplant_be.Application.Common.Behaviors;
+using decorativeplant_be.Application.Common.Interfaces;
+using decorativeplant_be.Application.Features.RoomScan.Services;
+using decorativeplant_be.Application.Services.ContentSafety;
+using decorativeplant_be.Application.Services.PlantAssistantScope;
 using decorativeplant_be.Application.Services.Recommendations;
 
 namespace decorativeplant_be.Application;
@@ -26,6 +30,11 @@ public static class ApplicationServiceRegistration
 
         // Recommendations
         services.AddScoped<IRecommendationEngine, RuleBasedRecommendationEngine>();
+
+        services.AddScoped<IRoomScanCatalogRankingService, RoomScanCatalogRankingService>();
+
+        services.AddSingleton<IUserContentSafetyService, UserContentSafetyService>();
+        services.AddSingleton<IPlantAssistantScopeService, PlantAssistantScopeService>();
 
         return services;
     }

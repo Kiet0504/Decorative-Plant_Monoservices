@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using Microsoft.Extensions.Logging;
 
@@ -11,15 +12,18 @@ public sealed class GeminiOllamaDiagnosisService : IAiDiagnosisService, IPlantDi
 {
     private readonly GeminiPlantDiseaseDetectionService _geminiDetection;
     private readonly OllamaDiagnosisReasoningService _ollamaReasoning;
+    private readonly IUserContentSafetyService _contentSafety;
     private readonly ILogger<GeminiOllamaDiagnosisService> _logger;
 
     public GeminiOllamaDiagnosisService(
         GeminiPlantDiseaseDetectionService geminiDetection,
         OllamaDiagnosisReasoningService ollamaReasoning,
+        IUserContentSafetyService contentSafety,
         ILogger<GeminiOllamaDiagnosisService> logger)
     {
         _geminiDetection = geminiDetection;
         _ollamaReasoning = ollamaReasoning;
+        _contentSafety = contentSafety;
         _logger = logger;
     }
 
@@ -28,6 +32,8 @@ public sealed class GeminiOllamaDiagnosisService : IAiDiagnosisService, IPlantDi
         string? userDescription,
         CancellationToken cancellationToken = default)
     {
+        EnsureUserTextAllowed(userDescription, gardenContextText: null);
+
         var detection = await _geminiDetection.DetectAsync(imageUrl, userDescription, cancellationToken);
         if (detection == null)
         {
@@ -52,6 +58,8 @@ public sealed class GeminiOllamaDiagnosisService : IAiDiagnosisService, IPlantDi
         string? gardenContextText = null,
         CancellationToken cancellationToken = default)
     {
+        EnsureUserTextAllowed(userDescription, gardenContextText);
+
         var detection = await _geminiDetection.DetectFromBase64Async(
             imageBase64,
             mimeType,
@@ -71,6 +79,16 @@ public sealed class GeminiOllamaDiagnosisService : IAiDiagnosisService, IPlantDi
             cancellationToken);
 
         return MergeDetectionAndAdvice(detection, recommendations, explanation);
+    }
+
+    private void EnsureUserTextAllowed(string? userDescription, string? gardenContextText)
+    {
+        if (_contentSafety.IsAllowed(new[] { userDescription, gardenContextText }))
+        {
+            return;
+        }
+
+        throw new ValidationException(_contentSafety.BlockedApiMessage);
     }
 
     private static AiDiagnosisResultDto MergeDetectionAndAdvice(
