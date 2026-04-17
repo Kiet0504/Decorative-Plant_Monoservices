@@ -560,8 +560,23 @@ public class AdminController : ControllerBase
 
     // ─── Revenue ──────────────────────────────────────────────────────────
 
+    /// <param name="salesPeriod">Legacy unified filter when <paramref name="productsPeriod"/> / <paramref name="branchesPeriod"/> omitted.</param>
+    /// <param name="productsPeriod">Best sellers: <c>month</c> or <c>year</c>.</param>
+    /// <param name="branchesPeriod">Top branches: <c>month</c> or <c>year</c>.</param>
+    /// <remarks>KPIs and monthly series stay all-time; products and branches can use different windows.</remarks>
     [HttpGet("revenue")]
-    public async Task<IActionResult> GetRevenue(CancellationToken ct)
+    public async Task<IActionResult> GetRevenue(
+        [FromQuery] string? topProductsMonth,
+        [FromQuery] string salesPeriod = "month",
+        [FromQuery] string? salesMonth = null,
+        [FromQuery] string? salesYear = null,
+        [FromQuery] string? productsPeriod = null,
+        [FromQuery] string? productsMonth = null,
+        [FromQuery] string? productsYear = null,
+        [FromQuery] string? branchesPeriod = null,
+        [FromQuery] string? branchesMonth = null,
+        [FromQuery] string? branchesYear = null,
+        CancellationToken ct = default)
     {
         var validStatuses = new[] { "confirmed", "processing", "shipping", "delivered", "completed" };
 
@@ -572,6 +587,37 @@ public class AdminController : ControllerBase
             .Where(o => o.Status != null && validStatuses.Contains(o.Status))
             .ToListAsync(ct);
 
+        string? latestMonthKey = orders.Count == 0
+            ? null
+            : orders.Max(o => (o.CreatedAt ?? DateTime.UtcNow).ToString("yyyy-MM"));
+
+        string? latestYearKey = orders.Count == 0
+            ? null
+            : orders.Max(o => (o.CreatedAt ?? DateTime.UtcNow).Year).ToString("D4", System.Globalization.CultureInfo.InvariantCulture);
+
+        static string NormPeriod(string? p)
+        {
+            var x = string.IsNullOrWhiteSpace(p) ? "month" : p.Trim().ToLowerInvariant();
+            return x == "year" ? "year" : "month";
+        }
+
+        var prodPeriod = NormPeriod(productsPeriod ?? salesPeriod);
+        var brPeriod = NormPeriod(branchesPeriod ?? salesPeriod);
+
+        string? prodMonth = productsMonth ?? (prodPeriod == "month" ? (salesMonth ?? topProductsMonth) : null);
+        string? prodYear = productsYear ?? (prodPeriod == "year" ? salesYear : null);
+        if (prodPeriod == "month" && string.IsNullOrWhiteSpace(prodMonth))
+            prodMonth = "latest";
+        if (prodPeriod == "year" && string.IsNullOrWhiteSpace(prodYear))
+            prodYear = "latest";
+
+        string? brMonth = branchesMonth ?? (brPeriod == "month" ? (salesMonth ?? topProductsMonth) : null);
+        string? brYear = branchesYear ?? (brPeriod == "year" ? salesYear : null);
+        if (brPeriod == "month" && string.IsNullOrWhiteSpace(brMonth))
+            brMonth = "latest";
+        if (brPeriod == "year" && string.IsNullOrWhiteSpace(brYear))
+            brYear = "latest";
+
         // Branch lookup
         var branchMap = await _context.Branches.AsNoTracking()
             .ToDictionaryAsync(b => b.Id, b => new { b.Name, Address = b.ContactInfo }, ct);
@@ -579,7 +625,7 @@ public class AdminController : ControllerBase
         // 2. Per-order computation: parse financials once, then attribute items to branches.
         var branchAgg = new Dictionary<Guid, (string Name, string Address, decimal Gross, decimal DiscountShare, int OrderIds)>();
         var monthlyAgg = new Dictionary<string, decimal>(); // "2026-01" → net revenue
-        var productAgg = new Dictionary<string, (string Title, int UnitsSold, decimal UnitPrice, decimal Revenue)>();
+        var productAgg = new Dictionary<string, (string Title, int UnitsSold, decimal UnitPrice, decimal Revenue, string? ImageUrl)>();
 
         decimal totalOrderRevenue = 0;
         int totalOrderCount = orders.Count;
@@ -601,7 +647,10 @@ public class AdminController : ControllerBase
             var monthKey = (order.CreatedAt ?? DateTime.UtcNow).ToString("yyyy-MM");
             monthlyAgg[monthKey] = monthlyAgg.GetValueOrDefault(monthKey) + orderTotal;
 
-            // Per-item attribution
+            var inProductsWindow = OrderMatchesSalesWindow(order, prodPeriod, prodMonth, prodYear, latestMonthKey, latestYearKey);
+            var inBranchesWindow = OrderMatchesSalesWindow(order, brPeriod, brMonth, brYear, latestMonthKey, latestYearKey);
+
+            // Per-item attribution: branches and products may use different time windows
             foreach (var item in order.OrderItems)
             {
                 decimal itemSubtotal = 0;
@@ -618,43 +667,63 @@ public class AdminController : ControllerBase
                     ? Math.Round(orderDiscount * (itemSubtotal / orderSubtotal), 0)
                     : 0;
 
-                var branchId = item.BranchId ?? Guid.Empty;
-                if (!branchAgg.ContainsKey(branchId))
+                if (inBranchesWindow)
                 {
-                    var branchName = "Unknown";
-                    var branchAddress = "";
-                    if (branchId != Guid.Empty && branchMap.TryGetValue(branchId, out var bi))
+                    var branchId = item.BranchId ?? Guid.Empty;
+                    if (!branchAgg.ContainsKey(branchId))
                     {
-                        branchName = bi.Name;
-                        if (bi.Address != null)
+                        var branchName = "Unknown";
+                        var branchAddress = "";
+                        if (branchId != Guid.Empty && branchMap.TryGetValue(branchId, out var bi))
                         {
-                            var addr = bi.Address.RootElement;
-                            branchAddress = addr.TryGetProperty("address", out var a) ? a.GetString() ?? "" : "";
+                            branchName = bi.Name;
+                            if (bi.Address != null)
+                            {
+                                var addr = bi.Address.RootElement;
+                                branchAddress = addr.TryGetProperty("address", out var a) ? a.GetString() ?? "" : "";
+                            }
                         }
+                        branchAgg[branchId] = (branchName, branchAddress, 0, 0, 0);
                     }
-                    branchAgg[branchId] = (branchName, branchAddress, 0, 0, 0);
+                    var cur = branchAgg[branchId];
+                    branchAgg[branchId] = (cur.Name, cur.Address, cur.Gross + itemSubtotal, cur.DiscountShare + discountShare, cur.OrderIds);
                 }
-                var cur = branchAgg[branchId];
-                branchAgg[branchId] = (cur.Name, cur.Address, cur.Gross + itemSubtotal, cur.DiscountShare + discountShare, cur.OrderIds);
 
-                // Product aggregation (by title snapshot for simplicity)
-                var title = "Unknown";
-                if (item.Snapshots != null && item.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
-                    title = ts.GetString() ?? "Unknown";
+                if (inProductsWindow)
+                {
+                    var title = "Unknown";
+                    string? imageSnapshot = null;
+                    if (item.Snapshots != null)
+                    {
+                        var sn = item.Snapshots.RootElement;
+                        if (sn.TryGetProperty("title_snapshot", out var ts))
+                            title = ts.GetString() ?? "Unknown";
+                        if (sn.TryGetProperty("image_snapshot", out var ims))
+                            imageSnapshot = ims.GetString();
+                    }
 
-                if (!productAgg.ContainsKey(title))
-                    productAgg[title] = (title, 0, itemUnitPrice, 0);
-                var pc = productAgg[title];
-                productAgg[title] = (pc.Title, pc.UnitsSold + item.Quantity, itemUnitPrice > 0 ? itemUnitPrice : pc.UnitPrice, pc.Revenue + itemSubtotal);
+                    if (!productAgg.ContainsKey(title))
+                        productAgg[title] = (title, 0, itemUnitPrice, 0, imageSnapshot);
+                    var pc = productAgg[title];
+                    var mergedImage = string.IsNullOrEmpty(pc.ImageUrl) ? imageSnapshot : pc.ImageUrl;
+                    productAgg[title] = (
+                        pc.Title,
+                        pc.UnitsSold + item.Quantity,
+                        itemUnitPrice > 0 ? itemUnitPrice : pc.UnitPrice,
+                        pc.Revenue + itemSubtotal,
+                        mergedImage);
+                }
             }
 
-            // Count distinct orders per branch
-            foreach (var branchId in order.OrderItems.Select(i => i.BranchId ?? Guid.Empty).Distinct())
+            if (inBranchesWindow)
             {
-                if (branchAgg.ContainsKey(branchId))
+                foreach (var branchId in order.OrderItems.Select(i => i.BranchId ?? Guid.Empty).Distinct())
                 {
-                    var c = branchAgg[branchId];
-                    branchAgg[branchId] = (c.Name, c.Address, c.Gross, c.DiscountShare, c.OrderIds + 1);
+                    if (branchAgg.ContainsKey(branchId))
+                    {
+                        var c = branchAgg[branchId];
+                        branchAgg[branchId] = (c.Name, c.Address, c.Gross, c.DiscountShare, c.OrderIds + 1);
+                    }
                 }
             }
         }
@@ -674,18 +743,43 @@ public class AdminController : ControllerBase
         // 4. Build response
         var avgOrderValue = totalOrderCount > 0 ? Math.Round(totalOrderRevenue / totalOrderCount, 0) : 0;
 
-        var branchRevenue = branchAgg
-            .Where(kv => kv.Key != Guid.Empty)
-            .OrderByDescending(kv => kv.Value.Gross - kv.Value.DiscountShare)
-            .Select(kv => new
+        // Include every branch from DB so stores with no attributed sales still appear (net = 0).
+        // Sales-only keys (e.g. deleted branch still referenced on old order lines) are appended.
+        var branchRevenue = branchMap
+            .Select(kv =>
             {
-                branchId = kv.Key,
-                branch = kv.Value.Name,
-                address = kv.Value.Address,
-                orders = kv.Value.OrderIds,
-                grossRevenue = kv.Value.Gross.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
-                discountShare = kv.Value.DiscountShare.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
-                netRevenue = (kv.Value.Gross - kv.Value.DiscountShare).ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+                var branchId = kv.Key;
+                var bi = kv.Value;
+                string branchAddress = "";
+                if (bi.Address != null)
+                {
+                    var addr = bi.Address.RootElement;
+                    branchAddress = addr.TryGetProperty("address", out var a) ? a.GetString() ?? "" : "";
+                }
+                branchAgg.TryGetValue(branchId, out var agg);
+                var gross = agg.Gross;
+                var discountShare = agg.DiscountShare;
+                var orderIds = agg.OrderIds;
+                var net = gross - discountShare;
+                return (branchId, branch: bi.Name, address: branchAddress, orderIds, gross, discountShare, net);
+            })
+            .Concat(branchAgg
+                .Where(kv => kv.Key != Guid.Empty && !branchMap.ContainsKey(kv.Key))
+                .Select(kv =>
+                {
+                    var net = kv.Value.Gross - kv.Value.DiscountShare;
+                    return (branchId: kv.Key, branch: kv.Value.Name, address: kv.Value.Address, orderIds: kv.Value.OrderIds, gross: kv.Value.Gross, discountShare: kv.Value.DiscountShare, net);
+                }))
+            .OrderByDescending(x => x.net)
+            .Select(x => new
+            {
+                branchId = x.branchId,
+                branch = x.branch,
+                address = x.address,
+                orders = x.orderIds,
+                grossRevenue = x.gross.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+                discountShare = x.discountShare.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+                netRevenue = x.net.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
             })
             .ToList();
 
@@ -703,6 +797,7 @@ public class AdminController : ControllerBase
                 unitSold = p.UnitsSold,
                 unitPrice = p.UnitPrice.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
                 revenue = p.Revenue.ToString("0", System.Globalization.CultureInfo.InvariantCulture),
+                imageUrl = p.ImageUrl,
             })
             .ToList();
 
@@ -717,6 +812,38 @@ public class AdminController : ControllerBase
             monthly,
             topProducts,
         });
+    }
+
+    /// <summary>
+    /// Whether this order falls in the dashboard window for best-selling products and branch performance.
+    /// </summary>
+    private static bool OrderMatchesSalesWindow(
+        OrderHeader order,
+        string salesPeriod,
+        string? monthFilter,
+        string? yearFilter,
+        string? latestMonthKey,
+        string? latestYearKey)
+    {
+        var t = order.CreatedAt ?? DateTime.UtcNow;
+        if (salesPeriod == "year")
+        {
+            var y = t.Year.ToString("D4", System.Globalization.CultureInfo.InvariantCulture);
+            var yf = string.IsNullOrWhiteSpace(yearFilter) ? "latest" : yearFilter.Trim();
+            if (yf.Equals("all", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (yf.Equals("latest", StringComparison.OrdinalIgnoreCase))
+                return latestYearKey != null && y == latestYearKey;
+            return string.Equals(y, yf, StringComparison.Ordinal);
+        }
+
+        var monthKey = t.ToString("yyyy-MM");
+        var mf = string.IsNullOrWhiteSpace(monthFilter) ? "latest" : monthFilter.Trim();
+        if (mf.Equals("all", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (mf.Equals("latest", StringComparison.OrdinalIgnoreCase))
+            return latestMonthKey != null && monthKey == latestMonthKey;
+        return string.Equals(monthKey, mf, StringComparison.Ordinal);
     }
 
     private static decimal TryParseDecimal(JsonElement el, string prop)
