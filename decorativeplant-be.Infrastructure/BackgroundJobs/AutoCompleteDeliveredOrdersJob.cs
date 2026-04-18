@@ -8,16 +8,20 @@ using Microsoft.Extensions.Logging;
 namespace decorativeplant_be.Infrastructure.BackgroundJobs;
 
 /// <summary>
-/// Shopee-style auto-close: orders that have been "delivered" for longer than
-/// <see cref="_autoCompleteThreshold"/> are transitioned to "completed" on the
+/// Shopee-style auto-close: orders delivered longer than
+/// <see cref="_autoCompleteThreshold"/> transition to "completed" on the
 /// customer's behalf. Runs every <see cref="_checkInterval"/>.
+///
+/// Uses the scalar <c>OrderHeader.DeliveredAt</c> column + partial index so
+/// the eligibility check is a single indexed range scan rather than a
+/// JSONB scan over status_history.
 /// </summary>
 public class AutoCompleteDeliveredOrdersJob : BackgroundService
 {
     private readonly ILogger<AutoCompleteDeliveredOrdersJob> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly TimeSpan _checkInterval = TimeSpan.FromHours(1);
-    private readonly TimeSpan _autoCompleteThreshold = TimeSpan.FromDays(7);
+    private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(15);
+    private readonly TimeSpan _autoCompleteThreshold = TimeSpan.FromHours(24);
 
     public AutoCompleteDeliveredOrdersJob(
         ILogger<AutoCompleteDeliveredOrdersJob> logger,
@@ -29,8 +33,8 @@ public class AutoCompleteDeliveredOrdersJob : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Auto-Complete Delivered Orders Job starting (threshold: {Days}d).",
-            _autoCompleteThreshold.TotalDays);
+        _logger.LogInformation("Auto-Complete Delivered Orders Job starting (threshold: {Hours}h, interval: {Interval}m).",
+            _autoCompleteThreshold.TotalHours, _checkInterval.TotalMinutes);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -51,27 +55,26 @@ public class AutoCompleteDeliveredOrdersJob : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<IApplicationDbContext>();
 
-        // Pick all delivered orders; filter by delivered_at inside the loop
-        // because we store it inside JSONB (status_history), not a column.
+        var cutoff = DateTime.UtcNow.Subtract(_autoCompleteThreshold);
+
+        // Indexed filter (partial index on DeliveredAt WHERE Status='delivered').
+        // Passes through the execution strategy so Npgsql retry is safe.
         var candidates = await context.OrderHeaders
-            .Where(o => o.Status == OrderStatusMachine.Delivered)
+            .Where(o => o.Status == OrderStatusMachine.Delivered
+                     && o.DeliveredAt != null
+                     && o.DeliveredAt <= cutoff)
             .ToListAsync(ct);
 
         if (candidates.Count == 0) return;
 
-        var cutoff = DateTime.UtcNow.Subtract(_autoCompleteThreshold);
         var auto = 0;
-
         foreach (var order in candidates)
         {
-            var deliveredAt = ExtractDeliveredAt(order);
-            if (deliveredAt == null || deliveredAt > cutoff) continue;
-
             try
             {
                 OrderStatusMachine.Apply(order, OrderStatusMachine.Completed,
                     changedBy: null,
-                    reason: $"Auto-completed {_autoCompleteThreshold.TotalDays:0}d after delivery",
+                    reason: $"Auto-completed {_autoCompleteThreshold.TotalHours:0}h after delivery",
                     source: "AutoCompleteJob");
                 auto++;
             }
@@ -86,25 +89,5 @@ public class AutoCompleteDeliveredOrdersJob : BackgroundService
             await context.SaveChangesAsync(ct);
             _logger.LogInformation("Auto-completed {Count} delivered order(s).", auto);
         }
-    }
-
-    private static DateTime? ExtractDeliveredAt(Domain.Entities.OrderHeader order)
-    {
-        if (order.Notes == null) return null;
-        if (!order.Notes.RootElement.TryGetProperty("status_history", out var hist)) return null;
-        if (hist.ValueKind != System.Text.Json.JsonValueKind.Array) return null;
-
-        DateTime? latest = null;
-        foreach (var h in hist.EnumerateArray())
-        {
-            if (!h.TryGetProperty("to", out var to)) continue;
-            if (to.GetString() != OrderStatusMachine.Delivered) continue;
-            if (!h.TryGetProperty("at", out var at)) continue;
-            if (DateTime.TryParse(at.GetString(), out var dt))
-            {
-                if (latest == null || dt > latest) latest = dt;
-            }
-        }
-        return latest;
     }
 }

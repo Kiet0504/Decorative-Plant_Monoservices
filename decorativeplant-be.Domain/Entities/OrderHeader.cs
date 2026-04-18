@@ -21,6 +21,7 @@ public class OrderHeader
     public JsonDocument? PickupInfo { get; set; }
     public DateTime? CreatedAt { get; set; }
     public DateTime? ConfirmedAt { get; set; }
+    public DateTime? DeliveredAt { get; set; }
 
     public UserAccount? User { get; set; }
     public Voucher? Voucher { get; set; }

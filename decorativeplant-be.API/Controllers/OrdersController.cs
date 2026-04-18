@@ -371,15 +371,19 @@ public class OrdersController : BaseController
     }
 
     // GHN real flow: ready_to_pick → picking → picked → storing → sorting → transporting → delivering → delivered
+    // Business mapping (customer-visible labels in parentheses):
+    //   - ready_to_pick, picking: GHN order created, shipper not yet handed the package → `processing` (Đang chờ lấy hàng)
+    //   - picked+: package is physically in GHN custody → `shipping` (Chờ giao hàng)
+    //   - delivered: dropped at customer → `delivered` (Đã giao)
+    // Note: `confirmed` (Đã xác nhận) is set by the staff confirm action or payment success, not by any GHN state.
     private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
     {
-        "ready_to_pick"                                  => "confirmed",
-        "picking" or "picked" or "storing" or "sorting"  => "processing",
-        "transporting" or "delivering" or "delivery_fail" => "shipping",
-        "delivered"                                      => "delivered",
-        "waiting_to_return" or "return" or "returned"    => "returned",
-        "cancel" or "lost"                               => "cancelled",
-        _                                                => null,
+        "ready_to_pick" or "picking"                                                             => "processing",
+        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail"  => "shipping",
+        "delivered"                                                                              => "delivered",
+        "waiting_to_return" or "return" or "returned"                                            => "returned",
+        "cancel" or "lost"                                                                       => "cancelled",
+        _                                                                                        => null,
     };
 
     [HttpPost]
@@ -503,6 +507,48 @@ public class OrdersController : BaseController
             decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
                 .ApplyFromExternalSource(order, mapped, source: "GhnWebhook",
                     reason: payload.Description ?? payload.Status);
+
+            // COD settlement: when the shipper marks the parcel delivered and this is a
+            // COD order, insert a one-time PaymentTransaction so the order is recorded as
+            // paid. Guarded by payment_method and a dedupe check — GHN retries the webhook.
+            if (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered)
+            {
+                var isCod = order.TypeInfo != null
+                    && order.TypeInfo.RootElement.TryGetProperty("payment_method", out var pm)
+                    && string.Equals(pm.GetString(), "cod", StringComparison.OrdinalIgnoreCase);
+                if (isCod)
+                {
+                    var alreadyPaid = await context.PaymentTransactions
+                        .AnyAsync(p => p.OrderId == order.Id
+                            && p.Details != null
+                            && EF.Functions.JsonContains(p.Details, "{\"method\":\"cod\",\"status\":\"success\"}"));
+                    if (!alreadyPaid)
+                    {
+                        var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var tot) == true
+                            ? tot.GetString() ?? "0" : "0";
+                        var codTx = new PaymentTransaction
+                        {
+                            Id = Guid.NewGuid(),
+                            OrderId = order.Id,
+                            TransactionCode = $"COD-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                            Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                            {
+                                provider = "cash",
+                                method = "cod",
+                                type = "payment",
+                                amount = totalStr,
+                                status = "success",
+                                external_id = payload.OrderCode,
+                                collected_at = DateTime.UtcNow
+                            })),
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        context.PaymentTransactions.Add(codTx);
+                        logger.LogInformation("GHN webhook: recorded COD settlement for order {OrderId} amount {Amount}.",
+                            order.Id, totalStr);
+                    }
+                }
+            }
 
             // Restore stock if GHN tells us the order ended without delivery and we hadn't
             // already closed it locally (avoids double-restore after customer cancel / expiry).

@@ -2,6 +2,7 @@ using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
@@ -162,6 +163,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly IPayOSService _payOS;
     private readonly ILogger<HandlePayOSWebhookHandler> _logger;
     private readonly IEmailTemplateService _emailTemplateService;
+    private readonly IEmailService _emailService;
     private readonly IShippingService _shippingService;
     private readonly IStockService _stockService;
 
@@ -170,6 +172,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         IPayOSService payOS,
         ILogger<HandlePayOSWebhookHandler> logger,
         IEmailTemplateService emailTemplateService,
+        IEmailService emailService,
         IShippingService shippingService,
         IStockService stockService)
     {
@@ -177,6 +180,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         _payOS = payOS;
         _logger = logger;
         _emailTemplateService = emailTemplateService;
+        _emailService = emailService;
         _shippingService = shippingService;
         _stockService = stockService;
     }
@@ -284,22 +288,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                             if (order.Status == "pending")
                             {
                                 // Remove items from user's cart
-                                if (order.UserId != Guid.Empty)
-                                {
-                                    var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
-                                    if (cart != null && cart.Items != null && order.OrderItems != null)
-                                    {
-                                        var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
-                                        var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
-
-                                        if (purchasedListingIds.Any())
-                                        {
-                                            cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
-                                            cart.Items = AddToCartHandler.SerializeItems(cartItems);
-                                            cart.UpdatedAt = DateTime.UtcNow;
-                                        }
-                                    }
-                                }
+                                // DELETED FROM HERE: moved to CreateOrderHandler to ensure cart is cleared for COD immediately.
 
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
@@ -374,6 +363,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         {
             var orders = await _context.OrderHeaders
                 .Include(o => o.User)
+                .Include(o => o.OrderItems)
                 .Where(o => orderIdsList.Contains(o.Id))
                 .ToListAsync(ct);
 
@@ -410,6 +400,17 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                 {
                     _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
                 }
+
+                // Also notify fulfillment_staff/branch_manager at the order's branch.
+                // Fire-and-log: never block the webhook ack on email delivery.
+                try
+                {
+                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Staff notify failed for Order {OrderCode}", order.OrderCode);
+                }
             }
         }
 
@@ -443,19 +444,25 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
     private readonly IShippingService _shippingService;
     private readonly IStockService _stockService;
     private readonly ILogger<SyncPaymentCommandHandler> _logger;
+    private readonly IEmailService _emailService;
+    private readonly IEmailTemplateService _emailTemplateService;
 
     public SyncPaymentCommandHandler(
         IApplicationDbContext context,
         IPayOSService payOS,
         IShippingService shippingService,
         IStockService stockService,
-        ILogger<SyncPaymentCommandHandler> logger)
+        ILogger<SyncPaymentCommandHandler> logger,
+        IEmailService emailService,
+        IEmailTemplateService emailTemplateService)
     {
         _context = context;
         _payOS = payOS;
         _shippingService = shippingService;
         _stockService = stockService;
         _logger = logger;
+        _emailService = emailService;
+        _emailTemplateService = emailTemplateService;
     }
 
     public async Task<bool> Handle(SyncPaymentCommand request, CancellationToken ct)
@@ -521,21 +528,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                             if (order.Status == "pending")
                             {
                                 // Remove purchased items from user's cart
-                                if (order.UserId.HasValue && order.UserId != Guid.Empty)
-                                {
-                                    var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == order.UserId, ct);
-                                    if (cart != null && cart.Items != null && order.OrderItems != null)
-                                    {
-                                        var cartItems = AddToCartHandler.DeserializeItems(cart.Items);
-                                        var purchasedListingIds = order.OrderItems.Where(oi => oi.ListingId.HasValue).Select(oi => oi.ListingId!.Value).ToList();
-                                        if (purchasedListingIds.Any())
-                                        {
-                                            cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
-                                            cart.Items = AddToCartHandler.SerializeItems(cartItems);
-                                            cart.UpdatedAt = DateTime.UtcNow;
-                                        }
-                                    }
-                                }
+                                // DELETED FROM HERE: moved to CreateOrderHandler to ensure cart is cleared for COD immediately.
 
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
@@ -565,6 +558,57 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                         throw;
                     }
                 });
+
+                // Send email notifications outside the transaction (non-critical)
+                var syncedOrders = await _context.OrderHeaders
+                    .Include(o => o.User)
+                    .Include(o => o.OrderItems)
+                    .Where(o => orderIds.Contains(o.Id))
+                    .ToListAsync(ct);
+
+                foreach (var order in syncedOrders)
+                {
+                    try
+                    {
+                        if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
+                        {
+                            var total = "0";
+                            if (order.Financials != null)
+                            {
+                                total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
+                            }
+
+                            var model = new Dictionary<string, string>
+                            {
+                                { "CustomerName", order.User.DisplayName ?? "Customer" },
+                                { "OrderCode", order.OrderCode ?? "N/A" },
+                                { "BranchName", "Decorative Plant Store" },
+                                { "Total", total }
+                            };
+
+                            await _emailTemplateService.SendTemplateAsync(
+                                "OrderConfirmed",
+                                model,
+                                order.User.Email,
+                                $"Order Confirmed - {order.OrderCode}",
+                                order.User.DisplayName,
+                                ct);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode} during sync", order.OrderCode);
+                    }
+
+                    try
+                    {
+                        await decorativeplant_be.Application.Common.NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Staff notify failed for Order {OrderCode} during sync", order.OrderCode);
+                    }
+                }
 
                 return true;
             }

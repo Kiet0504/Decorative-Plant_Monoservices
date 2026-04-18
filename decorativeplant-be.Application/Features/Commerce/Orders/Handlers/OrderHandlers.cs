@@ -3,6 +3,7 @@ using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
@@ -24,19 +25,25 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
     private readonly IShippingService _shippingService;
     private readonly IBranchAllocationService _allocationService;
     private readonly IStockService _stockService;
+    private readonly IEmailService _emailService;
+    private readonly IEmailTemplateService _emailTemplateService;
 
     public CreateOrderHandler(
         IApplicationDbContext context,
         ILogger<CreateOrderHandler> logger,
         IShippingService shippingService,
         IBranchAllocationService allocationService,
-        IStockService stockService)
+        IStockService stockService,
+        IEmailService emailService,
+        IEmailTemplateService emailTemplateService)
     {
         _context = context;
         _logger = logger;
         _shippingService = shippingService;
         _allocationService = allocationService;
         _stockService = stockService;
+        _emailService = emailService;
+        _emailTemplateService = emailTemplateService;
     }
 
     public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
@@ -55,7 +62,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             var requestedItems = req.Items.Select(i => (i.ListingId, i.Quantity)).ToList();
             var allocations = await _allocationService.AllocateAsync(requestedItems, ct);
 
-            // Map allocations to enriched items (compatible with existing order creation logic)
+            // Map allocations to enriched items
             var enrichedItems = allocations.Select(a => (
                 reqItem: new CreateOrderItemRequest { ListingId = a.Listing.Id, Quantity = a.AllocatedQuantity },
                 listing: a.Listing,
@@ -64,8 +71,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 image: a.Image
             )).ToList();
 
-            // 2. Build all OrderItems (no branch grouping — 1 unified order)
-            var orderItems = new List<OrderItem>();
+            // 2. Reserve stock for all items and calculate subtotal
             decimal cartSubtotal = 0;
 
             foreach (var e in enrichedItems)
@@ -78,20 +84,9 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 // Reserve stock with pessimistic locking via StockService
                 var productName = e.title ?? e.reqItem.ListingId.ToString();
                 await _stockService.ReserveStockAsync(e.listing.Id, e.listing.BranchId, e.reqItem.Quantity, productName, ct);
-
-                orderItems.Add(new OrderItem
-                {
-                    Id = Guid.NewGuid(),
-                    ListingId = e.reqItem.ListingId,
-                    BatchId = e.listing.BatchId,
-                    BranchId = e.listing.BranchId,
-                    Quantity = e.reqItem.Quantity,
-                    Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0", CultureInfo.InvariantCulture) })),
-                    Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = e.title, image_snapshot = e.image }))
-                });
             }
 
-            // 3. Resolve voucher (applied once to the whole order)
+            // 3. Resolve voucher (applied once across all branches/orders)
             decimal totalDiscount = 0;
             Voucher? voucher = null;
             Guid? appliedVoucherId = null;
@@ -101,17 +96,11 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 var pending = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
                 if (pending != null)
                 {
-                    // Lock the voucher row inside this transaction, then re-fetch with AsNoTracking
-                    // discarded so the tracked entity reflects the locked row's latest state. Parallel
-                    // checkouts now serialize on this row and can't both pass the usage_limit check.
                     await _context.AcquireVoucherLockAsync(pending.Id, ct);
                     voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Id == pending.Id, ct);
                 }
                 if (voucher != null)
                 {
-
-                    // For chain store model, voucher applies to the whole order
-                    // (branch-specific vouchers are still checked for eligibility)
                     if (voucher.BranchId.HasValue)
                     {
                         var branchIdsInCart = enrichedItems.Select(e => e.listing.BranchId).Distinct().ToList();
@@ -174,71 +163,208 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 }
             }
 
-            // 4. Calculate shipping fee (1 fee for the whole order — all stores are in HCM)
-            decimal shippingFee = 30000; // sensible default
-            if (req.DeliveryAddress != null)
+            // 4. Group enriched items by branch
+            var itemsByBranch = enrichedItems.GroupBy(e => e.listing.BranchId).ToList();
+
+            // 5. Calculate shipping fees (1 per branch or use provided fee)
+            var shippingFeesByBranch = new Dictionary<Guid?, decimal>();
+            decimal totalShippingFee = 0;
+
+            foreach (var branchGroup in itemsByBranch)
             {
-                try
+                var branchId = branchGroup.Key;
+                decimal branchShippingFee = 30000; // default
+
+                if (req.DeliveryAddress != null)
                 {
-                    var feeResult = await _shippingService.CalculateFeeAsync(new ShippingFeeRequest
+                    try
                     {
-                        FromDistrictId = _shippingService.DefaultFromDistrictId,
-                        FromWardCode = _shippingService.DefaultFromWardCode,
-                        ToDistrictId = req.DeliveryAddress.DistrictId,
-                        ToWardCode = req.DeliveryAddress.WardCode,
-                        Weight = Math.Max(orderItems.Sum(oi => oi.Quantity) * 500, 500), // ~500g per item, min 500g
-                        InsuranceValue = (int)cartSubtotal,
-                        ServiceTypeId = 2
-                    });
-                    if (feeResult.Success && feeResult.Total > 0) shippingFee = feeResult.Total;
+                        var branchItems = branchGroup.ToList();
+                        var feeResult = await _shippingService.CalculateFeeAsync(new ShippingFeeRequest
+                        {
+                            FromDistrictId = _shippingService.DefaultFromDistrictId,
+                            FromWardCode = _shippingService.DefaultFromWardCode,
+                            ToDistrictId = req.DeliveryAddress.DistrictId,
+                            ToWardCode = req.DeliveryAddress.WardCode,
+                            Weight = Math.Max(branchItems.Sum(e => e.reqItem.Quantity) * 500, 500),
+                            InsuranceValue = (int)branchItems.Sum(e => decimal.Parse(e.unitPrice, CultureInfo.InvariantCulture) * e.reqItem.Quantity),
+                            ServiceTypeId = 2
+                        });
+                        if (feeResult.Success && feeResult.Total > 0) branchShippingFee = feeResult.Total;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "GHN fee calc failed for branch {BranchId}, using default 30000", branchId);
+                    }
                 }
-                catch (Exception ex)
+                else if (req.ShippingFee > 0)
                 {
-                    _logger.LogWarning(ex, "GHN fee calc failed, using default 30000");
+                    branchShippingFee = req.ShippingFee / itemsByBranch.Count; // distribute provided fee across branches
                 }
-            }
-            else if (req.ShippingFee > 0)
-            {
-                shippingFee = req.ShippingFee;
+
+                branchShippingFee = Math.Round(branchShippingFee, 0);
+                shippingFeesByBranch[branchId] = branchShippingFee;
+                totalShippingFee += branchShippingFee;
             }
 
-            shippingFee = Math.Round(shippingFee, 0);
+            totalShippingFee = Math.Round(totalShippingFee, 0);
             totalDiscount = Math.Round(totalDiscount, 0);
 
-            decimal orderTotal = cartSubtotal + shippingFee - totalDiscount;
-            if (orderTotal < 0) orderTotal = 0;
+            // 6. Create one OrderHeader per branch
+            var orders = new List<OrderHeader>();
+            var baseOrderTimestamp = DateTime.UtcNow;
 
-            // 5. Create 1 unified OrderHeader (BranchId = null — system-level order)
-            var orderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
-
-            var order = new OrderHeader
+            foreach (var branchGroup in itemsByBranch)
             {
-                Id = Guid.NewGuid(),
-                OrderCode = orderCode,
-                UserId = cmd.UserId,
-                VoucherId = appliedVoucherId,
-                TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod })),
-                Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = cartSubtotal.ToString("0", CultureInfo.InvariantCulture), shipping = shippingFee.ToString("0", CultureInfo.InvariantCulture), discount = totalDiscount.ToString("0", CultureInfo.InvariantCulture), tax = "0", total = orderTotal.ToString("0", CultureInfo.InvariantCulture) })),
-                Status = "pending",
-                Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
-                DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City, district_id = req.DeliveryAddress.DistrictId, ward_code = req.DeliveryAddress.WardCode })) : null,
-                CreatedAt = DateTime.UtcNow,
-                OrderItems = orderItems
-            };
+                var branchId = branchGroup.Key;
+                var branchEnrichedItems = branchGroup.ToList();
+                var branchOrderItems = new List<OrderItem>();
+                decimal branchSubtotal = 0;
 
-            // Seed status history
-            OrderStatusMachine.AppendHistory(order, from: null, to: OrderStatusMachine.Pending,
-                changedBy: cmd.UserId, reason: "Order created", source: "CreateOrder");
+                foreach (var e in branchEnrichedItems)
+                {
+                    if (!decimal.TryParse(e.unitPrice, CultureInfo.InvariantCulture, out var parsedPrice))
+                        throw new BadRequestException($"Invalid price for '{e.title}'.");
 
-            _context.OrderHeaders.Add(order);
-            _logger.LogInformation("Created unified Order {OrderCode} with {ItemCount} items from {BranchCount} branch(es)",
-                orderCode, orderItems.Count,
-                enrichedItems.Select(e => e.listing.BranchId).Distinct().Count());
+                    var itemSubtotal = parsedPrice * e.reqItem.Quantity;
+                    branchSubtotal += itemSubtotal;
+
+                    branchOrderItems.Add(new OrderItem
+                    {
+                        Id = Guid.NewGuid(),
+                        ListingId = e.reqItem.ListingId,
+                        BatchId = e.listing.BatchId,
+                        BranchId = branchId,
+                        Quantity = e.reqItem.Quantity,
+                        Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new { unit_price = e.unitPrice, subtotal = itemSubtotal.ToString("0", CultureInfo.InvariantCulture) })),
+                        Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new { title_snapshot = e.title, image_snapshot = e.image }))
+                    });
+                }
+
+                var branchShippingFee = shippingFeesByBranch[branchId];
+
+                // Allocate discount proportionally to branch
+                var branchDiscount = totalDiscount > 0 
+                    ? Math.Round(totalDiscount * (branchSubtotal / cartSubtotal), 0)
+                    : 0;
+
+                decimal branchOrderTotal = branchSubtotal + branchShippingFee - branchDiscount;
+                if (branchOrderTotal < 0) branchOrderTotal = 0;
+
+                var orderCode = $"ORD-{baseOrderTimestamp:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+
+                var order = new OrderHeader
+                {
+                    Id = Guid.NewGuid(),
+                    OrderCode = orderCode,
+                    UserId = cmd.UserId,
+                    VoucherId = appliedVoucherId,
+                    TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod, payment_method = NormalizePaymentMethod(req.PaymentMethod), branch_id = branchId })),
+                    Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = branchSubtotal.ToString("0", CultureInfo.InvariantCulture), shipping = branchShippingFee.ToString("0", CultureInfo.InvariantCulture), discount = branchDiscount.ToString("0", CultureInfo.InvariantCulture), tax = "0", total = branchOrderTotal.ToString("0", CultureInfo.InvariantCulture) })),
+                    Status = "pending",
+                    Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
+                    DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City, district_id = req.DeliveryAddress.DistrictId, ward_code = req.DeliveryAddress.WardCode })) : null,
+                    CreatedAt = baseOrderTimestamp,
+                    OrderItems = branchOrderItems
+                };
+
+                // Seed status history
+                OrderStatusMachine.AppendHistory(order, from: null, to: OrderStatusMachine.Pending,
+                    changedBy: cmd.UserId, reason: "Order created", source: "CreateOrder");
+
+                _context.OrderHeaders.Add(order);
+                orders.Add(order);
+
+                // COD flow: auto-confirm and create GHN shipment
+                if (NormalizePaymentMethod(req.PaymentMethod) == "cod")
+                {
+                    OrderStatusMachine.Apply(order, OrderStatusMachine.Confirmed,
+                        changedBy: cmd.UserId, reason: "COD auto-confirm", source: "CreateOrder");
+                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+                }
+            }
+            
+            // Clear items from user's shopping cart immediately after order creation.
+            // This ensures both COD and pending PayOS orders do not keep items in the cart.
+            if (cmd.UserId != Guid.Empty && orders.Count > 0)
+            {
+                var cart = await _context.ShoppingCarts.FirstOrDefaultAsync(c => c.UserId == cmd.UserId, ct);
+                if (cart != null && cart.Items != null)
+                {
+                    var cartItems = decorativeplant_be.Application.Features.Commerce.ShoppingCart.Handlers.AddToCartHandler.DeserializeItems(cart.Items);
+                    
+                    // Collect all listing IDs that were ordered across all branches
+                    var purchasedListingIds = orders.SelectMany(o => o.OrderItems)
+                        .Where(oi => oi.ListingId.HasValue)
+                        .Select(oi => oi.ListingId!.Value)
+                        .ToList();
+
+                    if (purchasedListingIds.Any())
+                    {
+                        cartItems.RemoveAll(ci => purchasedListingIds.Contains(ci.ListingId));
+                        cart.Items = decorativeplant_be.Application.Features.Commerce.ShoppingCart.Handlers.AddToCartHandler.SerializeItems(cartItems);
+                        cart.UpdatedAt = DateTime.UtcNow;
+                    }
+                }
+            }
+
+            _logger.LogInformation("Created {OrderCount} split orders from {BranchCount} branch(es) for user {UserId}",
+                orders.Count, itemsByBranch.Count, cmd.UserId);
 
             await _context.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
-            return new List<OrderResponse> { MapToResponse(order) };
+            // Notify branch staff for COD orders (bank_transfer notifications fire
+            // later in the PayOS webhook handler, once payment is actually confirmed).
+            // Fire-and-log — never block the response on email.
+            var user = cmd.UserId != Guid.Empty ? await _context.UserAccounts.FirstOrDefaultAsync(u => u.Id == cmd.UserId, ct) : null;
+            var customerEmail = user?.Email;
+
+            foreach (var order in orders.Where(o => o.Status == OrderStatusMachine.Confirmed))
+            {
+                if (!string.IsNullOrEmpty(customerEmail) && user != null)
+                {
+                    try
+                    {
+                        var total = "0";
+                        if (order.Financials != null)
+                        {
+                            total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
+                        }
+
+                        var model = new Dictionary<string, string>
+                        {
+                            { "CustomerName", user.DisplayName ?? "Customer" },
+                            { "OrderCode", order.OrderCode ?? "N/A" },
+                            { "BranchName", "Decorative Plant Store" },
+                            { "Total", total }
+                        };
+
+                        await _emailTemplateService.SendTemplateAsync(
+                            "OrderConfirmed",
+                            model,
+                            customerEmail,
+                            $"Order Confirmed - {order.OrderCode}",
+                            user.DisplayName,
+                            ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
+                    }
+                }
+
+                try
+                {
+                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Staff notify failed for Order {OrderCode}", order.OrderCode);
+                }
+            }
+
+            return orders.Select(MapToResponse).ToList();
         }
         catch
         {
@@ -246,6 +372,16 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             throw;
         }
         }); // end strategy.ExecuteAsync
+    }
+
+    internal static string NormalizePaymentMethod(string? raw)
+    {
+        var v = (raw ?? "").Trim().ToLowerInvariant();
+        return v switch
+        {
+            "cod" or "cash_on_delivery" or "cash-on-delivery" => "cod",
+            _ => "bank_transfer"
+        };
     }
 
     internal static OrderResponse MapToResponse(OrderHeader o)
@@ -261,6 +397,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             var root = o.TypeInfo.RootElement;
             response.OrderType = root.TryGetProperty("order_type", out var ot) ? ot.GetString() : null;
             response.FulfillmentMethod = root.TryGetProperty("fulfillment_method", out var fm) ? fm.GetString() : null;
+            response.PaymentMethod = root.TryGetProperty("payment_method", out var pm) ? pm.GetString() : null;
         }
         if (o.Financials != null)
         {
@@ -642,6 +779,56 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
 
         await _context.SaveChangesAsync(ct);
         return CreateOrderHandler.MapToResponse(order);
+    }
+}
+
+public class ConfirmReceiptBatchHandler : IRequestHandler<ConfirmReceiptBatchCommand, List<OrderResponse>>
+{
+    private readonly IApplicationDbContext _context;
+    public ConfirmReceiptBatchHandler(IApplicationDbContext context) => _context = context;
+
+    public async Task<List<OrderResponse>> Handle(ConfirmReceiptBatchCommand cmd, CancellationToken ct)
+    {
+        if (cmd.OrderIds == null || !cmd.OrderIds.Any())
+            throw new BadRequestException("At least one OrderId is required.");
+
+        var orders = await _context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .Where(o => cmd.OrderIds.Contains(o.Id))
+            .ToListAsync(ct);
+
+        if (orders.Count == 0)
+            throw new NotFoundException("None of the requested orders were found.");
+
+        // Validate ownership — user can only confirm their own orders
+        foreach (var order in orders)
+        {
+            if (order.UserId != cmd.UserId)
+                throw new BadRequestException($"Order {order.OrderCode} does not belong to you.");
+        }
+
+        var completedAt = DateTime.UtcNow.ToString("o");
+
+        // Confirm each order
+        foreach (var order in orders)
+        {
+            OrderStatusMachine.Apply(order, OrderStatusMachine.Completed, cmd.UserId,
+                reason: "Customer confirmed receipt", source: "ConfirmReceiptBatch");
+
+            var notesDict = new Dictionary<string, object?>();
+            if (order.Notes != null)
+                foreach (var p in order.Notes.RootElement.EnumerateObject())
+                {
+                    if (p.Value.ValueKind == JsonValueKind.String) notesDict[p.Name] = p.Value.GetString();
+                    else notesDict[p.Name] = JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
+                }
+            notesDict["completed_at"] = completedAt;
+
+            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+        }
+
+        await _context.SaveChangesAsync(ct);
+        return orders.Select(CreateOrderHandler.MapToResponse).ToList();
     }
 }
 

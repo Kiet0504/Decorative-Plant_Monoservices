@@ -141,6 +141,8 @@ public static class OrderStatusMachine
         order.Status = to;
         if (to == Confirmed && order.ConfirmedAt == null)
             order.ConfirmedAt = DateTime.UtcNow;
+        if (to == Delivered && order.DeliveredAt == null)
+            order.DeliveredAt = DateTime.UtcNow;
         AppendHistory(order, from, to, changedBy: null, reason, source);
     }
 
@@ -162,6 +164,8 @@ public static class OrderStatusMachine
         order.Status = to;
         if (to == Confirmed && order.ConfirmedAt == null)
             order.ConfirmedAt = DateTime.UtcNow;
+        if (to == Delivered && order.DeliveredAt == null)
+            order.DeliveredAt = DateTime.UtcNow;
 
         AppendHistory(order, from, to, changedBy, reason, source);
     }
