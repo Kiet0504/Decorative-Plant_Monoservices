@@ -29,6 +29,12 @@ public class ConfirmReceiptCommand : IRequest<OrderResponse>
     public Guid UserId { get; set; }
 }
 
+public class ConfirmReceiptBatchCommand : IRequest<List<OrderResponse>>
+{
+    public List<Guid> OrderIds { get; set; } = new();
+    public Guid UserId { get; set; }
+}
+
 public class CreateOfflineBopisOrderCommand : IRequest<OrderResponse>
 {
     public Guid BrandManagerId { get; set; }

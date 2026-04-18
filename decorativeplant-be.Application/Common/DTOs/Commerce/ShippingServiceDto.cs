@@ -40,6 +40,8 @@ public class ShippingOrderRequest
     public int InsuranceValue { get; set; }
     public int ServiceTypeId { get; set; } = 2;
     public int PaymentTypeId { get; set; } = 1; // 1 = seller pays, 2 = buyer pays
+    public int CodAmount { get; set; } // VND that shipper must collect on delivery (0 = no COD)
+    public int CodFailedAmount { get; set; } // VND shipper keeps on failed COD (typically 0)
     public string RequiredNote { get; set; } = "KHONGCHOXEMHANG";
     public string? Note { get; set; }
     public string? ClientOrderCode { get; set; }

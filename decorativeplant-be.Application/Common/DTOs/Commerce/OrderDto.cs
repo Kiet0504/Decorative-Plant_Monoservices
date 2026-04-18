@@ -5,6 +5,7 @@ public class CreateOrderRequest
 {
     public string OrderType { get; set; } = "online"; // online|offline
     public string FulfillmentMethod { get; set; } = "delivery"; // delivery|pickup
+    public string PaymentMethod { get; set; } = "bank_transfer"; // bank_transfer|cod
     public string? CustomerNote { get; set; }
     public string? VoucherCode { get; set; }
     public decimal ShippingFee { get; set; } // Total shipping fee from frontend
@@ -74,6 +75,7 @@ public class OrderResponse
     public Guid? UserId { get; set; }
     public string? OrderType { get; set; }
     public string? FulfillmentMethod { get; set; }
+    public string? PaymentMethod { get; set; }
     public string Status { get; set; } = string.Empty;
     public string? PaymentStatus { get; set; }
     public string? TrackingCode { get; set; }

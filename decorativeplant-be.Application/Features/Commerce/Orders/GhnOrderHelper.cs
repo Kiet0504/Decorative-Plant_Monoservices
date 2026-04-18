@@ -8,7 +8,9 @@ using decorativeplant_be.Domain.Entities;
 namespace decorativeplant_be.Application.Features.Commerce.Orders;
 
 /// <summary>
-/// Shared helper for creating GHN shipping orders.
+/// Creates a single GHN shipping order for an <see cref="OrderHeader"/>.
+/// Design B: 1 OrderHeader = 1 branch = 1 shipment. All <see cref="OrderItem"/>s
+/// on the header are guaranteed to share the same BranchId by CreateOrderHandler.
 /// </summary>
 public static class GhnOrderHelper
 {
@@ -32,7 +34,7 @@ public static class GhnOrderHelper
             logger.LogInformation("GHN: Skipping - Shipments already exist for Order {OrderCode}", order.OrderCode);
             return;
         }
-        
+
         try
         {
             var da = order.DeliveryAddress.RootElement;
@@ -60,49 +62,48 @@ public static class GhnOrderHelper
             logger.LogInformation("GHN: Delivery address for Order {OrderCode}: Name={Name}, Phone={Phone}, Address={Address}, District={District}, Ward={Ward}",
                 order.OrderCode, toName, toPhone, toAddress, toDistrict, toWard);
 
-            var itemsByBranch = order.OrderItems.GroupBy(oi => oi.BranchId).ToList();
             var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var t) == true ? (t.GetString() ?? "0") : "0";
             var orderTotal = (int)decimal.Parse(totalStr);
 
-            var shipments = new List<object>();
-            var index = 0;
-            foreach (var branchGroup in itemsByBranch)
+            // Resolve payment_method from TypeInfo. COD orders must tell GHN to collect
+            // cash from the buyer (cod_amount) and bill shipping to buyer (payment_type_id=2).
+            var isCod = order.TypeInfo != null
+                && order.TypeInfo.RootElement.TryGetProperty("payment_method", out var pm)
+                && string.Equals(pm.GetString(), "cod", StringComparison.OrdinalIgnoreCase);
+
+            var ghnItems = order.OrderItems.Select(oi => {
+                var name = "Decorative Plant";
+                if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
+                    name = ts.GetString() ?? name;
+                return new ShippingOrderItem { Name = name, Quantity = oi.Quantity, Weight = 1000 };
+            }).ToList();
+
+            var branchId = order.OrderItems.First().BranchId;
+            var clientCode = order.OrderCode ?? order.Id.ToString();
+
+            var res = await shippingService.CreateOrderAsync(new ShippingOrderRequest {
+                ToName = toName, ToPhone = toPhone, ToAddress = toAddress, ToDistrictId = toDistrict, ToWardCode = toWard,
+                FromDistrictId = shippingService.DefaultFromDistrictId, FromWardCode = shippingService.DefaultFromWardCode,
+                Weight = ghnItems.Sum(i => i.Quantity) * 1000, InsuranceValue = orderTotal, ClientOrderCode = clientCode, Items = ghnItems,
+                CodAmount = isCod ? orderTotal : 0, PaymentTypeId = isCod ? 2 : 1
+            });
+
+            if (!res.Success || string.IsNullOrEmpty(res.OrderCode))
             {
-                index++;
-                var branchItems = branchGroup.ToList();
-                var ghnItems = branchItems.Select(oi => {
-                    var name = "Decorative Plant";
-                    if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
-                        name = ts.GetString() ?? name;
-                    return new ShippingOrderItem { Name = name, Quantity = oi.Quantity, Weight = 1000 };
-                }).ToList();
-
-                var insurance = itemsByBranch.Count == 1 ? orderTotal : (int)(orderTotal * ((decimal)branchItems.Sum(oi => oi.Quantity) / order.OrderItems.Sum(oi => oi.Quantity)));
-                var clientCode = itemsByBranch.Count == 1 ? (order.OrderCode ?? order.Id.ToString()) : $"{order.OrderCode}-S{index}";
-
-                var res = await shippingService.CreateOrderAsync(new ShippingOrderRequest {
-                    ToName = toName, ToPhone = toPhone, ToAddress = toAddress, ToDistrictId = toDistrict, ToWardCode = toWard,
-                    FromDistrictId = shippingService.DefaultFromDistrictId, FromWardCode = shippingService.DefaultFromWardCode,
-                    Weight = ghnItems.Sum(i => i.Quantity) * 1000, InsuranceValue = insurance, ClientOrderCode = clientCode, Items = ghnItems
-                });
-
-                if (res.Success && !string.IsNullOrEmpty(res.OrderCode))
-                {
-                    shipments.Add(new { branch_id = branchGroup.Key?.ToString(), tracking_code = res.OrderCode, carrier = "GHN" });
-                }
-                else
-                {
-                    logger.LogError("GHN Error for Order {OrderCode}, Shipment {Index}: {Message}", order.OrderCode, index, res.Message);
-                }
+                logger.LogError("GHN Error for Order {OrderCode}: {Message}", order.OrderCode, res.Message);
+                return;
             }
 
-            if (shipments.Count > 0)
-            {
-                var notes = new Dictionary<string, object?>();
-                if (order.Notes != null) foreach (var prop in order.Notes.RootElement.EnumerateObject()) if (prop.Name != "shipments") notes[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
-                notes["shipments"] = shipments;
-                order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
-            }
+            var shipment = new { branch_id = branchId?.ToString(), tracking_code = res.OrderCode, carrier = "GHN" };
+
+            var notes = new Dictionary<string, object?>();
+            if (order.Notes != null)
+                foreach (var prop in order.Notes.RootElement.EnumerateObject())
+                    if (prop.Name != "shipments")
+                        notes[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+            // Keep JSONB shape backward-compatible (array) — FE/staff dashboards already read shipments[].
+            notes["shipments"] = new[] { shipment };
+            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
         }
         catch (Exception ex) { logger.LogError(ex, "GHN Error for {OrderCode}", order.OrderCode); }
     }

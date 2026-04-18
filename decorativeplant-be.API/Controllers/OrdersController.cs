@@ -504,6 +504,48 @@ public class OrdersController : BaseController
                 .ApplyFromExternalSource(order, mapped, source: "GhnWebhook",
                     reason: payload.Description ?? payload.Status);
 
+            // COD settlement: when the shipper marks the parcel delivered and this is a
+            // COD order, insert a one-time PaymentTransaction so the order is recorded as
+            // paid. Guarded by payment_method and a dedupe check — GHN retries the webhook.
+            if (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered)
+            {
+                var isCod = order.TypeInfo != null
+                    && order.TypeInfo.RootElement.TryGetProperty("payment_method", out var pm)
+                    && string.Equals(pm.GetString(), "cod", StringComparison.OrdinalIgnoreCase);
+                if (isCod)
+                {
+                    var alreadyPaid = await context.PaymentTransactions
+                        .AnyAsync(p => p.OrderId == order.Id
+                            && p.Details != null
+                            && EF.Functions.JsonContains(p.Details, "{\"method\":\"cod\",\"status\":\"success\"}"));
+                    if (!alreadyPaid)
+                    {
+                        var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var tot) == true
+                            ? tot.GetString() ?? "0" : "0";
+                        var codTx = new PaymentTransaction
+                        {
+                            Id = Guid.NewGuid(),
+                            OrderId = order.Id,
+                            TransactionCode = $"COD-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                            Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                            {
+                                provider = "cash",
+                                method = "cod",
+                                type = "payment",
+                                amount = totalStr,
+                                status = "success",
+                                external_id = payload.OrderCode,
+                                collected_at = DateTime.UtcNow
+                            })),
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        context.PaymentTransactions.Add(codTx);
+                        logger.LogInformation("GHN webhook: recorded COD settlement for order {OrderId} amount {Amount}.",
+                            order.Id, totalStr);
+                    }
+                }
+            }
+
             // Restore stock if GHN tells us the order ended without delivery and we hadn't
             // already closed it locally (avoids double-restore after customer cancel / expiry).
             if (!wasTerminalBefore &&

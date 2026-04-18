@@ -123,6 +123,8 @@ public class GhnService : IShippingService
                 insurance_value = request.InsuranceValue,
                 service_type_id = request.ServiceTypeId,
                 payment_type_id = request.PaymentTypeId,
+                cod_amount = request.CodAmount,
+                cod_failed_amount = request.CodFailedAmount,
                 required_note = request.RequiredNote,
                 note = request.Note,
                 client_order_code = request.ClientOrderCode,
