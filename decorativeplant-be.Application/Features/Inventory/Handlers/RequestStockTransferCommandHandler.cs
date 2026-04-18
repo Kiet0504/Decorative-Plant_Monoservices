@@ -38,6 +38,21 @@ public class RequestStockTransferCommandHandler : IRequestHandler<RequestStockTr
         if (quantities == null || quantities.AvailableQuantity < request.Quantity)
              throw new ValidationException("Insufficient available stock for transfer.");
 
+        var fromSnapshot = quantities.AvailableQuantity;
+
+        // Fetch destination branch stock snapshot
+        var destStock = await stockRepo.FirstOrDefaultAsync(
+            s => s.BatchId == request.BatchId && s.LocationId == request.ToLocationId,
+            cancellationToken
+        );
+
+        int toSnapshot = 0;
+        if (destStock != null && destStock.Quantities != null)
+        {
+            var destQuantities = JsonSerializer.Deserialize<BatchStockQuantities>(destStock.Quantities);
+            toSnapshot = destQuantities?.AvailableQuantity ?? 0;
+        }
+
         // Create Transfer Request
         var transfer = new StockTransfer
         {
@@ -54,7 +69,9 @@ public class RequestStockTransferCommandHandler : IRequestHandler<RequestStockTr
             CreatedAt = DateTime.UtcNow,
             LogisticsInfo = InventoryMapper.BuildLogisticsInfo(
                 requestedBy: request.RequestedBy,
-                notes: request.Notes
+                notes: request.Notes,
+                fromStockSnapshot: fromSnapshot,
+                toStockSnapshot: toSnapshot
             )
         };
 
