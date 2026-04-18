@@ -55,7 +55,6 @@ public static class PlantTaxonomyMapper
             CareInfo = careInfo,
             GrowthInfo = growthInfo,
             ImageUrl = entity.ImageUrl,
-            DefaultPrice = entity.DefaultPrice,
             CategoryId = entity.CategoryId,
             CategoryName = entity.Category?.Slug ?? entity.Category?.Name
         };
@@ -99,7 +98,6 @@ public static class PlantTaxonomyMapper
             CareInfo = careInfo,
             GrowthInfo = growthInfo,
             ImageUrl = entity.ImageUrl,
-            DefaultPrice = entity.DefaultPrice,
             CategoryName = entity.Category?.Slug ?? entity.Category?.Name
         };
     }

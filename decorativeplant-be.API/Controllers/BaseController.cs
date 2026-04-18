@@ -19,4 +19,9 @@ public abstract class BaseController : ControllerBase
         }
         return null; // Or throw Unauthorized
     }
+
+    protected string? GetUserRole()
+    {
+        return User.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+    }
 }
