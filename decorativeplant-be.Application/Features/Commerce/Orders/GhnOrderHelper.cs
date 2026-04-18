@@ -104,6 +104,12 @@ public static class GhnOrderHelper
             // Keep JSONB shape backward-compatible (array) — FE/staff dashboards already read shipments[].
             notes["shipments"] = new[] { shipment };
             order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+
+            // GHN order just created ≈ `ready_to_pick`. Auto-advance the order to `processing`
+            // (Đang chờ lấy hàng) so the customer immediately sees the post-confirm phase
+            // without waiting for the first GHN webhook.
+            OrderStatusMachine.ApplyFromExternalSource(order, OrderStatusMachine.Processing,
+                source: "GHN", reason: "GHN order created, awaiting pickup");
         }
         catch (Exception ex) { logger.LogError(ex, "GHN Error for {OrderCode}", order.OrderCode); }
     }

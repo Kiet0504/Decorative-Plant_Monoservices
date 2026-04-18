@@ -371,15 +371,19 @@ public class OrdersController : BaseController
     }
 
     // GHN real flow: ready_to_pick → picking → picked → storing → sorting → transporting → delivering → delivered
+    // Business mapping (customer-visible labels in parentheses):
+    //   - ready_to_pick, picking: GHN order created, shipper not yet handed the package → `processing` (Đang chờ lấy hàng)
+    //   - picked+: package is physically in GHN custody → `shipping` (Chờ giao hàng)
+    //   - delivered: dropped at customer → `delivered` (Đã giao)
+    // Note: `confirmed` (Đã xác nhận) is set by the staff confirm action or payment success, not by any GHN state.
     private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
     {
-        "ready_to_pick"                                  => "confirmed",
-        "picking" or "picked" or "storing" or "sorting"  => "processing",
-        "transporting" or "delivering" or "delivery_fail" => "shipping",
-        "delivered"                                      => "delivered",
-        "waiting_to_return" or "return" or "returned"    => "returned",
-        "cancel" or "lost"                               => "cancelled",
-        _                                                => null,
+        "ready_to_pick" or "picking"                                                             => "processing",
+        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail"  => "shipping",
+        "delivered"                                                                              => "delivered",
+        "waiting_to_return" or "return" or "returned"                                            => "returned",
+        "cancel" or "lost"                                                                       => "cancelled",
+        _                                                                                        => null,
     };
 
     [HttpPost]

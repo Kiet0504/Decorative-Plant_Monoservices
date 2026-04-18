@@ -9,8 +9,8 @@ using decorativeplant_be.Domain.Entities;
 namespace decorativeplant_be.Application.Common;
 
 /// <summary>
-/// Emails fulfillment_staff and branch_manager assigned to the order's branch
-/// when a new order is ready to be picked/packed. Fires for:
+/// Emails fulfillment_staff assigned to the order's branch when a new order is
+/// ready to be picked/packed. Fires for:
 ///   - COD orders (CreateOrderHandler, auto-confirmed)
 ///   - Bank transfer orders (PayOS webhook, paid)
 ///
@@ -18,7 +18,7 @@ namespace decorativeplant_be.Application.Common;
 /// </summary>
 public static class NewOrderForStaffNotifier
 {
-    private static readonly string[] NotifyRoles = { "fulfillment_staff", "branch_manager" };
+    private static readonly string[] NotifyRoles = { "fulfillment_staff" };
 
     public static async Task NotifyAsync(
         OrderHeader order,
