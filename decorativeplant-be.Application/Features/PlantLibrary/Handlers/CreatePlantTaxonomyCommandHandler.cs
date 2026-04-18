@@ -44,6 +44,14 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
         var careInfoJson = PlantTaxonomyMapper.BuildJson(request.CareInfo);
         var growthInfoJson = PlantTaxonomyMapper.BuildJson(request.GrowthInfo);
 
+        var repo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
+        var existingName = request.ScientificName.Trim().ToLower();
+        var existing = await repo.FirstOrDefaultAsync(x => x.ScientificName.ToLower() == existingName, cancellationToken);
+        if (existing != null)
+        {
+            throw new decorativeplant_be.Application.Common.Exceptions.BadRequestException($"A plant taxonomy with the scientific name '{request.ScientificName}' already exists.");
+        }
+
         var entity = new PlantTaxonomy
         {
             Id = Guid.NewGuid(),
@@ -53,11 +61,9 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
             CareInfo = careInfoJson,
             GrowthInfo = growthInfoJson,
             ImageUrl = request.ImageUrl,
-            DefaultPrice = request.DefaultPrice,
             CategoryId = finalCategoryId
         };
 
-        var repo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
         await repo.AddAsync(entity, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
 

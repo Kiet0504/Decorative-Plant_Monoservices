@@ -92,12 +92,18 @@ public class ProductListingResponse
     // Unified Product fields (Chain Store model)
     public int BatchTotalQuantity { get; set; }
     public int BatchReservedQuantity { get; set; }
+    public int BatchTotalReceived { get; set; }
     public int TotalSystemStock { get; set; }
     public Guid? StockLocationId { get; set; }
     public Guid? TaxonomyId { get; set; }
     public int AvailableBranches { get; set; }
     public bool HasPriceRange { get; set; }
     public List<BranchStockDto> BranchStocks { get; set; } = new();
+
+    // Batch & Logistics details
+    public string? BatchCode { get; set; }
+    public DateTime? BatchCreatedAt { get; set; }
+    public string? ImportedByName { get; set; }
 }
 
 public class BranchStockDto

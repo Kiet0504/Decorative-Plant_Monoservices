@@ -12,6 +12,7 @@ public class UpdateProductListingCommand : IRequest<ProductListingResponse>
 {
     public Guid Id { get; set; }
     public UpdateProductListingRequest Request { get; set; } = null!;
+    public string? UserRole { get; set; }
 }
 
 public class DeleteProductListingCommand : IRequest<bool>
