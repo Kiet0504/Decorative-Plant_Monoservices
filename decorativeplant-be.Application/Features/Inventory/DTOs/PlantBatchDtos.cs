@@ -22,8 +22,12 @@ public class PlantBatchDto
     public string? HealthStatus { get; set; }
     public string? Stage { get; set; }
     
+    [JsonPropertyName("initialQuantity")]
     public int InitialQuantity { get; set; }
+
+    [JsonPropertyName("currentTotalQuantity")]
     public int CurrentTotalQuantity { get; set; }
+    public decimal? PurchaseCost { get; set; }
     public string? ImageUrl { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
@@ -36,6 +40,10 @@ public class PlantBatchSummaryDto
     public string? BranchName { get; set; } // Added
     public string? HealthStatus { get; set; }
     public string? Stage { get; set; }
+    [JsonPropertyName("initialQuantity")]
+    public int InitialQuantity { get; set; }
+
+    [JsonPropertyName("currentTotalQuantity")]
     public int CurrentTotalQuantity { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
@@ -51,6 +59,7 @@ public class CreatePlantBatchDto
     public Dictionary<string, object>? Specs { get; set; }
     
     public int InitialQuantity { get; set; }
+    public decimal? PurchaseCost { get; set; }
 }
 
 public class UpdatePlantBatchDto
@@ -61,4 +70,5 @@ public class UpdatePlantBatchDto
     public int? CurrentTotalQuantity { get; set; }
     public Dictionary<string, object>? SourceInfo { get; set; }
     public Dictionary<string, object>? Specs { get; set; }
+    public decimal? PurchaseCost { get; set; }
 }

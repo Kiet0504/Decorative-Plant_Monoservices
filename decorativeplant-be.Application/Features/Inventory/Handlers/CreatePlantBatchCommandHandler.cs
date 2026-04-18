@@ -110,7 +110,13 @@ public class CreatePlantBatchCommandHandler : IRequestHandler<CreatePlantBatchCo
             ? $"BATCH-{datePart}-{randomPart}" 
             : request.BatchCode;
 
-        // 4. Create PlantBatch
+        // 4. Prepare JSON data
+        var sourceInfo = request.SourceInfo ?? new Dictionary<string, object>();
+        if (request.PurchaseCost.HasValue)
+        {
+            sourceInfo["purchase_cost"] = request.PurchaseCost.Value;
+        }
+
         var entity = new PlantBatch
         {
             Id = Guid.NewGuid(),
@@ -119,7 +125,7 @@ public class CreatePlantBatchCommandHandler : IRequestHandler<CreatePlantBatchCo
             TaxonomyId = request.TaxonomyId,
             SupplierId = request.SupplierId,
             ParentBatchId = request.ParentBatchId,
-            SourceInfo = PlantBatchMapper.BuildJson(request.SourceInfo),
+            SourceInfo = PlantBatchMapper.BuildJson(sourceInfo),
             Specs = PlantBatchMapper.BuildJson(request.Specs),
             InitialQuantity = request.InitialQuantity,
             CurrentTotalQuantity = request.InitialQuantity,

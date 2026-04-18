@@ -44,6 +44,7 @@ public static class PlantBatchMapper
             Stage = NormalizeValue(ExtractSpec(entity.Specs, "maturity_stage") ?? "Stable"),
             InitialQuantity = entity.InitialQuantity ?? 0,
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
+            PurchaseCost = ExtractSourceCost(entity.SourceInfo),
             ImageUrl = entity.Taxonomy?.ImageUrl,
             CreatedAt = entity.CreatedAt
         };
@@ -59,6 +60,7 @@ public static class PlantBatchMapper
             BranchName = entity.Branch?.Name, // Added
             HealthStatus = NormalizeValue(ExtractSpec(entity.Specs, "health_status") ?? "Healthy"),
             Stage = NormalizeValue(ExtractSpec(entity.Specs, "maturity_stage") ?? "Stable"),
+            InitialQuantity = entity.InitialQuantity ?? 0,
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             CreatedAt = entity.CreatedAt
         };
@@ -90,6 +92,22 @@ public static class PlantBatchMapper
             if (specs.RootElement.TryGetProperty(key, out var prop))
             {
                 return prop.GetString();
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static decimal? ExtractSourceCost(JsonDocument? sourceInfo)
+    {
+        if (sourceInfo == null) return null;
+        try
+        {
+            if (sourceInfo.RootElement.TryGetProperty("purchase_cost", out var prop))
+            {
+                if (prop.TryGetDecimal(out var cost)) return cost;
+                // Sometimes numbers come in as strings from bad clients
+                if (prop.ValueKind == JsonValueKind.String && decimal.TryParse(prop.GetString(), out var strCost)) return strCost;
             }
         }
         catch { }

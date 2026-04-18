@@ -114,8 +114,20 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
             }
         }
 
-        if (request.SourceInfo != null)
-            entity.SourceInfo = PlantBatchMapper.BuildJson(request.SourceInfo);
+        if (request.SourceInfo != null || request.PurchaseCost.HasValue)
+        {
+            var sourceInfo = request.SourceInfo ?? new Dictionary<string, object>();
+            if (request.SourceInfo == null && entity.SourceInfo != null) 
+            {
+               try { sourceInfo = JsonSerializer.Deserialize<Dictionary<string, object>>(entity.SourceInfo.RootElement.GetRawText()) ?? new(); } catch {}
+            }
+            if (request.PurchaseCost.HasValue)
+            {
+                sourceInfo["purchase_cost"] = request.PurchaseCost.Value;
+            }
+            entity.SourceInfo = PlantBatchMapper.BuildJson(sourceInfo);
+        }
+
             
         if (request.Specs != null)
             entity.Specs = PlantBatchMapper.BuildJson(request.Specs);

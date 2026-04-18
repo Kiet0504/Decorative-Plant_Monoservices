@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace decorativeplant_be.Application.Features.Cultivation.DTOs;
 
 public class CultivationLogDto
@@ -28,28 +30,60 @@ public class CreateCultivationLogDto
 // DTOs for Daily Care (reusing CultivationLog)
 public class BatchCareTaskDto
 {
+    [JsonPropertyName("id")]
     public Guid Id { get; set; }
-    public string ProductName { get; set; } = string.Empty; // From Batch.Taxonomy or Details
-    public string Activity { get; set; } = string.Empty;    // ActivityType
-    public string Batch { get; set; } = string.Empty;       // BatchCode
-    public string Frequency { get; set; } = string.Empty;   // From Details
-    public string Date { get; set; } = string.Empty;        // DueDate from Details
-    public string Status { get; set; } = "Pending";         // Based on PerformedAt + Details.Status
-    public string RepeatEvery { get; set; } = string.Empty; // From Details
+
+    [JsonPropertyName("productName")]
+    public string ProductName { get; set; } = string.Empty;
+
+    [JsonPropertyName("activity")]
+    public string Activity { get; set; } = string.Empty;
+
+    [JsonPropertyName("batch")]
+    public string Batch { get; set; } = string.Empty;
+
+    [JsonPropertyName("batchId")]
+    public Guid? BatchId { get; set; }
+
+    [JsonPropertyName("frequency")]
+    public string Frequency { get; set; } = string.Empty;
+
+    [JsonPropertyName("date")]
+    public string Date { get; set; } = string.Empty;
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "Pending";
+
+    [JsonPropertyName("repeatEvery")]
+    public string RepeatEvery { get; set; } = string.Empty;
+
+    [JsonPropertyName("branchId")]
     public Guid? BranchId { get; set; }
+
+    [JsonPropertyName("branchName")]
     public string? BranchName { get; set; }
 }
 
 public class BatchCareTaskDetailDto : BatchCareTaskDto
 {
+    [JsonPropertyName("description")]
     public string Description { get; set; } = string.Empty;
-    public string CareRequirement { get; set; } = string.Empty; // From Details
+
+    [JsonPropertyName("careRequirement")]
+    public string CareRequirement { get; set; } = string.Empty;
 }
 
 public class BatchCareTasksSummary
 {
+    [JsonPropertyName("todayTask")]
     public int TodayTask { get; set; }
+
+    [JsonPropertyName("watering")]
     public int Watering { get; set; }
+
+    [JsonPropertyName("fertilizing")]
     public int Fertilizing { get; set; }
+
+    [JsonPropertyName("pruningRepotting")]
     public int PruningRepotting { get; set; }
 }

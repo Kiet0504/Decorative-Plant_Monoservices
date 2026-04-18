@@ -7,17 +7,25 @@ using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Inventory.Commands;
 using decorativeplant_be.Domain.Entities;
 
+using decorativeplant_be.Application.Services;
+using decorativeplant_be.Application.Common.DTOs.Email;
+
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToStockCommand, bool>
 {
     private readonly IApplicationDbContext _context;
     private readonly ILogger<PublishBatchToStockCommandHandler> _logger;
+    private readonly IEmailService _emailService;
 
-    public PublishBatchToStockCommandHandler(IApplicationDbContext context, ILogger<PublishBatchToStockCommandHandler> logger)
+    public PublishBatchToStockCommandHandler(
+        IApplicationDbContext context, 
+        ILogger<PublishBatchToStockCommandHandler> logger,
+        IEmailService emailService)
     {
         _context = context;
         _logger = logger;
+        _emailService = emailService;
     }
 
     public async Task<bool> Handle(PublishBatchToStockCommand request, CancellationToken ct)
@@ -26,6 +34,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             .Include(x => x.Taxonomy)
                 .ThenInclude(t => t!.Category)
             .Include(x => x.Branch)
+            .Include(x => x.Supplier)
             .FirstOrDefaultAsync(x => x.Id == request.BatchId, ct)
             ?? throw new NotFoundException($"Batch {request.BatchId} not found.");
 
@@ -233,6 +242,74 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             }
 
             _logger.LogInformation("Updated existing ProductListing {ListingId} with stock and potential taxonomy backfill", existingListing.Id);
+        }
+
+        // 5. Send notification to all Admins
+        try
+        {
+            var adminEmails = await _context.UserAccounts
+                .Where(u => u.Role == "admin" && u.IsActive && !string.IsNullOrEmpty(u.Email))
+                .Select(u => u.Email)
+                .ToListAsync(ct);
+
+            if (adminEmails.Any())
+            {
+                var subject = $"New Plants Sent to Sales: {batch.BatchCode}";
+                
+                // Extract purchase cost from SourceInfo if it exists
+                decimal cost = 0;
+                if (batch.SourceInfo != null)
+                {
+                    try { 
+                        if (batch.SourceInfo.RootElement.TryGetProperty("purchase_cost", out var costProp))
+                        {
+                            if (costProp.TryGetDecimal(out var parsedCost)) cost = parsedCost;
+                            else if (costProp.ValueKind == JsonValueKind.String && decimal.TryParse(costProp.GetString(), out var strCost)) cost = strCost;
+                        }
+                    } catch { }
+                }
+
+                var batchInfo = new Dictionary<string, string>
+                {
+                    { "Batch Code", batch.BatchCode ?? "N/A" },
+                    { "Species", targetTitle },
+                    { "Branch", batch.Branch?.Name ?? "N/A" },
+                    { "Supplier", batch.Supplier?.Name ?? "N/A" },
+                    { "Quantity", request.Quantity.ToString() },
+                    { "Purchase Cost", cost == 0 ? "Not declared" : cost.ToString("N0") + " VND" },
+                    { "Timestamp", DateTime.Now.ToString("MM/dd/yyyy HH:mm") }
+                };
+
+                var emailBody = $@"
+                    <h2>New Finished Plants Dispatched to Sales</h2>
+                    <p>Dear Admin, a cultivation batch has just been finished and dispatched to the sales floor. Please review the costs to establish the appropriate retail price.</p>
+                    <table style='width:100%; border-collapse: collapse;'>
+                        {string.Join("", batchInfo.Select(x => $@"
+                            <tr style='border-bottom: 1px solid #eee;'>
+                                <td style='padding: 10px; font-weight: bold; width: 250px;'>{x.Key}</td>
+                                <td style='padding: 10px;'>{x.Value}</td>
+                            </tr>
+                        "))}
+                    </table>
+                    <p style='margin-top: 20px; color: #666;'>This is an automated email from the Decorative Plant Management System.</p>";
+
+                foreach (var email in adminEmails)
+                {
+                    await _emailService.SendAsync(new EmailMessage
+                    {
+                        To = email,
+                        Subject = subject,
+                        BodyHtml = emailBody,
+                        BodyPlainText = $"New Finished Plants: {batch.BatchCode} - {targetTitle}. Branch: {batch.Branch?.Name}. Purchase Cost: {cost}. Please review the admin dashboard."
+                    }, ct);
+                }
+                
+                _logger.LogInformation("Admin notification email sent to {Count} admins for batch {BatchId}", adminEmails.Count, batch.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send admin notification email for batch {BatchId}", batch.Id);
         }
 
         await _context.SaveChangesAsync(ct);
