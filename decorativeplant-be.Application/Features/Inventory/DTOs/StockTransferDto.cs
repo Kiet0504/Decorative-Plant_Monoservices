@@ -19,4 +19,6 @@ public class StockTransferDto
     public DateTime CreatedAt { get; set; }
     public DateTime? ShippedAt { get; set; }
     public DateTime? ReceivedAt { get; set; }
+    public int? FromStockSnapshot { get; set; }
+    public int? ToStockSnapshot { get; set; }
 }
