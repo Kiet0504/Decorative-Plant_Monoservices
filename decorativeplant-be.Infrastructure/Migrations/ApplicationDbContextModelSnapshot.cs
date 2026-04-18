@@ -934,9 +934,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasDefaultValueSql("now()");
 
-                    b.Property<decimal?>("DefaultPrice")
-                        .HasColumnType("numeric(18,2)");
-
                     b.Property<string>("GrowthInfo")
                         .HasColumnType("jsonb");
 

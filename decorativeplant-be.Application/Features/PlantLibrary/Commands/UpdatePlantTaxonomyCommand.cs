@@ -15,7 +15,6 @@ public class UpdatePlantTaxonomyCommand : IRequest<PlantTaxonomyDto>
     public Dictionary<string, object>? GrowthInfo { get; set; }
     
     public string? ImageUrl { get; set; }
-    public decimal? DefaultPrice { get; set; }
     public Guid? CategoryId { get; set; }
     public string? CategoryName { get; set; }
 }

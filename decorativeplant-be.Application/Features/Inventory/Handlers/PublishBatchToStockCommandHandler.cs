@@ -165,7 +165,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                     scientific_name = batch.Taxonomy?.ScientificName,
                     slug = $"batch-{batch.BatchCode?.ToLower() ?? batch.Id.ToString().Substring(0, 8)}",
                     description = taxonomyDesc,
-                    price = batch.Taxonomy?.DefaultPrice?.ToString("0") ?? "0", 
+                    price = "0", 
                     stock_quantity = totalAvailable,
                     min_order = 1,
                     max_order = 10,
@@ -210,12 +210,6 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             if (!info.ContainsKey("growth_info") || info["growth_info"] == null)
             {
                 if (batch.Taxonomy?.GrowthInfo != null) info["growth_info"] = batch.Taxonomy.GrowthInfo;
-            }
-
-            // 4. Sync Price if taxonomy has a default price
-            if (batch.Taxonomy?.DefaultPrice.HasValue == true)
-            {
-                info["price"] = batch.Taxonomy.DefaultPrice.Value.ToString("0");
             }
 
             existingListing.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(info));
