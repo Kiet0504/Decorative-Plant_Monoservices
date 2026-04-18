@@ -32,7 +32,9 @@ public static class InventoryMapper
             Status = transfer.Status ?? "requested",
             CreatedAt = transfer.CreatedAt ?? DateTime.UtcNow,
             ShippedAt = GetLogisticsDate(transfer.LogisticsInfo, "shipped_at"),
-            ReceivedAt = GetLogisticsDate(transfer.LogisticsInfo, "received_at")
+            ReceivedAt = GetLogisticsDate(transfer.LogisticsInfo, "received_at"),
+            FromStockSnapshot = GetLogisticsInt(transfer.LogisticsInfo, "from_stock_snapshot"),
+            ToStockSnapshot = GetLogisticsInt(transfer.LogisticsInfo, "to_stock_snapshot")
         };
     }
 
@@ -46,6 +48,8 @@ public static class InventoryMapper
         DateTime? receivedAt = null,
         object? receivedBy = null,
         string? receivingNotes = null,
+        int? fromStockSnapshot = null,
+        int? toStockSnapshot = null,
         JsonDocument? existingInfo = null)
     {
         var dict = new Dictionary<string, object?>();
@@ -71,6 +75,9 @@ public static class InventoryMapper
         if (receivedAt.HasValue) dict["received_at"] = receivedAt;
         if (receivedBy != null) dict["received_by"] = receivedBy;
         if (!string.IsNullOrEmpty(receivingNotes)) dict["receiving_notes"] = receivingNotes;
+        
+        if (fromStockSnapshot.HasValue) dict["from_stock_snapshot"] = fromStockSnapshot;
+        if (toStockSnapshot.HasValue) dict["to_stock_snapshot"] = toStockSnapshot;
 
         var json = JsonSerializer.SerializeToUtf8Bytes(dict, JsonOptions);
         return JsonDocument.Parse(json);
@@ -84,6 +91,17 @@ public static class InventoryMapper
         {
             if (prop.ValueKind == JsonValueKind.String && DateTime.TryParse(prop.GetString(), out var date)) return date;
             if (prop.ValueKind == JsonValueKind.String) return null;
+        }
+        return null;
+    }
+
+    private static int? GetLogisticsInt(JsonDocument? doc, string key)
+    {
+        if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+        
+        if (doc.RootElement.TryGetProperty(key, out var prop))
+        {
+            if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var val)) return val;
         }
         return null;
     }

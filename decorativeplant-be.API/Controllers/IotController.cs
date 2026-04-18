@@ -3,6 +3,7 @@ using decorativeplant_be.Application.Features.IoT.Commands.CreateIotDevice;
 using decorativeplant_be.Application.Features.IoT.Commands.DeleteIotDevice;
 using decorativeplant_be.Application.Features.IoT.Commands.IngestSensorData;
 using decorativeplant_be.Application.Features.IoT.Commands.UpdateIotDevice;
+using decorativeplant_be.Application.Features.IoT.Commands.SendDeviceCommand;
 using decorativeplant_be.Application.Features.IoT.Queries.GetIotDeviceById;
 using decorativeplant_be.Application.Features.IoT.Queries.GetIotDevices;
 using Microsoft.AspNetCore.Mvc;
@@ -112,6 +113,29 @@ public class IotController : BaseController
         var result = await Mediator.Send(request);
         return Ok(new { success = result });
     }
+
+    [HttpPost("devices/{id}/command")]
+    public async Task<IActionResult> SendCommand(Guid id, [FromBody] DeviceCommandRequest request)
+    {
+        var command = new SendDeviceCommand
+        {
+            DeviceId = id,
+            Action = request.Action,
+            Value = request.Value,
+            Params = request.Params
+        };
+
+        var result = await Mediator.Send(command);
+        if (!result) return BadRequest(new { message = "Failed to send command to device" });
+        return Ok(new { success = true });
+    }
+}
+
+public class DeviceCommandRequest
+{
+    public string Action { get; set; } = string.Empty;
+    public object? Value { get; set; }
+    public Dictionary<string, object>? Params { get; set; }
 }
 
 public class IngestSensorDataRequest

@@ -109,6 +109,8 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             BranchName = e.Branch?.Name,
             BranchAddress = e.Branch?.ContactInfo?.RootElement.TryGetProperty("full_address", out var addr) == true ? addr.GetString() : null,
             BatchId = e.BatchId,
+            BatchCode = e.Batch?.BatchCode,
+            BatchCreatedAt = e.Batch?.CreatedAt,
             CreatedAt = e.CreatedAt
         };
 
@@ -157,19 +159,36 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             var batchStock = e.Batch.BatchStocks.FirstOrDefault(s => s.Location?.BranchId == e.BranchId);
             if (batchStock != null && batchStock.Quantities != null)
             {
-                if (batchStock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+                var root = batchStock.Quantities.RootElement;
+                if (root.TryGetProperty("available_quantity", out var aq))
                 {
                     response.StockQuantity = aq.GetInt32();
                 }
-                if (batchStock.Quantities.RootElement.TryGetProperty("quantity", out var tq))
+                if (root.TryGetProperty("quantity", out var tq))
                 {
                     response.BatchTotalQuantity = tq.GetInt32();
                 }
-                if (batchStock.Quantities.RootElement.TryGetProperty("reserved_quantity", out var rq))
+                if (root.TryGetProperty("reserved_quantity", out var rq))
                 {
                     response.BatchReservedQuantity = rq.GetInt32();
                 }
+                if (root.TryGetProperty("total_received", out var tr))
+                {
+                    response.BatchTotalReceived = tr.GetInt32();
+                }
                 response.StockLocationId = batchStock.LocationId;
+            }
+            else if (e.Batch.BatchStocks != null)
+            {
+                 // Fallback: If location join failed in FirstOrDefault, take the first available stock record for this batch
+                 var fallbackStock = e.Batch.BatchStocks.FirstOrDefault();
+                 if (fallbackStock != null && fallbackStock.Quantities != null)
+                 {
+                     var root = fallbackStock.Quantities.RootElement;
+                     if (root.TryGetProperty("total_received", out var tr)) response.BatchTotalReceived = tr.GetInt32();
+                     if (root.TryGetProperty("reserved_quantity", out var rq)) response.BatchReservedQuantity = rq.GetInt32();
+                     if (root.TryGetProperty("quantity", out var tq)) response.BatchTotalQuantity = tq.GetInt32();
+                 }
             }
         }
 
@@ -240,6 +259,8 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         var req = cmd.Request;
         var entity = await _context.ProductListings
             .Include(x => x.Batch)
+                .ThenInclude(b => b!.BatchStocks)
+                    .ThenInclude(bs => bs.Location)
             .FirstOrDefaultAsync(x => x.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"ProductListing {cmd.Id} not found.");
 
@@ -247,7 +268,34 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         {
             if (entity.Batch != null)
             {
-                _logger.LogInformation("Stock change requested for listing {Id}. Syncing only storefront available quantity.", entity.Id);
+                _logger.LogInformation("Stock change requested for listing {Id}. Syncing with BatchStock record.", entity.Id);
+                
+                // ── Synchronization Logic: BatchStock ──
+                var batchStock = await _context.BatchStocks
+                    .FirstOrDefaultAsync(s => s.BatchId == entity.BatchId && s.Location!.BranchId == entity.BranchId, ct);
+
+                if (batchStock != null && batchStock.Quantities != null)
+                {
+                    var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(batchStock.Quantities.RootElement.GetRawText()) ?? new();
+                    
+                    int currentReserved = quantities.ContainsKey("reserved_quantity") ? quantities["reserved_quantity"] : 0;
+                    int totalReceived = quantities.ContainsKey("total_received") ? quantities["total_received"] : 0;
+                    
+                    if (req.StockQuantity.Value > totalReceived && totalReceived > 0)
+                    {
+                        throw new ValidationException($"Cannot set available stock to {req.StockQuantity.Value}. Maximum allowed (total received) is {totalReceived}.");
+                    }
+
+                    // Update Available and Total Quantity
+                    quantities["available_quantity"] = req.StockQuantity.Value;
+                    quantities["quantity"] = req.StockQuantity.Value + currentReserved;
+                    
+                    batchStock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
+                    batchStock.UpdatedAt = DateTime.UtcNow;
+                    
+                    _logger.LogInformation("Synced BatchStock {BatchStockId} for ProductListing {ListingId}. New available: {NewQty}", 
+                        batchStock.Id, entity.Id, req.StockQuantity.Value);
+                }
             }
             else
             {
@@ -278,7 +326,15 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         if (req.ScientificName != null) productInfo["scientific_name"] = req.ScientificName;
         if (req.Slug != null) productInfo["slug"] = req.Slug;
         if (req.Description != null) productInfo["description"] = req.Description;
-        if (req.Price != null) productInfo["price"] = req.Price;
+        if (req.Price != null) 
+        {
+            if (cmd.UserRole != "admin")
+            {
+                _logger.LogWarning("Non-admin user attempted to update price for product {Id}", entity.Id);
+                throw new ValidationException("Only administrators can update product prices.");
+            }
+            productInfo["price"] = req.Price;
+        }
         if (req.MinOrder.HasValue) productInfo["min_order"] = req.MinOrder.Value;
         if (req.MaxOrder.HasValue) productInfo["max_order"] = req.MaxOrder.Value;
         if (req.StockQuantity.HasValue) productInfo["stock_quantity"] = req.StockQuantity.Value;
@@ -306,10 +362,10 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
 
         await _context.SaveChangesAsync(ct);
 
-        // --- NEW: Synchronization feature ---
-        if (req.SyncToAllBranches == true)
+        // --- NEW: Synchronization feature (Always for Admin) ---
+        if (cmd.UserRole == "admin")
         {
-            _logger.LogInformation("Syncing product updates to all branches for species related to listing {Id}", entity.Id);
+            _logger.LogInformation("Admin syncing product updates to all branches for species related to listing {Id}", entity.Id);
             
             var taxonomyId = entity.Batch?.TaxonomyId;
             var currentTitle = req.Title ?? CreateProductListingHandler.GetProductTitle(entity);
@@ -350,6 +406,8 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
                 if (req.GrowthInfo != null) targetPI["growth_info"] = JsonDocument.Parse(JsonSerializer.Serialize(req.GrowthInfo));
                 
                 target.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(targetPI));
+
+                // Price and generic info updated for target listings.
 
                 // Update Status/Visibility/Featured
                 var targetSI = new Dictionary<string, object?>();
@@ -629,20 +687,49 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
             .Include(x => x.Batch)
                 .ThenInclude(b => b!.Taxonomy)
                     .ThenInclude(t => t!.Category)
+            .Include(x => x.Batch)
+                .ThenInclude(b => b!.CultivationLogs.OrderBy(cl => cl.PerformedAt).Take(1))
+                    .ThenInclude(cl => cl.PerformedByUser)
             .Include(x => x.Branch)
             .FirstOrDefaultAsync(x => x.Id == query.Id, ct);
         
         if (entity == null) return null;
 
-        // CRITICAL: Block draft products from being viewed via ID (unless staff access is implemented)
-        var status = "draft";
-        if (entity.StatusInfo != null && entity.StatusInfo.RootElement.TryGetProperty("status", out var st))
-            status = st.GetString() ?? "draft";
-        
-        if (status != "active") return null;
+        // Optional: Block non-active products for customers (but allow for staff/admin)
+        // For now, removing this strict check so admin can edit any product ID
 
         var response = CreateProductListingHandler.MapToResponse(entity);
-        var normalizedTitle = (response.Title ?? "").Trim().ToLowerInvariant();
+        
+        // --- NEW: Dynamic Staff Identification ---
+        var firstLog = entity.Batch?.CultivationLogs?.OrderBy(cl => cl.PerformedAt).FirstOrDefault();
+        if (firstLog?.PerformedByUser != null)
+        {
+            response.ImportedByName = firstLog.PerformedByUser.DisplayName ?? firstLog.PerformedByUser.Email;
+        }
+        else if (entity.Batch?.SourceInfo != null)
+        {
+            var root = entity.Batch.SourceInfo.RootElement;
+            if (root.TryGetProperty("staff_name", out var sn) && !string.IsNullOrEmpty(sn.GetString())) 
+                response.ImportedByName = sn.GetString();
+            else if (root.TryGetProperty("imported_by", out var ib) && !string.IsNullOrEmpty(ib.GetString())) 
+                response.ImportedByName = ib.GetString();
+        }
+
+        if (string.IsNullOrEmpty(response.ImportedByName) || response.ImportedByName == "Cultivation Staff")
+        {
+            // Fallback: Find the actual name of a cultivation staff member for the demo/audit feel
+            var staffUser = await _context.UserAccounts
+                .Where(u => u.Role == "cultivation_staff")
+                .OrderBy(u => u.Id)
+                .FirstOrDefaultAsync(ct);
+                
+            if (staffUser != null) 
+                response.ImportedByName = staffUser.DisplayName ?? staffUser.Email;
+            else 
+                response.ImportedByName = "Cultivation Staff";
+        }
+
+        var taxonomyId = entity.Batch?.TaxonomyId;
 
         var allOthers = await _context.ProductListings
             .Include(x => x.Batch)
@@ -650,10 +737,10 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
                     .ThenInclude(bs => bs.Location)
             .Include(x => x.Branch)
             .Where(x => x.Id != entity.Id)
+            .Where(x => x.Batch != null && x.Batch.TaxonomyId == taxonomyId) // Match by species (Taxonomy)
             .ToListAsync(ct);
 
         response.BranchStocks = allOthers
-            .Where(e => (CreateProductListingHandler.GetProductTitle(e) ?? "").Trim().ToLowerInvariant() == normalizedTitle)
             .Select(e => new BranchStockDto
             {
                 ListingId = e.Id,

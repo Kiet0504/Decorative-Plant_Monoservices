@@ -58,7 +58,7 @@ public class ProductListingsController : BaseController
     [Authorize]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateProductListingRequest request)
     {
-        var result = await Mediator.Send(new UpdateProductListingCommand { Id = id, Request = request });
+        var result = await Mediator.Send(new UpdateProductListingCommand { Id = id, Request = request, UserRole = GetUserRole() });
         return Ok(ApiResponse<ProductListingResponse>.SuccessResponse(result));
     }
 

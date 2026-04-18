@@ -3,6 +3,7 @@ using System;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using decorativeplant_be.Infrastructure.Data;
@@ -12,9 +13,11 @@ using decorativeplant_be.Infrastructure.Data;
 namespace decorativeplant_be.Infrastructure.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260417203101_RemoveDefaultPriceFromTaxonomy")]
+    partial class RemoveDefaultPriceFromTaxonomy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -692,9 +695,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                     b.Property<DateTime?>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<DateTime?>("DeliveredAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<string>("DeliveryAddress")
                         .HasColumnType("jsonb");
 
@@ -725,10 +725,6 @@ namespace decorativeplant_be.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("DeliveredAt")
-                        .HasDatabaseName("IX_order_header_DeliveredAt_delivered")
-                        .HasFilter("\"Status\" = 'delivered'");
 
                     b.HasIndex("UserId");
 

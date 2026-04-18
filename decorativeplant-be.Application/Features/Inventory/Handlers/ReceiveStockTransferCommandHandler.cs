@@ -165,22 +165,6 @@ public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTr
                 Images = refListing?.Images,
                 SeoInfo = refListing?.SeoInfo
             };
-
-            // Ensure price is set from taxonomy if available
-            if (transfer.Batch?.Taxonomy?.DefaultPrice.HasValue == true)
-            {
-                var info = listing.ProductInfo != null 
-                    ? JsonSerializer.Deserialize<Dictionary<string, object>>(listing.ProductInfo.RootElement.GetRawText())!
-                    : new Dictionary<string, object>();
-                
-                info["price"] = transfer.Batch.Taxonomy.DefaultPrice.Value.ToString("0");
-                
-                if (!info.ContainsKey("title")) info["title"] = transfer.Batch.Taxonomy.ScientificName ?? "Untitled Plant";
-                if (!info.ContainsKey("stock_quantity")) info["stock_quantity"] = quantities.AvailableQuantity;
-                
-                listing.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(info));
-            }
-            
             _context.ProductListings.Add(listing);
         }
 
@@ -191,13 +175,6 @@ public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTr
             if (productInfo != null)
             {
                 productInfo["stock_quantity"] = quantities.AvailableQuantity;
-                
-                // Also Sync Price if taxonomy has a default value (ensure consistency)
-                if (transfer.Batch?.Taxonomy?.DefaultPrice.HasValue == true)
-                {
-                    productInfo["price"] = transfer.Batch.Taxonomy.DefaultPrice.Value.ToString("0");
-                }
-
                 listing.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(productInfo));
             }
         }
