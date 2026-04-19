@@ -99,8 +99,10 @@ public static class OrderStatusMachine
             // reduce to step < 2 because BOPIS and standard flows share step numbers.
             return Step.TryGetValue(src, out var s) && s < 2;
         }
-        if (dst == Expired)  return src == Pending || src == DepositPaid;
-        if (dst == Returned) return src is Delivered or Completed or PickedUp;
+        if (dst == Expired)    return src == Pending || src == DepositPaid;
+        if (dst == Returned)   return src is Delivered or Completed or PickedUp;
+        if (src == Confirmed  && dst == Processing) return true; // pack step
+        if (src == Processing && dst == Shipping)  return true; // hand to carrier
 
         if (!Step.TryGetValue(src, out var srcStep) || srcStep < 0) return false;
         if (!Step.TryGetValue(dst, out var dstStep) || dstStep < 0) return false;
