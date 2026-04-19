@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -86,7 +89,9 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ? "v1alpha"
             : _live.AuthTokensApiVersion.Trim().TrimStart('/');
 
-        var body = new
+        var url = $"{baseUrl}/{apiVer}/authTokens:create?key={Uri.EscapeDataString(apiKey)}";
+
+        var bodyCamel = new
         {
             authToken = new
             {
@@ -96,24 +101,54 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             }
         };
 
-        // Ephemeral tokens are registered under v1alpha in Google samples; v1beta often 404s for authTokens:create.
-        var url = $"{baseUrl}/{apiVer}/authTokens:create?key={Uri.EscapeDataString(apiKey)}";
-        using var response = await _http.PostAsJsonAsync(url, body, JsonOptions, cancellationToken)
+        // Google REST/proto-json may accept camelCase (SDK-style) or snake_case. Try camelCase, then snake_case on 400.
+        using var response1 = await _http
+            .PostAsJsonAsync(url, bodyCamel, JsonOptions, cancellationToken)
             .ConfigureAwait(false);
-        var raw = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        var raw = await response1.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var ok = response1.IsSuccessStatusCode;
+
+        if (!ok && response1.StatusCode == HttpStatusCode.BadRequest)
+        {
+            var snake = new Dictionary<string, object?>
+            {
+                ["auth_token"] = new Dictionary<string, object?>
+                {
+                    ["expire_time"] = expire.ToString("o"),
+                    ["new_session_expire_time"] = newSessionExpire.ToString("o"),
+                    ["uses"] = 1
+                }
+            };
+            var snakeJson = JsonSerializer.Serialize(snake);
+            using var req = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = new StringContent(snakeJson, Encoding.UTF8, "application/json")
+            };
+            using var response2 = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+            var raw2 = await response2.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (response2.IsSuccessStatusCode)
+            {
+                raw = raw2;
+                ok = true;
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Gemini authTokens:create (snake_case retry) failed: {Status} {Body}",
+                    (int)response2.StatusCode,
+                    raw2.Length > 2000 ? raw2[..2000] + "…" : raw2);
+                ThrowTokenError(response2, raw2, apiVer);
+            }
+        }
+
+        if (!ok)
         {
             _logger.LogWarning(
                 "Gemini authTokens:create failed ({Version}): {Status} {Body}",
                 apiVer,
-                (int)response.StatusCode,
+                (int)response1.StatusCode,
                 raw.Length > 2000 ? raw[..2000] + "…" : raw);
-            var detail = TryExtractGoogleErrorMessage(raw);
-            var hint = detail != null
-                ? $"Google: {TruncateForClient(detail, 900)}"
-                : "Check AiDiagnosis:GeminiApiKey, Generative Language API access, billing, and AiLive:AuthTokensApiVersion (try v1alpha).";
-            throw new ValidationException(
-                $"Could not create a Live session token. {hint}");
+            ThrowTokenError(response1, raw, apiVer);
         }
 
         using var doc = JsonDocument.Parse(raw);
@@ -126,15 +161,15 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
 
         DateTime? exp = null;
         DateTime? nsExp = null;
-        if (root.TryGetProperty("expireTime", out var et))
+        if (TryGetStringProp(root, "expireTime", "expire_time", out var ets))
         {
-            _ = DateTime.TryParse(et.GetString(), out var parsed);
+            _ = DateTime.TryParse(ets, out var parsed);
             exp = parsed;
         }
 
-        if (root.TryGetProperty("newSessionExpireTime", out var nst))
+        if (TryGetStringProp(root, "newSessionExpireTime", "new_session_expire_time", out var nsts))
         {
-            _ = DateTime.TryParse(nst.GetString(), out var parsed);
+            _ = DateTime.TryParse(nsts, out var parsed);
             nsExp = parsed;
         }
 
@@ -196,6 +231,47 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         return sb.ToString();
     }
 
+    private static bool TryGetStringProp(JsonElement root, string camel, string snake, out string? value)
+    {
+        if (root.TryGetProperty(camel, out var c))
+        {
+            value = c.GetString();
+            return true;
+        }
+
+        if (root.TryGetProperty(snake, out var s))
+        {
+            value = s.GetString();
+            return true;
+        }
+
+        value = null;
+        return false;
+    }
+
+    private static void ThrowTokenError(HttpResponseMessage response, string raw, string apiVer)
+    {
+        var detail = TryExtractGoogleErrorMessage(raw);
+        var status = (int)response.StatusCode;
+        var reason = response.ReasonPhrase ?? string.Empty;
+        string hint;
+        if (detail != null)
+        {
+            hint = $"HTTP {status} ({apiVer}). Google: {TruncateForClient(detail, 900)}";
+        }
+        else if (!string.IsNullOrWhiteSpace(raw))
+        {
+            hint = $"HTTP {status} ({apiVer}). Response: {TruncateForClient(raw.Trim(), 700)}";
+        }
+        else
+        {
+            hint =
+                $"HTTP {status} {reason} ({apiVer}). Empty body — confirm AiDiagnosis:GeminiApiKey, server outbound HTTPS to generativelanguage.googleapis.com, and API restrictions on the key.";
+        }
+
+        throw new ValidationException($"Could not create a Live session token. {hint}");
+    }
+
     private static string? TryExtractGoogleErrorMessage(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -207,16 +283,34 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         {
             using var doc = JsonDocument.Parse(raw);
             var root = doc.RootElement;
-            if (root.TryGetProperty("error", out var err))
+            if (root.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.Object)
             {
-                if (err.TryGetProperty("message", out var m))
+                if (err.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String)
                 {
                     return m.GetString();
                 }
 
-                if (err.TryGetProperty("status", out var st))
+                if (err.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String)
                 {
                     return st.GetString();
+                }
+
+                if (err.TryGetProperty("details", out var details) && details.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in details.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("message", out var dm))
+                        {
+                            return dm.GetString();
+                        }
+                    }
+                }
+
+                if (err.TryGetProperty("code", out var code))
+                {
+                    return code.ValueKind == JsonValueKind.Number
+                        ? code.GetRawText()
+                        : code.GetString();
                 }
             }
         }
