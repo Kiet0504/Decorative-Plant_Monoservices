@@ -170,7 +170,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             var itemsByBranch = enrichedItems.GroupBy(e => e.listing.BranchId).ToList();
 
             // 5. Calculate shipping fees (1 per branch or use provided fee)
-            var shippingFeesByBranch = new Dictionary<Guid?, decimal>();
+            var shippingFeesByBranch = new Dictionary<Guid, decimal>();
             decimal totalShippingFee = 0;
 
             foreach (var branchGroup in itemsByBranch)
@@ -206,7 +206,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 }
 
                 branchShippingFee = Math.Round(branchShippingFee, 0);
-                shippingFeesByBranch[branchId] = branchShippingFee;
+                shippingFeesByBranch[branchId ?? Guid.Empty] = branchShippingFee;
                 totalShippingFee += branchShippingFee;
             }
 
@@ -244,7 +244,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     });
                 }
 
-                var branchShippingFee = shippingFeesByBranch[branchId];
+                var branchShippingFee = shippingFeesByBranch[branchId ?? Guid.Empty];
 
                 // Allocate discount proportionally to branch
                 var branchDiscount = totalDiscount > 0 

@@ -6,4 +6,5 @@ public class PublishBatchToStockCommand : IRequest<bool>
 {
     public Guid BatchId { get; set; }
     public int Quantity { get; set; }
+    public string? Price { get; set; }
 }

@@ -1,5 +1,6 @@
 using decorativeplant_be.Application.Features.Inventory.DTOs;
 using MediatR;
+using System.Text.Json.Serialization;
 
 namespace decorativeplant_be.Application.Features.Inventory.Commands;
 
@@ -17,4 +18,16 @@ public class UpdatePlantBatchCommand : IRequest<PlantBatchDto>
     public Dictionary<string, object>? SourceInfo { get; set; }
     public Dictionary<string, object>? Specs { get; set; }
     public decimal? PurchaseCost { get; set; }
+    
+    // Detailed stock quantities
+    public int? Quantity { get; set; }
+    
+    [JsonPropertyName("reserved_quantity")]
+    public int? ReservedQuantity { get; set; }
+    
+    [JsonPropertyName("available_quantity")]
+    public int? AvailableQuantity { get; set; }
+    
+    [JsonPropertyName("total_received")]
+    public int? TotalReceived { get; set; }
 }

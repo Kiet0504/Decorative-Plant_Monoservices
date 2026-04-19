@@ -27,6 +27,7 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
             .Include(b => b.Taxonomy)
             .Include(b => b.Branch)
             .Include(b => b.Supplier)
+            .Include(b => b.ParentBatch) // Fix: Include parent batch to preserve lineage info in response
             .FirstOrDefaultAsync(b => b.Id == request.Id, cancellationToken);
 
         if (entity == null)
@@ -36,6 +37,44 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
 
         if (request.BatchCode != null)
             entity.BatchCode = request.BatchCode;
+
+        // Validation: Block stage regression if plants have been sent to sales
+        if (request.Specs != null && request.Specs.TryGetValue("maturity_stage", out var newStageObj))
+        {
+            var newStage = newStageObj?.ToString()?.ToLower();
+            var oldStage = string.Empty;
+            if (entity.Specs != null && entity.Specs.RootElement.TryGetProperty("maturity_stage", out var oldStageProp))
+            {
+                oldStage = oldStageProp.GetString()?.ToLower();
+            }
+
+            if (!string.IsNullOrEmpty(newStage) && !string.IsNullOrEmpty(oldStage) && newStage != oldStage)
+            {
+                int newLevel = GetStageLevel(newStage);
+                int oldLevel = GetStageLevel(oldStage);
+
+                if (newLevel < oldLevel)
+                {
+                    // Check if any plants were already sent to sales
+                    int totalPublished = 0;
+                    if (entity.BatchStocks != null)
+                    {
+                        foreach (var bs in entity.BatchStocks)
+                        {
+                            if (bs.Quantities != null && bs.Quantities.RootElement.TryGetProperty("total_received", out var trProp))
+                            {
+                                totalPublished += trProp.GetInt32();
+                            }
+                        }
+                    }
+
+                    if (totalPublished > 0)
+                    {
+                        throw new BadRequestException($"Cannot regress stage from '{oldStage}' to '{newStage}' because {totalPublished} plants have already been sent to sales. This batch is now locked to its commercial maturity level.");
+                    }
+                }
+            }
+        }
             
         if (request.BranchId.HasValue)
             entity.BranchId = request.BranchId;
@@ -46,7 +85,7 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         if (request.SupplierId.HasValue)
             entity.SupplierId = request.SupplierId;
 
-        if (request.ParentBatchId.HasValue)
+        if (request.ParentBatchId.HasValue && request.ParentBatchId.Value != entity.Id)
             entity.ParentBatchId = request.ParentBatchId;
             
         // 1. Sync Quantities to BatchStock with Validation
@@ -65,29 +104,41 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
                 var jsonStr = bs.Quantities.RootElement.GetRawText();
                 var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr) ?? new();
                 
-                // Determine the limit (Total Received)
-                int limit = 0;
-                if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
-                else if (quantities.TryGetValue("quantity", out var q)) limit = q; // Fallback for old data
-                else limit = int.MaxValue; 
-
-                if (request.CurrentTotalQuantity.Value > limit)
-                {
-                    throw new BadRequestException($"Cannot update stock to {request.CurrentTotalQuantity.Value}. Maximum available from cultivation is {limit}.");
-                }
-
-                // Update available_quantity
-                quantities["available_quantity"] = request.CurrentTotalQuantity.Value;
+                // Determine the limit (Total Received) - Only apply strict validation for Sales/Storefront
+                bool isSalesLocation = bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront";
                 
-                // If this is a Sales location (reserved is usually 0), sync the 'quantity' as well
-                if (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront")
-                {
-                    if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
-                    {
-                        quantities["quantity"] = request.CurrentTotalQuantity.Value;
-                    }
-                }
+                // 1. Universal field updates (Always sync if provided)
+                if (request.ReservedQuantity.HasValue) quantities["reserved_quantity"] = request.ReservedQuantity.Value;
+                if (request.Quantity.HasValue) quantities["quantity"] = request.Quantity.Value;
+                if (!isSalesLocation && request.AvailableQuantity.HasValue) quantities["available_quantity"] = request.AvailableQuantity.Value;
 
+                if (isSalesLocation)
+                {
+                        // Only validate/update available_quantity if specifically requested or if targeting a branch
+                        if (request.AvailableQuantity.HasValue || (request.BranchId.HasValue && request.CurrentTotalQuantity.HasValue))
+                        {
+                            int limit = 0;
+                            if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
+                            else if (quantities.TryGetValue("quantity", out var q)) limit = q; 
+                            else limit = int.MaxValue; 
+
+                            int targetAvailable = request.AvailableQuantity ?? request.CurrentTotalQuantity ?? 0;
+
+                            if (targetAvailable > limit)
+                            {
+                                throw new BadRequestException($"Cannot update sales stock to {targetAvailable}. Maximum available from cultivation is {limit}.");
+                            }
+                            
+                            quantities["available_quantity"] = targetAvailable;
+
+                            // Sync the 'quantity' field for sales site to match available if reserved is 0
+                            if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
+                            {
+                                quantities["quantity"] = targetAvailable;
+                            }
+                        }
+                }
+                
                 bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
             }
             
@@ -135,5 +186,18 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         await _context.SaveChangesAsync(cancellationToken);
 
         return PlantBatchMapper.ToDto(entity);
+    }
+
+    private static int GetStageLevel(string stage)
+    {
+        return stage switch
+        {
+            "seedling" => 0,
+            "juvenile" => 1,
+            "mature" => 2,
+            "flowering" => 3,
+            "stable" => 4,
+            _ => 100 // Unknown stages are considered "high"
+        };
     }
 }

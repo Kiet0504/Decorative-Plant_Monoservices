@@ -26,7 +26,7 @@ public static class PlantBatchMapper
             try { specs = JsonSerializer.Deserialize<object>(entity.Specs.RootElement.GetRawText(), JsonOptions); } catch {}
         }
 
-        return new PlantBatchDto
+        var dto = new PlantBatchDto
         {
             Id = entity.Id,
             BatchCode = entity.BatchCode,
@@ -48,11 +48,23 @@ public static class PlantBatchMapper
             ImageUrl = entity.Taxonomy?.ImageUrl,
             CreatedAt = entity.CreatedAt
         };
+
+        // Populate Aggregate Stock Fields
+        if (entity.BatchStocks != null && entity.BatchStocks.Any())
+        {
+            var aggregated = AggregateStock(entity.BatchStocks);
+            dto.Quantity = aggregated.quantity;
+            dto.ReservedQuantity = aggregated.reserved;
+            dto.AvailableQuantity = aggregated.available;
+            dto.TotalReceived = aggregated.totalReceived;
+        }
+
+        return dto;
     }
 
     public static PlantBatchSummaryDto ToSummaryDto(PlantBatch entity)
     {
-        return new PlantBatchSummaryDto
+        var dto = new PlantBatchSummaryDto
         {
             Id = entity.Id,
             BatchCode = entity.BatchCode,
@@ -64,6 +76,18 @@ public static class PlantBatchMapper
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             CreatedAt = entity.CreatedAt
         };
+
+        // Populate Aggregate Stock Fields for Summary
+        if (entity.BatchStocks != null && entity.BatchStocks.Any())
+        {
+            var aggregated = AggregateStock(entity.BatchStocks);
+            dto.Quantity = aggregated.quantity;
+            dto.ReservedQuantity = aggregated.reserved;
+            dto.AvailableQuantity = aggregated.available;
+            dto.TotalReceived = aggregated.totalReceived;
+        }
+
+        return dto;
     }
 
     private static string NormalizeValue(string value)
@@ -146,5 +170,24 @@ public static class PlantBatchMapper
     {
         if (data == null) return null;
         return JsonSerializer.SerializeToDocument(data, JsonOptions);
+    }
+
+    private static (int quantity, int reserved, int available, int totalReceived) AggregateStock(IEnumerable<BatchStock> stocks)
+    {
+        int q = 0, r = 0, a = 0, tr = 0;
+        foreach (var stock in stocks)
+        {
+            if (stock.Quantities == null) continue;
+            try
+            {
+                var json = stock.Quantities.RootElement;
+                if (json.TryGetProperty("quantity", out var qProp)) q += qProp.GetInt32();
+                if (json.TryGetProperty("reserved_quantity", out var rProp)) r += rProp.GetInt32();
+                if (json.TryGetProperty("available_quantity", out var aProp)) a += aProp.GetInt32();
+                if (json.TryGetProperty("total_received", out var trProp)) tr += trProp.GetInt32();
+            }
+            catch { }
+        }
+        return (q, r, a, tr);
     }
 }

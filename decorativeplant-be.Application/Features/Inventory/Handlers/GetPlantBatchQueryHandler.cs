@@ -5,16 +5,19 @@ using decorativeplant_be.Application.Features.Inventory.Queries;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class GetPlantBatchQueryHandler : IRequestHandler<GetPlantBatchQuery, PlantBatchDto>
 {
     private readonly IRepositoryFactory _repositoryFactory;
+    private readonly IApplicationDbContext _context;
 
-    public GetPlantBatchQueryHandler(IRepositoryFactory repositoryFactory)
+    public GetPlantBatchQueryHandler(IRepositoryFactory repositoryFactory, IApplicationDbContext context)
     {
         _repositoryFactory = repositoryFactory;
+        _context = context;
     }
 
     public async Task<PlantBatchDto> Handle(GetPlantBatchQuery request, CancellationToken cancellationToken)
@@ -49,12 +52,14 @@ public class GetPlantBatchQueryHandler : IRequestHandler<GetPlantBatchQuery, Pla
             entity.Branch = await branchRepo.GetByIdAsync(entity.BranchId.Value, cancellationToken);
         }
 
-        // 4. Parent Batch (for traceability)
-        if (entity.ParentBatchId.HasValue && entity.ParentBatch == null)
+        // 5. Batch Stocks (for inventory details)
+        if (entity.BatchStocks == null || !entity.BatchStocks.Any())
         {
-            // Avoid deep recursion, just get immediate parent for now.
-            var parentRepo = _repositoryFactory.CreateRepository<PlantBatch>();
-            entity.ParentBatch = await parentRepo.GetByIdAsync(entity.ParentBatchId.Value, cancellationToken);
+            var stockRepo = _repositoryFactory.CreateRepository<BatchStock>();
+            entity.BatchStocks = await _context.BatchStocks
+                .Include(bs => bs.Location)
+                .Where(bs => bs.BatchId == entity.Id)
+                .ToListAsync(cancellationToken);
         }
 
         return PlantBatchMapper.ToDto(entity);

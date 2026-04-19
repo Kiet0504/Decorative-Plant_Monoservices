@@ -27,6 +27,20 @@ public class PlantBatchDto
 
     [JsonPropertyName("currentTotalQuantity")]
     public int CurrentTotalQuantity { get; set; }
+
+    // Aggregate stock fields
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; }
+    
+    [JsonPropertyName("reserved_quantity")]
+    public int ReservedQuantity { get; set; }
+    
+    [JsonPropertyName("available_quantity")]
+    public int AvailableQuantity { get; set; }
+    
+    [JsonPropertyName("total_received")]
+    public int TotalReceived { get; set; }
+
     public decimal? PurchaseCost { get; set; }
     public string? ImageUrl { get; set; }
     public DateTime? CreatedAt { get; set; }
@@ -40,11 +54,26 @@ public class PlantBatchSummaryDto
     public string? BranchName { get; set; } // Added
     public string? HealthStatus { get; set; }
     public string? Stage { get; set; }
+    
     [JsonPropertyName("initialQuantity")]
     public int InitialQuantity { get; set; }
 
     [JsonPropertyName("currentTotalQuantity")]
     public int CurrentTotalQuantity { get; set; }
+
+    // Aggregate stock fields
+    [JsonPropertyName("quantity")]
+    public int Quantity { get; set; }
+    
+    [JsonPropertyName("reserved_quantity")]
+    public int ReservedQuantity { get; set; }
+    
+    [JsonPropertyName("available_quantity")]
+    public int AvailableQuantity { get; set; }
+    
+    [JsonPropertyName("total_received")]
+    public int TotalReceived { get; set; }
+
     public DateTime? CreatedAt { get; set; }
 }
 

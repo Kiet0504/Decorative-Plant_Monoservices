@@ -200,12 +200,17 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             // Upgrade existing listing if it's using placeholder data
             var info = JsonSerializer.Deserialize<Dictionary<string, object>>(existingListing.ProductInfo!.RootElement.GetRawText())!;
             
-            // 1. Sync Title & Stock (Always)
-            info["title"] = targetTitle;
+            // Update only necessary info - preserve original listing title/desc to maintain history/edits
+            // info["title"] = targetTitle; // Removed: Preserve original title
             info["stock_quantity"] = totalAvailable;
+            
+            // Sync price ONLY if it doesn't exist or if specifically intended (keeping it for now as price usually syncs)
+            if (request.Price != null)
+            {
+               info["price"] = request.Price;
+            }
 
-            // 2. Backfill Description if placeholder
-            if (!info.ContainsKey("description") || info["description"]?.ToString() == "New stock arrival. Please update details.")
+            if (info.ContainsKey("description") && info["description"]?.ToString() == "New stock arrival. Please update details.")
             {
                 string taxonomyDesc = batch.Taxonomy?.TaxonomyInfo?.RootElement.TryGetProperty("description", out var descProp) == true ? descProp.GetString() ?? "" : "";
                 if (!string.IsNullOrEmpty(taxonomyDesc)) info["description"] = taxonomyDesc;
