@@ -28,6 +28,15 @@ public sealed class AiChatRequestDto
     /// When set, the server may re-rank catalog picks for this room profile when chat intent asks for different suggestions.
     /// </summary>
     public RoomScanChatFollowUpDto? RoomScanFollowUp { get; set; }
+
+    /// <summary>Optional AR preview session from <c>POST /v1/ar-preview/sessions</c> (placement + scan JSON on server).</summary>
+    public Guid? ArSessionId { get; set; }
+
+    /// <summary>Optional shop listing when discussing a product placed in AR (may duplicate session payload).</summary>
+    public Guid? ProductListingId { get; set; }
+
+    /// <summary>Optional client-only placement hints (JSON string) merged into prompts when session is missing fields.</summary>
+    public string? PlacementContextJson { get; set; }
 }
 
 /// <summary>Context from a completed room scan so /ai/chat can refresh recommendations without re-uploading a photo.</summary>

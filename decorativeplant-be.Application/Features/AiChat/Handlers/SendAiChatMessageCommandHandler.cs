@@ -17,6 +17,7 @@ using decorativeplant_be.Application.Features.RoomScan.Services;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -42,11 +43,13 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     private readonly AiRoutingSettings _aiRouting;
     private readonly IUserContentSafetyService _contentSafety;
     private readonly IPlantAssistantScopeService _plantScope;
+    private readonly IApplicationDbContext _db;
     private readonly ILogger<SendAiChatMessageCommandHandler> _logger;
 
     public SendAiChatMessageCommandHandler(
         IUserAccountService userAccountService,
         IGardenRepository gardenRepository,
+        IApplicationDbContext db,
         IOllamaClient ollama,
         IPlantDiagnosisFromBase64Service formalDiagnosisFromBase64,
         IChatDiagnosisPipelineSettings chatDiagnosisPipeline,
@@ -62,6 +65,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     {
         _userAccountService = userAccountService;
         _gardenRepository = gardenRepository;
+        _db = db;
         _ollama = ollama;
         _formalDiagnosisFromBase64 = formalDiagnosisFromBase64;
         _chatDiagnosisPipeline = chatDiagnosisPipeline;
@@ -104,7 +108,9 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 combinedUserMessages,
                 hasImage,
                 request.RoomScanFollowUp != null,
-                request.GardenPlantId.HasValue))
+                request.GardenPlantId.HasValue,
+                request.ArSessionId.HasValue || !string.IsNullOrWhiteSpace(request.PlacementContextJson),
+                request.ProductListingId.HasValue))
         {
             return new AiChatReplyDto { Reply = _plantScope.OutOfScopeReply, OutOfScope = true };
         }
@@ -158,10 +164,13 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
 
         var lastUserText = request.Messages.LastOrDefault(m =>
             string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))?.Content;
-        var useFormalDiagnosis = await _imageIntentClassifier.ShouldUseFormalDiagnosisPipelineAsync(
+        var useFormalDiagnosisPre = await _imageIntentClassifier.ShouldUseFormalDiagnosisPipelineAsync(
             lastUserText,
             hasImage,
             cancellationToken);
+        // AR decor snapshots: user is showing room + virtual plant — not disease diagnosis.
+        var useFormalDiagnosis =
+            request.ArSessionId.HasValue && hasImage ? false : useFormalDiagnosisPre;
 
         if (hasImage && useFormalDiagnosis && !_chatDiagnosisPipeline.CanRunFormalGeminiOllamaFromChat)
         {
@@ -272,6 +281,22 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             systemPrompt += BuildProfileCatalogPromptAppendix(profileCatalogRecs);
         }
 
+        string? arAppendix;
+        try
+        {
+            arAppendix = await BuildArPreviewPromptAppendixAsync(request, cancellationToken);
+        }
+        catch (ValidationException ex)
+        {
+            var msg = ex.Errors.Count > 0 ? ex.Errors[0] : ex.Message;
+            return new AiChatReplyDto { Reply = msg };
+        }
+
+        if (!string.IsNullOrEmpty(arAppendix))
+        {
+            systemPrompt += arAppendix;
+        }
+
         var ollamaMessages = new List<OllamaChatTurnDto>
         {
             new() { Role = "system", Content = systemPrompt }
@@ -296,7 +321,9 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 }
 
                 var content = string.IsNullOrWhiteSpace(ollamaMessages[i].Content)
-                    ? "The user attached a plant photo. Describe what you see and offer practical care advice. If you notice possible disease or pests, name them cautiously and suggest next steps."
+                    ? (request.ArSessionId.HasValue
+                        ? "The user attached a snapshot from the AR preview (their room with a virtual plant model placed). Describe the scene, comment on whether the placement looks sensible, and suggest how to decorate around this plant. Only discuss disease if the user asked about health or damage."
+                        : "The user attached a plant photo. Describe what you see and offer practical care advice. If you notice possible disease or pests, name them cautiously and suggest next steps.")
                     : ollamaMessages[i].Content;
                 ollamaMessages[i] = new OllamaChatTurnDto
                 {
@@ -910,5 +937,95 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             Recommendations = d.Recommendations,
             Explanation = d.Explanation
         };
+    }
+
+    private async Task<string?> BuildArPreviewPromptAppendixAsync(
+        SendAiChatMessageCommand request,
+        CancellationToken cancellationToken)
+    {
+        if (!request.ArSessionId.HasValue &&
+            string.IsNullOrWhiteSpace(request.PlacementContextJson) &&
+            !request.ProductListingId.HasValue)
+        {
+            return null;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("--- Shop listing & AR context (Decorative Plant app) ---");
+        if (request.ArSessionId.HasValue || !string.IsNullOrWhiteSpace(request.PlacementContextJson))
+        {
+            sb.AppendLine(
+                "AR: the user may attach a photo from the in-app AR view (real room + virtual plant on a surface). " +
+                "Comment on placement, lighting/space, and decor. Do not default to disease diagnosis unless they ask about damage or pests.");
+        }
+        else if (request.ProductListingId.HasValue)
+        {
+            sb.AppendLine(
+                "The user opened this chat from a product detail screen — prioritize advice that fits that listing and indoor decoration.");
+        }
+
+        if (request.ArSessionId.HasValue)
+        {
+            var session = await _db.ArPreviewSessions.AsNoTracking()
+                .FirstOrDefaultAsync(s => s.Id == request.ArSessionId.Value, cancellationToken);
+            if (session == null || session.UserId != request.UserId)
+            {
+                throw new NotFoundException("AR preview session", request.ArSessionId.Value);
+            }
+
+            if (session.ExpiresAt < DateTime.UtcNow)
+            {
+                throw new ValidationException(
+                    "This AR preview session has expired. Open AR preview again and start a new session.");
+            }
+
+            var raw = session.ScanJson?.RootElement.GetRawText() ?? "{}";
+            if (raw.Length > 12000)
+            {
+                raw = raw[..12000] + "…";
+            }
+
+            sb.AppendLine("Stored scan + placement JSON from the mobile AR flow:");
+            sb.AppendLine(raw);
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.PlacementContextJson))
+        {
+            var extra = request.PlacementContextJson.Trim();
+            if (extra.Length > 4000)
+            {
+                extra = extra[..4000] + "…";
+            }
+
+            sb.AppendLine("Additional placement hints from the client:");
+            sb.AppendLine(extra);
+        }
+
+        if (request.ProductListingId.HasValue)
+        {
+            var pl = await _db.ProductListings.AsNoTracking()
+                .FirstOrDefaultAsync(p => p.Id == request.ProductListingId.Value, cancellationToken);
+            if (pl != null)
+            {
+                var title = TryGetListingTitle(pl);
+                sb.AppendLine(
+                    request.ArSessionId.HasValue
+                        ? $"Product listing in focus: listingId={pl.Id}, title=\"{title ?? "unknown"}\"."
+                        : $"The user opened assistant from a product detail page. Focus on this shop listing when relevant: listingId={pl.Id}, title=\"{title ?? "unknown"}\".");
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static string? TryGetListingTitle(ProductListing pl)
+    {
+        if (pl.ProductInfo == null)
+        {
+            return null;
+        }
+
+        return pl.ProductInfo.RootElement.TryGetProperty("title", out var t) ? t.GetString() : null;
     }
 }
