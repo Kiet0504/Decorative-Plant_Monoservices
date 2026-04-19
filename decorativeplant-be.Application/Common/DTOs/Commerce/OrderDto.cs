@@ -85,6 +85,8 @@ public class OrderResponse
     public string? CustomerNote { get; set; }
     public DateTime? CreatedAt { get; set; }
     public DateTime? ConfirmedAt { get; set; }
+    public Guid? AssignedStaffId { get; set; }
+    public string? AssignedStaffName { get; set; }
     public List<OrderItemResponse> Items { get; set; } = new();
 }
 
@@ -118,4 +120,9 @@ public class DeliveryAddressDto
     public string? City { get; set; }
     public int DistrictId { get; set; }
     public string WardCode { get; set; } = string.Empty;
+}
+
+public class ManualAssignRequest
+{
+    public Guid StaffId { get; set; }
 }

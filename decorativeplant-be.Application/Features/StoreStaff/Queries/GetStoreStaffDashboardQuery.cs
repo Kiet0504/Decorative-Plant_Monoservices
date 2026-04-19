@@ -47,6 +47,7 @@ public class GetStoreStaffDashboardQueryHandler : IRequestHandler<GetStoreStaffD
         var activeOrders = statusesInPeriod.Count(s => !OrderStatusMachine.IsTerminal(s));
 
         var recentEntities = await _context.OrderHeaders.AsNoTracking()
+            .Include(o => o.AssignedStaff)
             .Where(o => o.OrderItems.Any(oi => oi.BranchId == branchId))
             .OrderByDescending(o => o.CreatedAt)
             .Take(5)
@@ -62,6 +63,8 @@ public class GetStoreStaffDashboardQueryHandler : IRequestHandler<GetStoreStaffD
                 Total = o.Financials?.RootElement.TryGetProperty("total", out var t) == true
                     ? t.GetString()
                     : null,
+                AssignedStaffId = o.AssignedStaffId,
+                AssignedStaffName = o.AssignedStaff?.DisplayName,
             })
             .ToList();
 

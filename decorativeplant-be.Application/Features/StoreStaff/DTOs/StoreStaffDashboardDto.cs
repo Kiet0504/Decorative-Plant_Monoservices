@@ -42,4 +42,6 @@ public class StoreStaffRecentOrderDto
     public string Status { get; set; } = "";
     public string? CreatedAt { get; set; }
     public string? Total { get; set; }
+    public Guid? AssignedStaffId { get; set; }
+    public string? AssignedStaffName { get; set; }
 }

@@ -8,6 +8,7 @@ public class GetOrdersQuery : IRequest<PagedResult<OrderResponse>>
 {
     public Guid? UserId { get; set; }
     public Guid? BranchId { get; set; }
+    public Guid? AssignedStaffId { get; set; }
     public string? Status { get; set; }
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 20;
@@ -16,9 +17,16 @@ public class GetOrdersQuery : IRequest<PagedResult<OrderResponse>>
 public class GetOrderByIdQuery : IRequest<OrderResponse?>
 {
     public Guid Id { get; set; }
-    /// <summary>
-    /// If set, handler will verify the order belongs to this user.
-    /// Null means admin/staff access (no ownership check).
-    /// </summary>
+    /// <summary>Customer ownership check. Null = staff/admin bypass.</summary>
     public Guid? UserId { get; set; }
+    /// <summary>
+    /// If set, handler verifies at least one OrderItem belongs to this branch.
+    /// Used by branch_manager and fulfillment_staff to prevent cross-branch reads.
+    /// </summary>
+    public Guid? ActorBranchId { get; set; }
+    /// <summary>
+    /// If set, handler verifies the order is assigned to this staff member.
+    /// Used by fulfillment_staff.
+    /// </summary>
+    public Guid? ActorStaffId { get; set; }
 }
