@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -94,20 +95,15 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ? "v1beta"
             : "v1alpha";
 
-        // REST: POST https://generativelanguage.googleapis.com/{version}/auth_tokens (see discovery: v1alpha.auth_tokens.create).
-        // Body is the AuthToken message (flat fields), not { "authToken": { ... } }.
+        // REST: POST …/auth_tokens — AuthToken JSON uses camelCase. Timestamps must be RFC 3339; avoid
+        // DateTime.ToString("o") (7 fractional digits) — Google often returns INVALID_ARGUMENT for that.
+        var expireStr = FormatGeminiTimestampUtc(expire);
+        var newSessionStr = FormatGeminiTimestampUtc(newSessionExpire);
         var bodyCamel = new
         {
-            expireTime = expire.ToString("o"),
-            newSessionExpireTime = newSessionExpire.ToString("o"),
+            expireTime = expireStr,
+            newSessionExpireTime = newSessionStr,
             uses = 1
-        };
-
-        var snakeDict = new Dictionary<string, object?>
-        {
-            ["expire_time"] = expire.ToString("o"),
-            ["new_session_expire_time"] = newSessionExpire.ToString("o"),
-            ["uses"] = 1
         };
 
         // Some keys only expose auth_tokens on one API version; retry the other on HTTP 404 only.
@@ -118,7 +114,6 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
                 apiKey,
                 preferredVer,
                 bodyCamel,
-                snakeDict,
                 cancellationToken)
             .ConfigureAwait(false);
         if (got.HasValue)
@@ -136,7 +131,6 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
                     apiKey,
                     alternateVer,
                     bodyCamel,
-                    snakeDict,
                     cancellationToken)
                 .ConfigureAwait(false);
             if (got.HasValue)
@@ -193,13 +187,23 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         };
     }
 
+    /// <summary>Google examples use <c>2025-05-01T00:00:00Z</c> (second precision, Z). Not 7-digit fractional seconds.</summary>
+    private static string FormatGeminiTimestampUtc(DateTime utc)
+    {
+        if (utc.Kind != DateTimeKind.Utc)
+        {
+            utc = utc.ToUniversalTime();
+        }
+
+        return utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+    }
+
     /// <summary>Returns null only when Google responds 404 (wrong API path for this key — caller may retry another API version).</summary>
     private async Task<(string Raw, string Version)?> TryPostAuthTokenAsync(
         string baseUrl,
         string apiKey,
         string apiVer,
         object bodyCamel,
-        Dictionary<string, object?> snakeDict,
         CancellationToken cancellationToken)
     {
         var url = $"{baseUrl}/{apiVer}/auth_tokens?key={Uri.EscapeDataString(apiKey)}";
@@ -223,37 +227,12 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             return null;
         }
 
-        if (response1.StatusCode == HttpStatusCode.BadRequest)
-        {
-            var snakeJson = JsonSerializer.Serialize(snakeDict);
-            using var req = new HttpRequestMessage(HttpMethod.Post, url)
-            {
-                Content = new StringContent(snakeJson, Encoding.UTF8, "application/json")
-            };
-            using var response2 = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
-            var raw2 = await response2.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (response2.IsSuccessStatusCode)
-            {
-                return (raw2, apiVer);
-            }
-
-            _logger.LogWarning(
-                "Gemini auth_tokens snake_case failed ({Version}): {Status} {Body}",
-                apiVer,
-                (int)response2.StatusCode,
-                raw2.Length > 2000 ? raw2[..2000] + "…" : raw2);
-            ThrowTokenError(response2, raw2, apiVer);
-        }
-        else
-        {
-            _logger.LogWarning(
-                "Gemini auth_tokens failed ({Version}): {Status} {Body}",
-                apiVer,
-                (int)response1.StatusCode,
-                raw.Length > 2000 ? raw[..2000] + "…" : raw);
-            ThrowTokenError(response1, raw, apiVer);
-        }
-
+        _logger.LogWarning(
+            "Gemini auth_tokens failed ({Version}): {Status} {Body}",
+            apiVer,
+            (int)response1.StatusCode,
+            raw.Length > 2000 ? raw[..2000] + "…" : raw);
+        ThrowTokenError(response1, raw, apiVer);
         throw new UnreachableException();
     }
 
