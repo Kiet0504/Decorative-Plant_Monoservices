@@ -53,12 +53,33 @@ def mqtt_callback(topic, msg):
             
         # 2. Direct Command Execution
         elif topic == MQTT_TOPIC_COMMANDS:
-            action = data.get("action") or data.get("command")
-            value = data.get("value") or action
-            params = data.get("params") or data.get("data") or {}
+            # Backend bọc lệnh vào 'command' và 'data'
+            action = data.get("command") or data.get("action")
+            payload = data.get("data")
+            
+            # Nếu payload là object (dict), bóc tách tiếp
+            if isinstance(payload, dict):
+                value = payload.get("value")
+                params = payload.get("params") or {}
+            else:
+                value = data.get("value") or action
+                params = data.get("params") or {}
+            
+            is_on = 1 if (str(value).lower() in ["turn_on", "on", "1", "water_now"] or value == 1) else 0
+            
+            # --- Report status BEFORE execution (so UI shows activity immediately) ---
+            if action == "fan":
+                send_sensor_data("fan_status", is_on)
+            elif action in ["water_pump", "water_now"]:
+                send_sensor_data("pump_status", is_on)
             
             print("[MQTT] Dang thuc thi lenh truc tiep: {}={}".format(action, value))
             automation.HardwareActions.execute(action, value, params)
+            
+            # --- Report status AFTER execution (especially for timed actions like pump) ---
+            if action in ["water_pump", "water_now"] and is_on:
+                # After the duration-based execution finishes, report the pump as OFF
+                send_sensor_data("pump_status", 0)
             
     except Exception as e:
         print("[MQTT] Loi xu ly tin nhan:", e)
@@ -207,6 +228,9 @@ while True:
     print("  -> Dang cho vuot {}s (MQTT san sang nhan lenh realtime)...".format(SEND_INTERVAL))
     
     for _ in range(SEND_INTERVAL * 5):
+        # --- Kiem tra va tu dong ngat thiet bi (Non-blocking) ---
+        automation.HardwareActions.process_timed_actions()
+
         if mqtt_client:
             try:
                 if _ % 50 == 0:

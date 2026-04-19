@@ -59,6 +59,18 @@ public class MqttService : IHostedService, IMqttService
 
         await _mqttClient.StartAsync(managedOptions);
         _logger.LogInformation($"MQTT Managed Client started connecting to {host}:{port}");
+
+        _mqttClient.ConnectedAsync += e =>
+        {
+            _logger.LogInformation(">>> [MQTT] Successfully CONNECTED to broker.");
+            return Task.CompletedTask;
+        };
+
+        _mqttClient.DisconnectedAsync += e =>
+        {
+            _logger.LogWarning(">>> [MQTT] DISCONNECTED from broker. Reason: {Reason}", e.Reason);
+            return Task.CompletedTask;
+        };
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -88,7 +100,7 @@ public class MqttService : IHostedService, IMqttService
             .Build();
 
         await _mqttClient.EnqueueAsync(message);
-        _logger.LogInformation($"[MQTT] Published updated rules to {topic}");
+        _logger.LogInformation($"[MQTT] Enqueued rules update to {topic}");
     }
 
     public async Task PublishCommandAsync(string deviceSecret, string command, object payload, CancellationToken cancellationToken)
@@ -103,6 +115,9 @@ public class MqttService : IHostedService, IMqttService
         var payloadObj = new { command = command, data = payload, timestamp = DateTime.UtcNow };
         var jsonPayload = JsonSerializer.Serialize(payloadObj);
 
+        _logger.LogInformation(">>> [MQTT] Attempting to publish command: {Command} to Topic: {Topic}", command, topic);
+        _logger.LogInformation(">>> [MQTT] Payload: {Payload}", jsonPayload);
+
         var message = new MqttApplicationMessageBuilder()
             .WithTopic(topic)
             .WithPayload(jsonPayload)
@@ -111,6 +126,6 @@ public class MqttService : IHostedService, IMqttService
             .Build();
 
         await _mqttClient.EnqueueAsync(message);
-        _logger.LogInformation($"[MQTT] Published command '{command}' to {topic}");
+        _logger.LogInformation($"[MQTT] Command '{command}' enqueued successfully.");
     }
 }

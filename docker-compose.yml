@@ -143,6 +143,10 @@ services:
       # AI chat: restrict replies to plants, shop, My Garden, room scan, diagnosis (set false only for local debugging)
       - PlantAssistantScope__Enabled=${PlantAssistantScope__Enabled:-true}
       - AiCare__CacheTtlHours=${AiCare__CacheTtlHours:-24}
+      - MqttSettings__Host=${MqttSettings__Host:-}
+      - MqttSettings__Port=${MqttSettings__Port:-1883}
+      - MqttSettings__Username=${MqttSettings__Username:-}
+      - MqttSettings__Password=${MqttSettings__Password:-}
     ports:
       - "8080:8080"
       - "8081:8081"

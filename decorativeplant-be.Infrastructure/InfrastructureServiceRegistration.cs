@@ -106,6 +106,7 @@ public static class InfrastructureServiceRegistration
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.CareTaskReminderJob>();
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.AutoCompleteDeliveredOrdersJob>();
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.OrderAssignmentQueueJob>();
+        services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.IotHeartbeatMonitorJob>();
 
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();

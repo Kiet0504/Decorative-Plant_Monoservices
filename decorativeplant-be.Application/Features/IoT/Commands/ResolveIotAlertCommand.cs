@@ -12,7 +12,13 @@ public class ResolveIotAlertCommand : IRequest<bool>
 public class ResolveIotAlertCommandHandler : IRequestHandler<ResolveIotAlertCommand, bool>
 {
     private readonly IIotRepository _repo;
-    public ResolveIotAlertCommandHandler(IIotRepository repo) => _repo = repo;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public ResolveIotAlertCommandHandler(IIotRepository repo, IUnitOfWork unitOfWork)
+    {
+        _repo = repo;
+        _unitOfWork = unitOfWork;
+    }
 
     public async Task<bool> Handle(ResolveIotAlertCommand request, CancellationToken cancellationToken)
     {
@@ -21,6 +27,10 @@ public class ResolveIotAlertCommandHandler : IRequestHandler<ResolveIotAlertComm
 
         alert.ResolutionInfo = request.ResolutionInfo;
         await _repo.UpdateIotAlertAsync(alert, cancellationToken);
+        
+        // --- CHOT GIAO DICH: Luu vao Database ---
+        await _unitOfWork.SaveChangesAsync(cancellationToken);
+        
         return true;
     }
 }

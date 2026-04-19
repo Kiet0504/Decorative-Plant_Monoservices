@@ -26,16 +26,43 @@ BUZZER_FAN.value(0)
 
 # Flag de chong chay chong (Concurrency Lock)
 _is_watering = False
+_timed_actions = {} # Luu tru target_stop_time cho tung thiet bi
 
 class HardwareActions:
     @staticmethod
     def all_off():
         """Cuong buc TAT tat ca thiet bi"""
+        global _is_watering, _timed_actions
         RELAY_PUMP.value(LEVEL_OFF)
         BUZZER_WATER.value(LEVEL_OFF)
         FAN.value(LEVEL_OFF)
         BUZZER_FAN.value(LEVEL_OFF)
+        _is_watering = False
+        _timed_actions = {}
         print("[Action] All outputs forced OFF.")
+
+    @staticmethod
+    def process_timed_actions():
+        """Kiem tra cac thiet bi dang chay theo thoi gian de tu dong ngat (Non-blocking)"""
+        global _is_watering, _timed_actions
+        now = time.time()
+        to_delete = []
+
+        for comp, stop_time in _timed_actions.items():
+            if now >= stop_time:
+                print("[Action] {} duration reached. Stopping...".format(comp))
+                if comp in ["water_pump", "turn_on_pump", "water_now"]:
+                    RELAY_PUMP.value(LEVEL_OFF)
+                    _is_watering = False
+                elif comp in ["fan", "motor", "cooling_fan"]:
+                    FAN.value(LEVEL_OFF)
+                elif comp in ["buzzer", "alarm", "beep"]:
+                    BUZZER_WATER.value(LEVEL_OFF)
+                
+                to_delete.append(comp)
+        
+        for comp in to_delete:
+            del _timed_actions[comp]
 
     @staticmethod
     def execute(action_name, action_value, params=None, mqtt_client=None):
@@ -74,9 +101,8 @@ class HardwareActions:
                     pass
             
             # Neu nhan qua "value" ma lon hon 1 thi mac dinh do la duration (giay)
-            if action_name in ["water_pump", "turn_on_pump", "water_now"]:
-                if isinstance(action_value, (int, float)) and action_value > 1:
-                    duration = action_value / 10 if action_value > 30 else action_value
+            if isinstance(action_value, (int, float)) and action_value > 1:
+                duration = action_value
             
             if duration > 0:
                 is_on = True
@@ -86,52 +112,68 @@ class HardwareActions:
                     duration = 5 
                 
                 # --- Tieng tit canh bao truoc khi tuoi (1.5s) ---
+                # Luu y: Do canh bao rat ngan nen tam thoi giu sleep (1.5s khong dang ke)
                 BUZZER_WATER.value(LEVEL_ON)
                 time.sleep(1.5)
                 BUZZER_WATER.value(LEVEL_OFF)
                 time.sleep(0.5)
 
-                print("[Action] Pump STARTING...")
+                print("[Action] Pump STARTING for {}s...".format(duration))
                 _is_watering = True
                 RELAY_PUMP.value(LEVEL_ON) 
+                
+                # Dat lich tat (Non-blocking)
+                _timed_actions[action_name] = time.time() + duration
+                
                 success = True
-                msg = "Pump turned ON for {}s".format(duration)
-                
-                # Non-blocking loop for duration
-                print("[Action] Waiting {}s...".format(duration))
-                start_wait = time.time()
-                while (time.time() - start_wait) < duration:
-                    if mqtt_client:
-                        try: mqtt_client.check_msg()
-                        except: pass
-                    time.sleep(0.5)
-                
-                RELAY_PUMP.value(LEVEL_OFF) 
-                _is_watering = False
-                msg += " and then AUTO-OFF"
-                print("[Action] Pump AUTO-OFF.")
+                msg = "Pump turned ON (Scheduled for {}s)".format(duration)
                 
             elif is_on and action_name in ["fan", "motor", "cooling_fan"]:
-                print("[Action] Fan Warning (1.5s)...")
-                BUZZER_FAN.value(1) # 1 là Bật còi
+                # --- Tieng tit canh bao (1.5s) ---
+                BUZZER_FAN.value(1)
                 time.sleep(1.5)
-                BUZZER_FAN.value(0) # 0 là Tắt còi
+                BUZZER_FAN.value(0)
                 time.sleep(0.5)
 
-                print("[Action] Fan STARTING")
+                print("[Action] Fan STARTING...")
                 FAN.value(LEVEL_ON)
                 success = True
                 msg = "Fan turned ON"
+                
+                if duration > 0:
+                    _timed_actions[action_name] = time.time() + duration
+                    msg += " (Scheduled for {}s)".format(duration)
 
             elif is_on and action_name in ["buzzer", "alarm", "beep"]:
+                print("[Action] Buzzer STARTING")
                 BUZZER_WATER.value(LEVEL_ON)
                 success = True
-                msg = "Buzzer ON"
+                msg = "Buzzer turned ON"
+                
+                if duration > 0:
+                    _timed_actions[action_name] = time.time() + duration
+                    msg += " (Scheduled for {}s)".format(duration)
 
             elif is_off:
-                HardwareActions.all_off()
-                success = True
-                msg = "All devices turned OFF"
+                # --- Sửa lỗi "Vạ lây": Chỉ tắt thiết bị được yêu cầu ---
+                target_pin = None
+                if action_name in ["water_pump", "turn_on_pump", "water_now"]:
+                    target_pin = RELAY_PUMP
+                    _is_watering = False
+                elif action_name in ["fan", "motor", "cooling_fan"]:
+                    target_pin = FAN
+                elif action_name in ["buzzer", "alarm", "beep"]:
+                    target_pin = BUZZER_WATER
+                
+                if target_pin:
+                    target_pin.value(LEVEL_OFF)
+                    success = True
+                    msg = "Device {} turned OFF".format(action_name)
+                else:
+                    # Neu la lenh tat chung (khong ro thiet bi) thi moi tat het
+                    HardwareActions.all_off()
+                    success = True
+                    msg = "All devices turned OFF"
             else:
                 msg = "Action unknown: {}/{}".format(action_name, action_value)
         except Exception as e:
@@ -308,10 +350,18 @@ def _check_single_condition(r, sensor_data):
     return res
 
 def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
-    if active_rules:
-        print("[Engine] Checking {} rules for sensors...".format(len(active_rules)))
+    if not active_rules:
+        return
+        
+    # 1. Sap xep theo Priority (P1 uu tien cao nhat)
+    sorted_rules = sorted(active_rules, key=lambda x: x.get('priority', 50))
     
-    for rule in active_rules:
+    print("[Engine] Checking {} rules (sorted by priority)...".format(len(sorted_rules)))
+    
+    # 2. Danh sach cac actuator da duoc dieu khien trong loop nay
+    executed_actuators = set()
+    
+    for rule in sorted_rules:
         rule_name = rule.get('name', 'Unknown')
         conditions = rule.get("conditions", {}) or {}
         actions = rule.get("actions", {}) or {}
@@ -322,17 +372,7 @@ def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
         if not should_run_time:
             continue
             
-        # Neu la Rule khong co lich (chay bang sensor), kiem tra cooldown
-        if not is_scheduled:
-            now = time.time()
-            if rule_id in last_run_execution:
-                elapsed = now - last_run_execution[rule_id]
-                if 0 <= elapsed < DEFAULT_COOLDOWN:
-                    print("  -> Rule [{}] dang trong thoi gian nghi (con {}s)...".format(rule_name, int(DEFAULT_COOLDOWN - elapsed)))
-                    if "water" in ujson.dumps(actions) or "pump" in ujson.dumps(actions):
-                        HardwareActions.all_off()
-                    continue
-            
+        # Kiem tra logic AND/OR
         logic = "and"
         if isinstance(conditions, dict):
             logic = conditions.get("logic", "and").lower()
@@ -360,7 +400,7 @@ def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
                         match = False
                         break
                 
-        # Final safety check
+        # Xac dinh tinh hop le
         is_valid = False
         if is_scheduled and match:
             is_valid = True
@@ -368,33 +408,43 @@ def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
             is_valid = True
         else:
             is_valid = False
-            # Neu khong match ma la rule pump, dam bao tat pin
-            if not is_scheduled and ("water_pump" in ujson.dumps(actions) or "water_now" in ujson.dumps(actions)):
-                HardwareActions.all_off() 
             
-        if is_valid and actions:
+        # Trich xuat danh sach hanh dong
+        action_list = []
+        if isinstance(actions, list):
+            action_list = actions
+        elif isinstance(actions, dict) and "actions" in actions:
+            action_list = actions["actions"]
+        elif isinstance(actions, dict):
+            action_list = [{"component": k, "value": v} for k, v in actions.items()]
+
+        # 3. Thuc thi neu Hop le
+        if is_valid and action_list:
             print("[Automation] Rule [{}] triggered!".format(rule_name))
+            for a in action_list:
+                comp = a.get("component") or a.get("target_component_key")
+                cmd = a.get("command") or a.get("action_type")
+                params = a.get("parameters") or {}
+                val = a.get("value") or cmd
+                
+                # KIEM TRA KHOA THIET BI (LOCKING)
+                if comp in executed_actuators:
+                    print("  -> Skip action [{}] cua Rule [{}] vi da bi khoa boi Rule uu tien cao hon".format(comp, rule_name))
+                    continue
+                
+                _save_cooldown_data(rule_id, time.time())
+                succ, msg = HardwareActions.execute(comp, val, params, mqtt_client)
+                executed_actuators.add(comp)
+                send_execution_log(rule_id, comp, succ, msg)
             
-            action_list = []
-            if isinstance(actions, list):
-                action_list = actions
-            elif isinstance(actions, dict) and "actions" in actions:
-                action_list = actions["actions"]
-            
-            if action_list:
+            time.sleep(0.5)
+        
+        # 4. Xu ly khi KHONG hop le (Dinh chi thiet bi)
+        elif not is_valid and action_list:
+            is_pump_action = any("pump" in str(a.get("component", "")).lower() or "water" in str(a.get("component", "")).lower() for a in action_list)
+            if not is_scheduled and is_pump_action:
                 for a in action_list:
                     comp = a.get("component") or a.get("target_component_key")
-                    cmd = a.get("command") or a.get("action_type")
-                    params = a.get("parameters") or {}
-                    val = a.get("value") or cmd
-                    
-                    _save_cooldown_data(rule_id, time.time())
-                    succ, msg = HardwareActions.execute(comp, val, params, mqtt_client)
-                    send_execution_log(rule_id, comp, succ, msg)
-            else:
-                for action_key, action_val in actions.items():
-                    _save_cooldown_data(rule_id, time.time())
-                    succ, msg = HardwareActions.execute(action_key, action_val, None, mqtt_client)
-                    send_execution_log(rule_id, action_key, succ, msg)
-                
-            time.sleep(1)
+                    if comp and comp not in executed_actuators and "pump" in comp.lower():
+                        HardwareActions.execute(comp, "turn_off", None, mqtt_client)
+                        executed_actuators.add(comp)
