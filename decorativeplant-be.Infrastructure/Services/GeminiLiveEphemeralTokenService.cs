@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -85,11 +87,12 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         var expire = DateTime.UtcNow.AddMinutes(30);
         var newSessionExpire = DateTime.UtcNow.AddMinutes(1);
 
-        var apiVer = string.IsNullOrWhiteSpace(_live.AuthTokensApiVersion)
-            ? "v1alpha"
+        var preferredVer = string.IsNullOrWhiteSpace(_live.AuthTokensApiVersion)
+            ? "v1beta"
             : _live.AuthTokensApiVersion.Trim().TrimStart('/');
-
-        var url = $"{baseUrl}/{apiVer}/authTokens:create?key={Uri.EscapeDataString(apiKey)}";
+        var alternateVer = string.Equals(preferredVer, "v1alpha", StringComparison.OrdinalIgnoreCase)
+            ? "v1beta"
+            : "v1alpha";
 
         var bodyCamel = new
         {
@@ -101,55 +104,59 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             }
         };
 
-        // Google REST/proto-json may accept camelCase (SDK-style) or snake_case. Try camelCase, then snake_case on 400.
-        using var response1 = await _http
-            .PostAsJsonAsync(url, bodyCamel, JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
-        var raw = await response1.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var ok = response1.IsSuccessStatusCode;
-
-        if (!ok && response1.StatusCode == HttpStatusCode.BadRequest)
+        var snakeDict = new Dictionary<string, object?>
         {
-            var snake = new Dictionary<string, object?>
+            ["auth_token"] = new Dictionary<string, object?>
             {
-                ["auth_token"] = new Dictionary<string, object?>
-                {
-                    ["expire_time"] = expire.ToString("o"),
-                    ["new_session_expire_time"] = newSessionExpire.ToString("o"),
-                    ["uses"] = 1
-                }
-            };
-            var snakeJson = JsonSerializer.Serialize(snake);
-            using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                ["expire_time"] = expire.ToString("o"),
+                ["new_session_expire_time"] = newSessionExpire.ToString("o"),
+                ["uses"] = 1
+            }
+        };
+
+        // Some projects get 404 on v1alpha authTokens:create and succeed on v1beta (or the reverse). Try preferred, then alternate on 404 only.
+        string raw;
+        var apiVerUsed = preferredVer;
+        var got = await TryPostAuthTokenAsync(
+                baseUrl,
+                apiKey,
+                preferredVer,
+                bodyCamel,
+                snakeDict,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (got.HasValue)
+        {
+            (raw, apiVerUsed) = got.Value;
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Gemini authTokens:create returned 404 for {Ver}; retrying alternate API version {Alt}",
+                preferredVer,
+                alternateVer);
+            got = await TryPostAuthTokenAsync(
+                    baseUrl,
+                    apiKey,
+                    alternateVer,
+                    bodyCamel,
+                    snakeDict,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (got.HasValue)
             {
-                Content = new StringContent(snakeJson, Encoding.UTF8, "application/json")
-            };
-            using var response2 = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
-            var raw2 = await response2.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (response2.IsSuccessStatusCode)
-            {
-                raw = raw2;
-                ok = true;
+                (raw, apiVerUsed) = got.Value;
             }
             else
             {
-                _logger.LogWarning(
-                    "Gemini authTokens:create (snake_case retry) failed: {Status} {Body}",
-                    (int)response2.StatusCode,
-                    raw2.Length > 2000 ? raw2[..2000] + "…" : raw2);
-                ThrowTokenError(response2, raw2, apiVer);
+                throw new ValidationException(
+                    "Could not create a Live session token. Google returned HTTP 404 for authTokens:create on both " +
+                    preferredVer + " and " + alternateVer +
+                    ". Confirm Generative Language API is enabled and the API key is valid.");
             }
         }
 
-        if (!ok)
-        {
-            _logger.LogWarning(
-                "Gemini authTokens:create failed ({Version}): {Status} {Body}",
-                apiVer,
-                (int)response1.StatusCode,
-                raw.Length > 2000 ? raw[..2000] + "…" : raw);
-            ThrowTokenError(response1, raw, apiVer);
-        }
+        _logger.LogInformation("Gemini authTokens:create succeeded using API version {Ver}", apiVerUsed);
 
         using var doc = JsonDocument.Parse(raw);
         var root = doc.RootElement;
@@ -183,11 +190,75 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ExpireTimeUtc = exp,
             NewSessionExpireTimeUtc = nsExp,
             LiveModel = string.IsNullOrWhiteSpace(_live.LiveModel)
-                ? "gemini-2.0-flash-live-001"
+                ? "gemini-3.1-flash-live-preview"
                 : _live.LiveModel.Trim(),
             VoiceName = voice,
             SystemInstruction = systemInstruction
         };
+    }
+
+    /// <summary>Returns null only when Google responds 404 (wrong API path for this key — caller may retry another API version).</summary>
+    private async Task<(string Raw, string Version)?> TryPostAuthTokenAsync(
+        string baseUrl,
+        string apiKey,
+        string apiVer,
+        object bodyCamel,
+        Dictionary<string, object?> snakeDict,
+        CancellationToken cancellationToken)
+    {
+        var url = $"{baseUrl}/{apiVer}/authTokens:create?key={Uri.EscapeDataString(apiKey)}";
+
+        using var response1 = await _http
+            .PostAsJsonAsync(url, bodyCamel, JsonOptions, cancellationToken)
+            .ConfigureAwait(false);
+        var raw = await response1.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+        if (response1.IsSuccessStatusCode)
+        {
+            return (raw, apiVer);
+        }
+
+        if (response1.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning(
+                "Gemini authTokens:create 404 ({Version}): {Body}",
+                apiVer,
+                raw.Length > 2000 ? raw[..2000] + "…" : raw);
+            return null;
+        }
+
+        if (response1.StatusCode == HttpStatusCode.BadRequest)
+        {
+            var snakeJson = JsonSerializer.Serialize(snakeDict);
+            using var req = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = new StringContent(snakeJson, Encoding.UTF8, "application/json")
+            };
+            using var response2 = await _http.SendAsync(req, cancellationToken).ConfigureAwait(false);
+            var raw2 = await response2.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (response2.IsSuccessStatusCode)
+            {
+                return (raw2, apiVer);
+            }
+
+            _logger.LogWarning(
+                "Gemini authTokens:create snake_case failed ({Version}): {Status} {Body}",
+                apiVer,
+                (int)response2.StatusCode,
+                raw2.Length > 2000 ? raw2[..2000] + "…" : raw2);
+            ThrowTokenError(response2, raw2, apiVer);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Gemini authTokens:create failed ({Version}): {Status} {Body}",
+                apiVer,
+                (int)response1.StatusCode,
+                raw.Length > 2000 ? raw[..2000] + "…" : raw);
+            ThrowTokenError(response1, raw, apiVer);
+        }
+
+        throw new UnreachableException();
     }
 
     private async Task<string> BuildSystemInstructionAsync(
@@ -249,6 +320,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         return false;
     }
 
+    [DoesNotReturn]
     private static void ThrowTokenError(HttpResponseMessage response, string raw, string apiVer)
     {
         var detail = TryExtractGoogleErrorMessage(raw);
