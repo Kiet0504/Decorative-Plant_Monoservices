@@ -88,33 +88,29 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         var newSessionExpire = DateTime.UtcNow.AddMinutes(1);
 
         var preferredVer = string.IsNullOrWhiteSpace(_live.AuthTokensApiVersion)
-            ? "v1beta"
+            ? "v1alpha"
             : _live.AuthTokensApiVersion.Trim().TrimStart('/');
         var alternateVer = string.Equals(preferredVer, "v1alpha", StringComparison.OrdinalIgnoreCase)
             ? "v1beta"
             : "v1alpha";
 
+        // REST: POST https://generativelanguage.googleapis.com/{version}/auth_tokens (see discovery: v1alpha.auth_tokens.create).
+        // Body is the AuthToken message (flat fields), not { "authToken": { ... } }.
         var bodyCamel = new
         {
-            authToken = new
-            {
-                expireTime = expire.ToString("o"),
-                newSessionExpireTime = newSessionExpire.ToString("o"),
-                uses = 1
-            }
+            expireTime = expire.ToString("o"),
+            newSessionExpireTime = newSessionExpire.ToString("o"),
+            uses = 1
         };
 
         var snakeDict = new Dictionary<string, object?>
         {
-            ["auth_token"] = new Dictionary<string, object?>
-            {
-                ["expire_time"] = expire.ToString("o"),
-                ["new_session_expire_time"] = newSessionExpire.ToString("o"),
-                ["uses"] = 1
-            }
+            ["expire_time"] = expire.ToString("o"),
+            ["new_session_expire_time"] = newSessionExpire.ToString("o"),
+            ["uses"] = 1
         };
 
-        // Some projects get 404 on v1alpha authTokens:create and succeed on v1beta (or the reverse). Try preferred, then alternate on 404 only.
+        // Some keys only expose auth_tokens on one API version; retry the other on HTTP 404 only.
         string raw;
         var apiVerUsed = preferredVer;
         var got = await TryPostAuthTokenAsync(
@@ -132,7 +128,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         else
         {
             _logger.LogInformation(
-                "Gemini authTokens:create returned 404 for {Ver}; retrying alternate API version {Alt}",
+                "Gemini auth_tokens returned 404 for {Ver}; retrying alternate API version {Alt}",
                 preferredVer,
                 alternateVer);
             got = await TryPostAuthTokenAsync(
@@ -150,13 +146,13 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             else
             {
                 throw new ValidationException(
-                    "Could not create a Live session token. Google returned HTTP 404 for authTokens:create on both " +
+                    "Could not create a Live session token. Google returned HTTP 404 for POST …/auth_tokens on both " +
                     preferredVer + " and " + alternateVer +
                     ". Confirm Generative Language API is enabled and the API key is valid.");
             }
         }
 
-        _logger.LogInformation("Gemini authTokens:create succeeded using API version {Ver}", apiVerUsed);
+        _logger.LogInformation("Gemini auth_tokens succeeded using API version {Ver}", apiVerUsed);
 
         using var doc = JsonDocument.Parse(raw);
         var root = doc.RootElement;
@@ -206,7 +202,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         Dictionary<string, object?> snakeDict,
         CancellationToken cancellationToken)
     {
-        var url = $"{baseUrl}/{apiVer}/authTokens:create?key={Uri.EscapeDataString(apiKey)}";
+        var url = $"{baseUrl}/{apiVer}/auth_tokens?key={Uri.EscapeDataString(apiKey)}";
 
         using var response1 = await _http
             .PostAsJsonAsync(url, bodyCamel, JsonOptions, cancellationToken)
@@ -221,7 +217,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         if (response1.StatusCode == HttpStatusCode.NotFound)
         {
             _logger.LogWarning(
-                "Gemini authTokens:create 404 ({Version}): {Body}",
+                "Gemini auth_tokens 404 ({Version}): {Body}",
                 apiVer,
                 raw.Length > 2000 ? raw[..2000] + "…" : raw);
             return null;
@@ -242,7 +238,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             }
 
             _logger.LogWarning(
-                "Gemini authTokens:create snake_case failed ({Version}): {Status} {Body}",
+                "Gemini auth_tokens snake_case failed ({Version}): {Status} {Body}",
                 apiVer,
                 (int)response2.StatusCode,
                 raw2.Length > 2000 ? raw2[..2000] + "…" : raw2);
@@ -251,7 +247,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         else
         {
             _logger.LogWarning(
-                "Gemini authTokens:create failed ({Version}): {Status} {Body}",
+                "Gemini auth_tokens failed ({Version}): {Status} {Body}",
                 apiVer,
                 (int)response1.StatusCode,
                 raw.Length > 2000 ? raw[..2000] + "…" : raw);
