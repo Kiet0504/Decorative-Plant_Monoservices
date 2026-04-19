@@ -10,15 +10,15 @@ public sealed class AiLiveSettings
     /// <summary>When false, <c>/ai/live/token</c> returns 503.</summary>
     public bool Enabled { get; set; }
 
-    /// <summary>Live model id (e.g. gemini-2.0-flash-live-001, gemini-3.1-flash-live-preview).</summary>
-    public string LiveModel { get; set; } = "gemini-2.0-flash-live-001";
+    /// <summary>Live model id (e.g. gemini-3.1-flash-live-preview, gemini-2.0-flash-live-001).</summary>
+    public string LiveModel { get; set; } = "gemini-3.1-flash-live-preview";
 
     /// <summary>Optional voice name for Live speech (Google Live voice id).</summary>
     public string? VoiceName { get; set; }
 
     /// <summary>
-    /// REST API version segment for <c>POST …/authTokens:create</c> (e.g. <c>v1alpha</c> or <c>v1beta</c>).
-    /// Ephemeral tokens are documented against <c>v1alpha</c>; use <c>v1beta</c> only if your project requires it.
+    /// Preferred REST segment for <c>POST …/authTokens:create</c> (<c>v1beta</c> or <c>v1alpha</c>).
+    /// The service retries the <i>other</i> version automatically on HTTP 404.
     /// </summary>
-    public string AuthTokensApiVersion { get; set; } = "v1alpha";
+    public string AuthTokensApiVersion { get; set; } = "v1beta";
 }
