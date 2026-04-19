@@ -55,14 +55,17 @@ public sealed class PlantAssistantScopeService : IPlantAssistantScopeService
         string combinedUserMessages,
         bool hasAttachedImage,
         bool hasRoomScanFollowUp,
-        bool hasGardenPlantFocus)
+        bool hasGardenPlantFocus,
+        bool hasArPreviewContext = false,
+        bool hasProductListingContext = false)
     {
         if (!_settings.Enabled)
         {
             return true;
         }
 
-        if (hasAttachedImage || hasRoomScanFollowUp || hasGardenPlantFocus)
+        if (hasAttachedImage || hasRoomScanFollowUp || hasGardenPlantFocus || hasArPreviewContext ||
+            hasProductListingContext)
         {
             return true;
         }

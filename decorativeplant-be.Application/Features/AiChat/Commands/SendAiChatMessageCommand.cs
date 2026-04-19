@@ -13,4 +13,10 @@ public sealed class SendAiChatMessageCommand : IRequest<AiChatReplyDto>
     public string? AttachedImageMimeType { get; set; }
 
     public RoomScanChatFollowUpDto? RoomScanFollowUp { get; set; }
+
+    public Guid? ArSessionId { get; set; }
+
+    public Guid? ProductListingId { get; set; }
+
+    public string? PlacementContextJson { get; set; }
 }

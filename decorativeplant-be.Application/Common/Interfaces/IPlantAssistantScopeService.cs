@@ -12,7 +12,9 @@ public interface IPlantAssistantScopeService
         string combinedUserMessages,
         bool hasAttachedImage,
         bool hasRoomScanFollowUp,
-        bool hasGardenPlantFocus);
+        bool hasGardenPlantFocus,
+        bool hasArPreviewContext = false,
+        bool hasProductListingContext = false);
 
     /// <summary>
     /// Stricter check for a single user-supplied string (diagnosis caption, care log note) without context bypasses.

@@ -37,7 +37,10 @@ public class AiChatController : BaseController
             GardenPlantId = request.GardenPlantId,
             AttachedImageBase64 = request.AttachedImageBase64,
             AttachedImageMimeType = request.AttachedImageMimeType,
-            RoomScanFollowUp = request.RoomScanFollowUp
+            RoomScanFollowUp = request.RoomScanFollowUp,
+            ArSessionId = request.ArSessionId,
+            ProductListingId = request.ProductListingId,
+            PlacementContextJson = request.PlacementContextJson
         };
 
         var result = await Mediator.Send(command);
