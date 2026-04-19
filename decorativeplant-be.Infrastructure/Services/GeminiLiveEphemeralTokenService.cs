@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using decorativeplant_be.Application.Common.DTOs.AiLive;
 using decorativeplant_be.Application.Common.Exceptions;
@@ -81,7 +82,9 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         var expire = DateTime.UtcNow.AddMinutes(30);
         var newSessionExpire = DateTime.UtcNow.AddMinutes(1);
 
-        var url = $"{baseUrl}/v1beta/authTokens:create?key={Uri.EscapeDataString(apiKey)}";
+        var apiVer = string.IsNullOrWhiteSpace(_live.AuthTokensApiVersion)
+            ? "v1alpha"
+            : _live.AuthTokensApiVersion.Trim().TrimStart('/');
 
         var body = new
         {
@@ -93,18 +96,24 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             }
         };
 
+        // Ephemeral tokens are registered under v1alpha in Google samples; v1beta often 404s for authTokens:create.
+        var url = $"{baseUrl}/{apiVer}/authTokens:create?key={Uri.EscapeDataString(apiKey)}";
         using var response = await _http.PostAsJsonAsync(url, body, JsonOptions, cancellationToken)
             .ConfigureAwait(false);
-
         var raw = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning(
-                "Gemini authTokens:create failed: {Status} {Body}",
+                "Gemini authTokens:create failed ({Version}): {Status} {Body}",
+                apiVer,
                 (int)response.StatusCode,
                 raw.Length > 2000 ? raw[..2000] + "…" : raw);
+            var detail = TryExtractGoogleErrorMessage(raw);
+            var hint = detail != null
+                ? $"Google: {TruncateForClient(detail, 900)}"
+                : "Check AiDiagnosis:GeminiApiKey, Generative Language API access, billing, and AiLive:AuthTokensApiVersion (try v1alpha).";
             throw new ValidationException(
-                "Could not create a Live session token. Check AiDiagnosis:GeminiApiKey and Live API availability.");
+                $"Could not create a Live session token. {hint}");
         }
 
         using var doc = JsonDocument.Parse(raw);
@@ -129,6 +138,10 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             nsExp = parsed;
         }
 
+        var voice = string.IsNullOrWhiteSpace(_live.VoiceName)
+            ? null
+            : _live.VoiceName.Trim();
+
         return new GeminiLiveTokenResponseDto
         {
             EphemeralAccessToken = tokenName,
@@ -137,6 +150,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             LiveModel = string.IsNullOrWhiteSpace(_live.LiveModel)
                 ? "gemini-2.0-flash-live-001"
                 : _live.LiveModel.Trim(),
+            VoiceName = voice,
             SystemInstruction = systemInstruction
         };
     }
@@ -180,5 +194,47 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         }
 
         return sb.ToString();
+    }
+
+    private static string? TryExtractGoogleErrorMessage(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("error", out var err))
+            {
+                if (err.TryGetProperty("message", out var m))
+                {
+                    return m.GetString();
+                }
+
+                if (err.TryGetProperty("status", out var st))
+                {
+                    return st.GetString();
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return TruncateForClient(raw.Trim(), 500);
+        }
+
+        return null;
+    }
+
+    private static string TruncateForClient(string s, int maxLen)
+    {
+        if (s.Length <= maxLen)
+        {
+            return s;
+        }
+
+        return new StringBuilder(maxLen + 1).Append(s, 0, maxLen).Append('…').ToString();
     }
 }

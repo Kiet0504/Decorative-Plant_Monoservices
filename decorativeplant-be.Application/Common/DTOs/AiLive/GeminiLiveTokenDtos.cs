@@ -21,6 +21,9 @@ public sealed class GeminiLiveTokenResponseDto
     /// <summary>Model id for <c>LiveClient.connect(model: ...)</c>.</summary>
     public string LiveModel { get; set; } = string.Empty;
 
+    /// <summary>Live speech voice id (e.g. Puck, Achernar). From <c>AiLive:VoiceName</c>.</summary>
+    public string? VoiceName { get; set; }
+
     /// <summary>System instruction text for <c>LiveConfig.systemInstruction</c>.</summary>
     public string SystemInstruction { get; set; } = string.Empty;
 }

@@ -15,4 +15,10 @@ public sealed class AiLiveSettings
 
     /// <summary>Optional voice name for Live speech (Google Live voice id).</summary>
     public string? VoiceName { get; set; }
+
+    /// <summary>
+    /// REST API version segment for <c>POST …/authTokens:create</c> (e.g. <c>v1alpha</c> or <c>v1beta</c>).
+    /// Ephemeral tokens are documented against <c>v1alpha</c>; use <c>v1beta</c> only if your project requires it.
+    /// </summary>
+    public string AuthTokensApiVersion { get; set; } = "v1alpha";
 }
