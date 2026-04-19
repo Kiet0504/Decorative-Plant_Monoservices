@@ -226,6 +226,9 @@ public static class InfrastructureServiceRegistration
         // AR preview viewer token signing
         services.AddScoped<IArPreviewTokenService, ArPreviewTokenService>();
 
+        services.Configure<AiLiveSettings>(configuration.GetSection(AiLiveSettings.SectionName));
+        services.AddHttpClient<IGeminiLiveEphemeralTokenService, GeminiLiveEphemeralTokenService>();
+
         // Configure JWT Authentication
         services.AddAuthentication(options =>
         {
