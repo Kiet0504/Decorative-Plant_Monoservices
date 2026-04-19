@@ -166,6 +166,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly IEmailService _emailService;
     private readonly IShippingService _shippingService;
     private readonly IStockService _stockService;
+    private readonly IOrderAssignmentService _orderAssignment;
 
     public HandlePayOSWebhookHandler(
         IApplicationDbContext context,
@@ -174,7 +175,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         IEmailTemplateService emailTemplateService,
         IEmailService emailService,
         IShippingService shippingService,
-        IStockService stockService)
+        IStockService stockService,
+        IOrderAssignmentService orderAssignment)
     {
         _context = context;
         _payOS = payOS;
@@ -183,6 +185,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         _emailService = emailService;
         _shippingService = shippingService;
         _stockService = stockService;
+        _orderAssignment = orderAssignment;
     }
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
@@ -405,7 +408,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                 // Fire-and-log: never block the webhook ack on email delivery.
                 try
                 {
-                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, ct);
+                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
                 }
                 catch (Exception ex)
                 {
@@ -446,6 +449,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
     private readonly ILogger<SyncPaymentCommandHandler> _logger;
     private readonly IEmailService _emailService;
     private readonly IEmailTemplateService _emailTemplateService;
+    private readonly IOrderAssignmentService _orderAssignment;
 
     public SyncPaymentCommandHandler(
         IApplicationDbContext context,
@@ -454,7 +458,8 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
         IStockService stockService,
         ILogger<SyncPaymentCommandHandler> logger,
         IEmailService emailService,
-        IEmailTemplateService emailTemplateService)
+        IEmailTemplateService emailTemplateService,
+        IOrderAssignmentService orderAssignment)
     {
         _context = context;
         _payOS = payOS;
@@ -463,6 +468,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
         _logger = logger;
         _emailService = emailService;
         _emailTemplateService = emailTemplateService;
+        _orderAssignment = orderAssignment;
     }
 
     public async Task<bool> Handle(SyncPaymentCommand request, CancellationToken ct)
@@ -602,7 +608,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
 
                     try
                     {
-                        await decorativeplant_be.Application.Common.NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, ct);
+                        await decorativeplant_be.Application.Common.NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
                     }
                     catch (Exception ex)
                     {

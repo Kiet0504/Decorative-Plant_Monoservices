@@ -47,3 +47,12 @@ public class MarkOrderPickedUpCommand : IRequest<OrderResponse>
     public Guid StaffUserId { get; set; }
     public MarkOrderPickedUpRequest Request { get; set; } = null!;
 }
+
+public class ManualAssignOrderCommand : IRequest<OrderResponse>
+{
+    public Guid OrderId { get; set; }
+    /// <summary>Branch manager making the assignment.</summary>
+    public Guid ManagerId { get; set; }
+    /// <summary>fulfillment_staff to assign.</summary>
+    public Guid StaffId { get; set; }
+}

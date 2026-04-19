@@ -30,18 +30,31 @@ public class OrdersController : BaseController
         [FromServices] IApplicationDbContext context = null!)
     {
         var isAdmin = User.IsInRole("admin");
-        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
+        var isFulfillmentStaff = User.IsInRole("fulfillment_staff");
+        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || isFulfillmentStaff;
 
         Guid? userId = null;
         Guid? effectiveBranchId = branchId;
+        Guid? assignedStaffId = null;
 
         if (isAdmin)
         {
-            // Admin sees everything — no userId / branchId filter unless explicitly passed
+            // Admin sees everything — no filters unless explicitly passed
+        }
+        else if (isFulfillmentStaff)
+        {
+            // Fulfillment staff only see orders assigned to themselves
+            assignedStaffId = GetUserId();
+            if (!effectiveBranchId.HasValue)
+            {
+                effectiveBranchId = await context.StaffAssignments
+                    .Where(s => s.StaffId == assignedStaffId && s.IsPrimary)
+                    .Select(s => (Guid?)s.BranchId)
+                    .FirstOrDefaultAsync();
+            }
         }
         else if (isStaff)
         {
-            
             if (!effectiveBranchId.HasValue)
             {
                 var staffUserId = GetUserId();
@@ -61,6 +74,7 @@ public class OrdersController : BaseController
         {
             UserId = userId,
             BranchId = effectiveBranchId,
+            AssignedStaffId = assignedStaffId,
             Status = status,
             Page = page,
             PageSize = pageSize
@@ -70,12 +84,50 @@ public class OrdersController : BaseController
 
     [HttpGet("{id:guid}")]
     [Authorize]
-    public async Task<IActionResult> GetById(Guid id)
+    public async Task<IActionResult> GetById(
+        Guid id,
+        [FromServices] IApplicationDbContext context)
     {
         var isAdmin = User.IsInRole("admin");
-        var isStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || User.IsInRole("fulfillment_staff");
-        var userId = (isAdmin || isStaff) ? (Guid?)null : GetUserId();
-        var result = await Mediator.Send(new GetOrderByIdQuery { Id = id, UserId = userId });
+        var isFulfillmentStaff = User.IsInRole("fulfillment_staff");
+        var isBranchStaff = User.IsInRole("store_staff") || User.IsInRole("branch_manager") || isFulfillmentStaff;
+
+        Guid? userId = null;
+        Guid? actorBranchId = null;
+        Guid? actorStaffId = null;
+
+        if (isAdmin)
+        {
+            // Admin sees all, no restrictions
+        }
+        else if (isFulfillmentStaff)
+        {
+            actorStaffId = GetUserId();
+            actorBranchId = await context.StaffAssignments
+                .Where(s => s.StaffId == actorStaffId && s.IsPrimary)
+                .Select(s => (Guid?)s.BranchId)
+                .FirstOrDefaultAsync();
+        }
+        else if (isBranchStaff)
+        {
+            var staffUserId = GetUserId();
+            actorBranchId = await context.StaffAssignments
+                .Where(s => s.StaffId == staffUserId && s.IsPrimary)
+                .Select(s => (Guid?)s.BranchId)
+                .FirstOrDefaultAsync();
+        }
+        else
+        {
+            userId = GetUserId();
+        }
+
+        var result = await Mediator.Send(new GetOrderByIdQuery
+        {
+            Id = id,
+            UserId = userId,
+            ActorBranchId = actorBranchId,
+            ActorStaffId = actorStaffId,
+        });
         if (result == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
@@ -418,6 +470,26 @@ public class OrdersController : BaseController
         if (userId == null) return Unauthorized();
         var result = await Mediator.Send(new ConfirmReceiptCommand { OrderId = id, UserId = userId.Value });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order confirmed as received"));
+    }
+
+    /// <summary>
+    /// Manually assign an unassigned (queued) order to a specific fulfillment_staff.
+    /// Branch managers can also re-assign an already-assigned order (manager override).
+    /// The target staff must be an active fulfillment_staff at the same branch as the order.
+    /// </summary>
+    [HttpPost("{id:guid}/assign")]
+    [Authorize(Roles = "branch_manager,admin")]
+    public async Task<IActionResult> ManualAssign(Guid id, [FromBody] ManualAssignRequest request)
+    {
+        var managerId = GetUserId();
+        if (managerId == null) return Unauthorized();
+        var result = await Mediator.Send(new ManualAssignOrderCommand
+        {
+            OrderId = id,
+            ManagerId = managerId.Value,
+            StaffId = request.StaffId,
+        });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order assigned successfully"));
     }
 
     /// <summary>

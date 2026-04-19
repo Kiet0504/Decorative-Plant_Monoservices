@@ -27,6 +27,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
     private readonly IStockService _stockService;
     private readonly IEmailService _emailService;
     private readonly IEmailTemplateService _emailTemplateService;
+    private readonly IOrderAssignmentService _orderAssignment;
 
     public CreateOrderHandler(
         IApplicationDbContext context,
@@ -35,7 +36,8 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         IBranchAllocationService allocationService,
         IStockService stockService,
         IEmailService emailService,
-        IEmailTemplateService emailTemplateService)
+        IEmailTemplateService emailTemplateService,
+        IOrderAssignmentService orderAssignment)
     {
         _context = context;
         _logger = logger;
@@ -44,6 +46,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         _stockService = stockService;
         _emailService = emailService;
         _emailTemplateService = emailTemplateService;
+        _orderAssignment = orderAssignment;
     }
 
     public async Task<List<OrderResponse>> Handle(CreateOrderCommand cmd, CancellationToken ct)
@@ -356,7 +359,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 
                 try
                 {
-                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, ct);
+                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
                 }
                 catch (Exception ex)
                 {
@@ -389,7 +392,9 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         var response = new OrderResponse
         {
             Id = o.Id, OrderCode = o.OrderCode, UserId = o.UserId,
-            Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt
+            Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt,
+            AssignedStaffId = o.AssignedStaffId,
+            AssignedStaffName = o.AssignedStaff?.DisplayName
         };
 
         if (o.TypeInfo != null)
@@ -456,17 +461,24 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 
 public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand, OrderResponse>
 {
+    private static readonly HashSet<string> SlotFreedStatuses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "delivered", "completed", "cancelled", "returned", "refunded", "expired",
+    };
+
     private readonly IApplicationDbContext _context;
     private readonly IStockService _stockService;
     private readonly IShippingService _shippingService;
     private readonly ILogger<UpdateOrderStatusHandler> _logger;
+    private readonly IOrderAssignmentService _orderAssignment;
 
-    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService, IShippingService shippingService, ILogger<UpdateOrderStatusHandler> logger)
+    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService, IShippingService shippingService, ILogger<UpdateOrderStatusHandler> logger, IOrderAssignmentService orderAssignment)
     {
         _context = context;
         _stockService = stockService;
         _shippingService = shippingService;
         _logger = logger;
+        _orderAssignment = orderAssignment;
     }
 
     public async Task<OrderResponse> Handle(UpdateOrderStatusCommand cmd, CancellationToken ct)
@@ -500,6 +512,18 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
         }
 
         await _context.SaveChangesAsync(ct);
+
+        // When a slot frees up, immediately try to assign the oldest queued order
+        if (SlotFreedStatuses.Contains(normalizedStatus) && order.AssignedStaffId.HasValue)
+        {
+            var branchId = order.OrderItems?.FirstOrDefault()?.BranchId;
+            if (branchId.HasValue)
+            {
+                try { await _orderAssignment.TryFlushQueueAsync(branchId.Value, ct); }
+                catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after status update for Order {OrderCode}.", order.OrderCode); }
+            }
+        }
+
         return CreateOrderHandler.MapToResponse(order);
     }
 
@@ -753,7 +777,15 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
 public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, OrderResponse>
 {
     private readonly IApplicationDbContext _context;
-    public ConfirmReceiptHandler(IApplicationDbContext context) => _context = context;
+    private readonly IOrderAssignmentService _orderAssignment;
+    private readonly ILogger<ConfirmReceiptHandler> _logger;
+
+    public ConfirmReceiptHandler(IApplicationDbContext context, IOrderAssignmentService orderAssignment, ILogger<ConfirmReceiptHandler> logger)
+    {
+        _context = context;
+        _orderAssignment = orderAssignment;
+        _logger = logger;
+    }
 
     public async Task<OrderResponse> Handle(ConfirmReceiptCommand cmd, CancellationToken ct)
     {
@@ -762,6 +794,9 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
 
         if (order.UserId != cmd.UserId)
             throw new BadRequestException("You can only confirm receipt for your own orders.");
+
+        var branchId = order.OrderItems?.FirstOrDefault()?.BranchId;
+        var wasAssigned = order.AssignedStaffId.HasValue;
 
         OrderStatusMachine.Apply(order, OrderStatusMachine.Completed, cmd.UserId,
             reason: "Customer confirmed receipt", source: "ConfirmReceipt");
@@ -778,6 +813,14 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
 
         await _context.SaveChangesAsync(ct);
+
+        // Slot freed — assign next queued order at this branch immediately
+        if (wasAssigned && branchId.HasValue)
+        {
+            try { await _orderAssignment.TryFlushQueueAsync(branchId.Value, ct); }
+            catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after ConfirmReceipt for Order {OrderId}.", cmd.OrderId); }
+        }
+
         return CreateOrderHandler.MapToResponse(order);
     }
 }
@@ -839,10 +882,11 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
 
     public async Task<PagedResult<OrderResponse>> Handle(GetOrdersQuery query, CancellationToken ct)
     {
-        var q = _context.OrderHeaders.Include(o => o.OrderItems).AsQueryable();
+        var q = _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.AssignedStaff).AsQueryable();
         if (query.UserId.HasValue) q = q.Where(o => o.UserId == query.UserId);
         // Chain Store: filter by branch at OrderItem level
         if (query.BranchId.HasValue) q = q.Where(o => o.OrderItems.Any(oi => oi.BranchId == query.BranchId));
+        if (query.AssignedStaffId.HasValue) q = q.Where(o => o.AssignedStaffId == query.AssignedStaffId);
         if (!string.IsNullOrEmpty(query.Status)) q = q.Where(o => o.Status == query.Status);
 
         var total = await q.CountAsync(ct);
@@ -869,11 +913,23 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
 
     public async Task<OrderResponse?> Handle(GetOrderByIdQuery query, CancellationToken ct)
     {
-        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.AssignedStaff).FirstOrDefaultAsync(o => o.Id == query.Id, ct);
         if (order == null) return null;
 
-        // Non-admin users can only view their own orders
+        // Customer: must own the order
         if (query.UserId.HasValue && order.UserId != query.UserId)
+            throw new BadRequestException("You do not have permission to view this order.");
+
+        // Staff/manager: order must belong to their branch
+        if (query.ActorBranchId.HasValue)
+        {
+            var belongsToBranch = order.OrderItems?.Any(oi => oi.BranchId == query.ActorBranchId) ?? false;
+            if (!belongsToBranch)
+                throw new BadRequestException("You do not have permission to view this order.");
+        }
+
+        // Fulfillment staff: order must be assigned to them
+        if (query.ActorStaffId.HasValue && order.AssignedStaffId != query.ActorStaffId)
             throw new BadRequestException("You do not have permission to view this order.");
 
         return CreateOrderHandler.MapToResponse(order);
@@ -1101,6 +1157,162 @@ public class MarkOrderPickedUpHandler : IRequestHandler<MarkOrderPickedUpCommand
         }
 
         await _context.SaveChangesAsync(ct);
+        return CreateOrderHandler.MapToResponse(order);
+    }
+}
+
+public class ManualAssignOrderHandler : IRequestHandler<ManualAssignOrderCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly IEmailService _emailService;
+    private readonly ILogger<ManualAssignOrderHandler> _logger;
+
+    public ManualAssignOrderHandler(
+        IApplicationDbContext context,
+        IEmailService emailService,
+        ILogger<ManualAssignOrderHandler> logger)
+    {
+        _context = context;
+        _emailService = emailService;
+        _logger = logger;
+    }
+
+    public async Task<OrderResponse> Handle(ManualAssignOrderCommand cmd, CancellationToken ct)
+    {
+        var order = await _context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == cmd.OrderId, ct)
+            ?? throw new NotFoundException($"Order {cmd.OrderId} not found.");
+
+        var branchId = order.OrderItems?.FirstOrDefault()?.BranchId
+            ?? throw new BadRequestException("Order has no branch associated.");
+
+        // Verify manager belongs to this branch
+        var managerAtBranch = await _context.StaffAssignments
+            .AnyAsync(sa => sa.StaffId == cmd.ManagerId && sa.BranchId == branchId, ct);
+        if (!managerAtBranch)
+            throw new BadRequestException("You do not manage the branch this order belongs to.");
+
+        // Verify target staff is fulfillment_staff at the same branch
+        var staffValid = await (
+            from sa in _context.StaffAssignments
+            join u in _context.UserAccounts on sa.StaffId equals u.Id
+            where sa.StaffId == cmd.StaffId
+               && sa.BranchId == branchId
+               && u.Role == "fulfillment_staff"
+               && u.IsActive
+            select u
+        ).AnyAsync(ct);
+
+        if (!staffValid)
+            throw new BadRequestException("The selected staff is not an active fulfillment_staff at this branch.");
+
+        // Allow re-assignment too (manager override) — not just unassigned orders
+        order.AssignedStaffId = cmd.StaffId;
+        await _context.SaveChangesAsync(ct);
+
+        // Notify the newly assigned staff
+        var staff = await _context.UserAccounts.FindAsync([cmd.StaffId], ct);
+        if (staff?.Email != null)
+        {
+            var total = order.Financials?.RootElement.TryGetProperty("total", out var t) == true
+                ? t.GetString() ?? "0" : "0";
+            var itemCount = order.OrderItems?.Sum(i => i.Quantity) ?? 0;
+            var branchName = await _context.Branches
+                .Where(b => b.Id == branchId)
+                .Select(b => b.Name)
+                .FirstOrDefaultAsync(ct) ?? "your branch";
+
+            try
+            {
+                // Extract delivery address
+                string? recipientName = null, phone = null, addressLine = null, city = null;
+                if (order.DeliveryAddress != null)
+                {
+                    var addr = order.DeliveryAddress.RootElement;
+                    recipientName = addr.TryGetProperty("recipient_name", out var rn) ? rn.GetString() : null;
+                    phone         = addr.TryGetProperty("phone", out var ph) ? ph.GetString() : null;
+                    addressLine   = addr.TryGetProperty("address_line_1", out var a1) ? a1.GetString() : null;
+                    city          = addr.TryGetProperty("city", out var c) ? c.GetString() : null;
+                }
+
+                string? fulfillmentMethod = null, paymentMethod = null;
+                if (order.TypeInfo != null)
+                {
+                    var ti = order.TypeInfo.RootElement;
+                    fulfillmentMethod = ti.TryGetProperty("fulfillment_method", out var fm) ? fm.GetString() : null;
+                    paymentMethod     = ti.TryGetProperty("payment_method", out var pm) ? pm.GetString() : null;
+                }
+
+                var itemRows = new System.Text.StringBuilder();
+                foreach (var oi in order.OrderItems ?? [])
+                {
+                    string? title = null, unitPrice = null;
+                    if (oi.Snapshots != null)
+                        title = oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts) ? ts.GetString() : null;
+                    if (oi.Pricing != null)
+                        unitPrice = oi.Pricing.RootElement.TryGetProperty("unit_price", out var up) ? up.GetString() : null;
+                    itemRows.Append(
+                        $"<tr><td style='padding:4px 8px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(title ?? "—")}</td>" +
+                        $"<td style='padding:4px 8px;border-bottom:1px solid #e5e7eb;text-align:center;'>{oi.Quantity}</td>" +
+                        $"<td style='padding:4px 8px;border-bottom:1px solid #e5e7eb;text-align:right;'>{System.Net.WebUtility.HtmlEncode(unitPrice ?? "—")} VND</td></tr>");
+                }
+
+                var deliveryHtml = recipientName != null
+                    ? $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Recipient</th>" +
+                      $"<td style='padding:4px 8px;'>{System.Net.WebUtility.HtmlEncode(recipientName)}" +
+                      (phone != null ? $" · {System.Net.WebUtility.HtmlEncode(phone)}" : "") + "</td></tr>" +
+                      $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Address</th>" +
+                      $"<td style='padding:4px 8px;'>{System.Net.WebUtility.HtmlEncode(addressLine ?? "—")}" +
+                      (city != null ? $", {System.Net.WebUtility.HtmlEncode(city)}" : "") + "</td></tr>"
+                    : "";
+
+                var bodyHtml =
+                    $"<div style='font-family:sans-serif;max-width:600px;margin:0 auto;color:#1f2937;'>" +
+                    $"<p>Hello <strong>{System.Net.WebUtility.HtmlEncode(staff.DisplayName ?? "")}</strong>,</p>" +
+                    $"<p>Order <strong>{System.Net.WebUtility.HtmlEncode(order.OrderCode ?? order.Id.ToString())}</strong> at <strong>{System.Net.WebUtility.HtmlEncode(branchName)}</strong> has been <strong style='color:#2d5f4d;'>manually assigned to you</strong> by your branch manager.</p>" +
+                    $"<table style='width:100%;border-collapse:collapse;margin:12px 0;'>" +
+                    $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Order code</th><td style='padding:4px 8px;font-weight:bold;'>{System.Net.WebUtility.HtmlEncode(order.OrderCode ?? order.Id.ToString())}</td></tr>" +
+                    $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Fulfillment</th><td style='padding:4px 8px;'>{System.Net.WebUtility.HtmlEncode(fulfillmentMethod ?? "delivery")}</td></tr>" +
+                    $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Payment</th><td style='padding:4px 8px;'>{System.Net.WebUtility.HtmlEncode(paymentMethod ?? "—")}</td></tr>" +
+                    deliveryHtml +
+                    $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Total</th><td style='padding:4px 8px;font-weight:bold;color:#2d5f4d;'>{System.Net.WebUtility.HtmlEncode(total)} VND</td></tr>" +
+                    $"</table>" +
+                    (itemRows.Length > 0
+                        ? $"<p style='margin-top:16px;font-weight:bold;'>Order items ({itemCount}):</p>" +
+                          $"<table style='width:100%;border-collapse:collapse;font-size:14px;'>" +
+                          $"<thead><tr style='background:#f3f4f6;'><th style='padding:4px 8px;text-align:left;'>Product</th><th style='padding:4px 8px;text-align:center;'>Qty</th><th style='padding:4px 8px;text-align:right;'>Unit price</th></tr></thead>" +
+                          $"<tbody>{itemRows}</tbody></table>"
+                        : "") +
+                    "<p style='margin-top:20px;'>Please check the staff dashboard to begin packing.</p>" +
+                    "</div>";
+
+                var plainText =
+                    $"Hi {staff.DisplayName ?? "staff"},\n\n" +
+                    $"Order {order.OrderCode} at {branchName} has been manually assigned to you by your branch manager.\n" +
+                    (recipientName != null ? $"Recipient: {recipientName} {phone}\nAddress: {addressLine}, {city}\n" : "") +
+                    $"Items: {itemCount} | Total: {total} VND | Payment: {paymentMethod ?? "—"}\n\n" +
+                    "Please log in to the staff dashboard to begin packing.";
+
+                await _emailService.SendAsync(new Application.Common.DTOs.Email.EmailMessage
+                {
+                    To = staff.Email,
+                    ToName = staff.DisplayName,
+                    Subject = $"[Assigned to you] Order {order.OrderCode} — {branchName}",
+                    BodyPlainText = plainText,
+                    BodyHtml = bodyHtml,
+                }, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ManualAssignOrderHandler: Failed to email staff {StaffId} for Order {OrderCode}.", cmd.StaffId, order.OrderCode);
+            }
+        }
+
+        _logger.LogInformation(
+            "ManualAssignOrderHandler: Order {OrderCode} manually assigned to staff {StaffId} by manager {ManagerId}.",
+            order.OrderCode, cmd.StaffId, cmd.ManagerId);
+
         return CreateOrderHandler.MapToResponse(order);
     }
 }

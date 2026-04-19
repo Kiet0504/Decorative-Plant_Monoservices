@@ -96,11 +96,16 @@ public static class InfrastructureServiceRegistration
         services.AddHostedService<MqttService>(provider => provider.GetRequiredService<MqttService>());
         services.AddSingleton<IMqttService>(provider => provider.GetRequiredService<MqttService>());
 
+        // Order assignment service (workload-based, scoped per request/job)
+        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IOrderAssignmentService,
+                           decorativeplant_be.Application.Services.OrderAssignmentService>();
+
         // Register Background Jobs
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.MonthlyQuotaResetJob>();
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.PendingOrderCleanupJob>();
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.CareTaskReminderJob>();
         services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.AutoCompleteDeliveredOrdersJob>();
+        services.AddHostedService<decorativeplant_be.Infrastructure.BackgroundJobs.OrderAssignmentQueueJob>();
 
         // Configure JWT Settings
         var jwtSettings = configuration.GetSection("JwtSettings").Get<JwtSettings>();

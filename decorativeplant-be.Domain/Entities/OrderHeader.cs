@@ -23,7 +23,11 @@ public class OrderHeader
     public DateTime? ConfirmedAt { get; set; }
     public DateTime? DeliveredAt { get; set; }
 
+    /// <summary>Staff assigned to fulfill this order. Null = queued (no capacity available).</summary>
+    public Guid? AssignedStaffId { get; set; }
+
     public UserAccount? User { get; set; }
+    public UserAccount? AssignedStaff { get; set; }
     public Voucher? Voucher { get; set; }
 
     public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
