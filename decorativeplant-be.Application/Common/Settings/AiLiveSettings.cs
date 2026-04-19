@@ -17,8 +17,8 @@ public sealed class AiLiveSettings
     public string? VoiceName { get; set; }
 
     /// <summary>
-    /// Preferred REST segment for <c>POST …/authTokens:create</c> (<c>v1beta</c> or <c>v1alpha</c>).
+    /// Preferred REST segment for <c>POST …/auth_tokens</c> (typically <c>v1alpha</c>; discovery lists this method there).
     /// The service retries the <i>other</i> version automatically on HTTP 404.
     /// </summary>
-    public string AuthTokensApiVersion { get; set; } = "v1beta";
+    public string AuthTokensApiVersion { get; set; } = "v1alpha";
 }
