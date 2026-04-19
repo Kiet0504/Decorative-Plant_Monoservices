@@ -6,16 +6,19 @@ using decorativeplant_be.Domain.Entities;
 using MediatR;
 using System.Linq.Expressions;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 
 namespace decorativeplant_be.Application.Features.Inventory.Handlers;
 
 public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuery, PagedResultDto<PlantBatchSummaryDto>>
 {
     private readonly IRepositoryFactory _repositoryFactory;
+    private readonly IApplicationDbContext _context;
 
-    public ListPlantBatchesQueryHandler(IRepositoryFactory repositoryFactory)
+    public ListPlantBatchesQueryHandler(IRepositoryFactory repositoryFactory, IApplicationDbContext context)
     {
         _repositoryFactory = repositoryFactory;
+        _context = context;
     }
 
     public async Task<PagedResultDto<PlantBatchSummaryDto>> Handle(ListPlantBatchesQuery request, CancellationToken cancellationToken)
@@ -126,6 +129,15 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
             {
                 var branchRepo = _repositoryFactory.CreateRepository<decorativeplant_be.Domain.Entities.Branch>();
                 item.Branch = await branchRepo.GetByIdAsync(item.BranchId.Value, cancellationToken);
+            }
+
+            // Load Stocks for Aggregation
+            if (item.BatchStocks == null || !item.BatchStocks.Any())
+            {
+                item.BatchStocks = await _context.BatchStocks
+                    .Include(bs => bs.Location)
+                    .Where(bs => bs.BatchId == item.Id)
+                    .ToListAsync(cancellationToken);
             }
         }
 
