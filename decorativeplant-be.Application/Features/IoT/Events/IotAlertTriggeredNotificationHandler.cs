@@ -79,25 +79,52 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
                 }
             }
 
-            // 4. Generate Security Token for Action
-            const string action = "water_now";
+            // 4. Determine Dynamic Action based on Alert Type
+            string? action = null;
+            bool isMoistureRelated = alert.ComponentKey?.Contains("moisture") == true || 
+                                     alertMessage.ToLower().Contains("dry") || 
+                                     alertMessage.ToLower().Contains("water");
+
+            // Extract flags from AlertInfo
+            bool isConnectivity = false;
+            bool isConflict = false;
+            if (alert.AlertInfo != null)
+            {
+                var root = alert.AlertInfo.RootElement;
+                isConnectivity = root.TryGetProperty("isConnectivityAlert", out var conn) && conn.GetBoolean();
+                isConflict = root.TryGetProperty("conflictingRules", out _) || root.TryGetProperty("triggeredRules", out _);
+            }
+
+            // Define action only if it makes sense (e.g., moisture alert on a live device)
+            if (isMoistureRelated && !isConnectivity && !isConflict)
+            {
+                action = "water_now";
+            }
+
             var apiSecretKey = _configuration["ApiSettings:SecretKey"] ?? "decorative_plant_default_secret_2024";
             var baseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:8080";
             
-            var rawData = $"{device.Id}{action}{device.SecretKey}{apiSecretKey}";
-            string computedToken;
-            using (var sha256 = SHA256.Create())
+            string? actionUrl = null;
+            string? actionToken = null;
+
+            if (!string.IsNullOrEmpty(action))
             {
-                var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(rawData));
-                computedToken = BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
+                var rawData = $"{device.Id}{action}{device.SecretKey}{apiSecretKey}";
+                using (var sha256 = SHA256.Create())
+                {
+                    var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(rawData));
+                    actionToken = BitConverter.ToString(hashBytes).Replace("-", "").ToLower();
+                }
+                actionUrl = $"{baseUrl}/api/public/iot/action?deviceId={device.Id}&action={action}&token={actionToken}";
             }
 
             var placeholders = new Dictionary<string, string>
             {
                 { "Severity", severity },
                 { "AlertMessage", alertMessage },
-                { "ActionUrl", $"{baseUrl}/api/public/iot/action?deviceId={device.Id}&action={action}&token={computedToken}" },
-                { "ActionToken", computedToken }
+                { "ActionUrl", actionUrl ?? "" },
+                { "ActionToken", actionToken ?? "" },
+                { "HasAction", (action != null).ToString().ToLower() }
             };
 
             // 5. Dispatch Emails

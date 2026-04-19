@@ -40,7 +40,7 @@ public class SendDeviceCommandCommandHandler : IRequestHandler<SendDeviceCommand
             await _mqttService.PublishCommandAsync(
                 device.SecretKey,
                 request.Action,
-                new { value = request.Value, params_data = request.Params },
+                new { value = request.Value, @params = request.Params },
                 cancellationToken);
 
             _logger.LogInformation("Successfully dispatched command '{Action}' to device {DeviceId}", request.Action, request.DeviceId);
