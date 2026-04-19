@@ -99,11 +99,25 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         // DateTime.ToString("o") (7 fractional digits) — Google often returns INVALID_ARGUMENT for that.
         var expireStr = FormatGeminiTimestampUtc(expire);
         var newSessionStr = FormatGeminiTimestampUtc(newSessionExpire);
+
+        // Live ephemeral tokens must pin the Live model (see google-genai CreateAuthTokenConfig + LiveEphemeralParameters).
+        // Without this, auth_tokens often returns 400 INVALID_ARGUMENT for Live-only keys.
+        var liveModelRaw = string.IsNullOrWhiteSpace(_live.LiveModel)
+            ? "gemini-3.1-flash-live-preview"
+            : _live.LiveModel.Trim();
+        var modelResource = liveModelRaw.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
+            ? liveModelRaw
+            : $"models/{liveModelRaw}";
+
         var bodyCamel = new
         {
             expireTime = expireStr,
             newSessionExpireTime = newSessionStr,
-            uses = 1
+            uses = 1,
+            bidiGenerateContentSetup = new
+            {
+                model = modelResource
+            }
         };
 
         // Some keys only expose auth_tokens on one API version; retry the other on HTTP 404 only.
