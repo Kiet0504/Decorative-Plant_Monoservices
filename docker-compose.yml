@@ -97,7 +97,7 @@ services:
       - AiDiagnosis__GeminiBaseUrl=${AiDiagnosis__GeminiBaseUrl:-https://generativelanguage.googleapis.com}
       # Gemini Live (ephemeral tokens for /v1/ai/live/token); requires AiDiagnosis__GeminiApiKey
       - AiLive__Enabled=${AiLive__Enabled:-true}
-      - AiLive__LiveModel=${AiLive__LiveModel:-gemini-3.1-flash-live-preview}
+      - AiLive__LiveModel=${AiLive__LiveModel:-gemini-live-2.5-flash-preview}
       - AiLive__VoiceName=${AiLive__VoiceName:-}
       - AiLive__AuthTokensApiVersion=${AiLive__AuthTokensApiVersion:-v1alpha}
       # When true, all IOllamaClient traffic and room-scan Ollama fallbacks use Gemini (requires AiDiagnosis__GeminiApiKey)

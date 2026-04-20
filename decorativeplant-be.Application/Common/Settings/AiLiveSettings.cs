@@ -10,8 +10,8 @@ public sealed class AiLiveSettings
     /// <summary>When false, <c>/ai/live/token</c> returns 503.</summary>
     public bool Enabled { get; set; }
 
-    /// <summary>Live model id (e.g. gemini-3.1-flash-live-preview, gemini-2.0-flash-live-001).</summary>
-    public string LiveModel { get; set; } = "gemini-3.1-flash-live-preview";
+    /// <summary>Live model id (e.g. gemini-live-2.5-flash-preview, gemini-2.0-flash-live-001).</summary>
+    public string LiveModel { get; set; } = "gemini-live-2.5-flash-preview";
 
     /// <summary>Optional voice name for Live speech (Google Live voice id).</summary>
     public string? VoiceName { get; set; }

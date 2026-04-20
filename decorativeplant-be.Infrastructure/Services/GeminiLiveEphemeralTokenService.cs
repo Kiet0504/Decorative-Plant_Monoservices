@@ -1,10 +1,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using decorativeplant_be.Application.Common.DTOs.AiLive;
@@ -85,9 +83,6 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ? "https://generativelanguage.googleapis.com"
             : _gemini.GeminiBaseUrl.TrimEnd('/');
 
-        var expire = DateTime.UtcNow.AddMinutes(30);
-        var newSessionExpire = DateTime.UtcNow.AddMinutes(1);
-
         var preferredVer = string.IsNullOrWhiteSpace(_live.AuthTokensApiVersion)
             ? "v1alpha"
             : _live.AuthTokensApiVersion.Trim().TrimStart('/');
@@ -95,38 +90,32 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ? "v1beta"
             : "v1alpha";
 
-        // REST: POST …/auth_tokens — AuthToken JSON uses camelCase. Timestamps must be RFC 3339; avoid
-        // DateTime.ToString("o") (7 fractional digits) — Google often returns INVALID_ARGUMENT for that.
-        var expireStr = FormatGeminiTimestampUtc(expire);
-        var newSessionStr = FormatGeminiTimestampUtc(newSessionExpire);
-
         // Live ephemeral tokens must pin the Live model (see google-genai CreateAuthTokenConfig + LiveEphemeralParameters).
         // Without this, auth_tokens often returns 400 INVALID_ARGUMENT for Live-only keys.
         var liveModelRaw = string.IsNullOrWhiteSpace(_live.LiveModel)
-            ? "gemini-3.1-flash-live-preview"
+            ? "gemini-live-2.5-flash-preview"
             : _live.LiveModel.Trim();
         var modelResource = liveModelRaw.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
             ? liveModelRaw
             : $"models/{liveModelRaw}";
 
-        // Wire shape matches google-genai Python SDK's LiveConnectConstraints serializer:
-        //   bidiGenerateContentSetup: { setup: { model: "models/..." } }
-        // Putting `model` directly under `bidiGenerateContentSetup` (without the nested
-        // `setup` wrapper) is what Google rejects with 400 INVALID_ARGUMENT.
-        // See googleapis/python-genai _tokens_converters._LiveConnectConstraints_to_mldev
-        // — it calls `setv(to_object, ['setup', 'model'], ...)`.
-        var bodyCamel = new
+        // Final wire shape on the AuthToken service (matches python-genai test_create_global_lock):
+        //   { "uses": 2, "bidiGenerateContentSetup": { "model": "models/..." } }
+        //
+        // NOTE on omitted timestamps: python-genai's _CreateAuthTokenConfig_to_mldev only
+        // sets expireTime / newSessionExpireTime when the caller passes them. Google server
+        // defaults are 30 min (expireTime) and 60 s (newSessionExpireTime). Sending them
+        // explicitly as RFC-3339 strings has been observed to trigger INVALID_ARGUMENT,
+        // so we omit them and let the server default. tokens.py then
+        // `_convert_bidi_setup_to_token_setup` UNWRAPS `setup` before posting, so the C#
+        // body is already in the un-wrapped shape.
+        var bodyCamel = new Dictionary<string, object?>
         {
-            expireTime = expireStr,
-            newSessionExpireTime = newSessionStr,
-            uses = 1,
-            bidiGenerateContentSetup = new
+            ["uses"] = 2,
+            ["bidiGenerateContentSetup"] = new Dictionary<string, object?>
             {
-                setup = new
-                {
-                    model = modelResource
-                }
-            }
+                ["model"] = modelResource,
+            },
         };
 
         // Some keys only expose auth_tokens on one API version; retry the other on HTTP 404 only.
@@ -203,22 +192,11 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ExpireTimeUtc = exp,
             NewSessionExpireTimeUtc = nsExp,
             LiveModel = string.IsNullOrWhiteSpace(_live.LiveModel)
-                ? "gemini-3.1-flash-live-preview"
+                ? "gemini-live-2.5-flash-preview"
                 : _live.LiveModel.Trim(),
             VoiceName = voice,
             SystemInstruction = systemInstruction
         };
-    }
-
-    /// <summary>Google examples use <c>2025-05-01T00:00:00Z</c> (second precision, Z). Not 7-digit fractional seconds.</summary>
-    private static string FormatGeminiTimestampUtc(DateTime utc)
-    {
-        if (utc.Kind != DateTimeKind.Utc)
-        {
-            utc = utc.ToUniversalTime();
-        }
-
-        return utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
     }
 
     /// <summary>Returns null only when Google responds 404 (wrong API path for this key — caller may retry another API version).</summary>
@@ -231,8 +209,23 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
     {
         var url = $"{baseUrl}/{apiVer}/auth_tokens?key={Uri.EscapeDataString(apiKey)}";
 
+        // Serialize the body up-front so we can log it verbatim on failure.
+        // Google's INVALID_ARGUMENT responses don't tell us which field is bad,
+        // so we need the exact wire bytes to diagnose.
+        var bodyJson = JsonSerializer.Serialize(bodyCamel, JsonOptions);
+
+        _logger.LogInformation(
+            "Gemini auth_tokens request ({Version}) body: {Body}",
+            apiVer,
+            bodyJson);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(bodyJson, Encoding.UTF8, "application/json"),
+        };
+
         using var response1 = await _http
-            .PostAsJsonAsync(url, bodyCamel, JsonOptions, cancellationToken)
+            .SendAsync(request, cancellationToken)
             .ConfigureAwait(false);
         var raw = await response1.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
 
@@ -251,10 +244,11 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         }
 
         _logger.LogWarning(
-            "Gemini auth_tokens failed ({Version}): {Status} {Body}",
+            "Gemini auth_tokens failed ({Version}): {Status} {Body}. Request was: {RequestBody}",
             apiVer,
             (int)response1.StatusCode,
-            raw.Length > 2000 ? raw[..2000] + "…" : raw);
+            raw.Length > 2000 ? raw[..2000] + "…" : raw,
+            bodyJson);
         ThrowTokenError(response1, raw, apiVer);
         throw new UnreachableException();
     }
