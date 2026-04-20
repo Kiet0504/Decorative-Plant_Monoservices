@@ -60,7 +60,7 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
              filter = Expression.Lambda<Func<PlantBatch, bool>>(body, param);
         }
 
-        List<Guid?> batchIdsInLocation = null;
+        List<Guid?>? batchIdsInLocation = null;
         if (request.LocationId.HasValue)
         {
              var lid = request.LocationId.Value;

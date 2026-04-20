@@ -25,8 +25,8 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
             description = request.Description,
             capacity = request.Capacity,
             environment_type = request.EnvironmentType?.Trim(),
-            position_x = request.PositionX,
-            position_y = request.PositionY
+            position_x = request.PositionX ?? 1,
+            position_y = request.PositionY ?? 1
         };
 
         var entity = new InventoryLocation
