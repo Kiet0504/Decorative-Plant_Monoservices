@@ -109,6 +109,12 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ? liveModelRaw
             : $"models/{liveModelRaw}";
 
+        // Wire shape matches google-genai Python SDK's LiveConnectConstraints serializer:
+        //   bidiGenerateContentSetup: { setup: { model: "models/..." } }
+        // Putting `model` directly under `bidiGenerateContentSetup` (without the nested
+        // `setup` wrapper) is what Google rejects with 400 INVALID_ARGUMENT.
+        // See googleapis/python-genai _tokens_converters._LiveConnectConstraints_to_mldev
+        // — it calls `setv(to_object, ['setup', 'model'], ...)`.
         var bodyCamel = new
         {
             expireTime = expireStr,
@@ -116,7 +122,10 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             uses = 1,
             bidiGenerateContentSetup = new
             {
-                model = modelResource
+                setup = new
+                {
+                    model = modelResource
+                }
             }
         };
 
