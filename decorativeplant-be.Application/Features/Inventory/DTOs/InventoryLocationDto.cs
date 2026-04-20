@@ -12,6 +12,7 @@ public class InventoryLocationDto
     public string? Type { get; set; } // e.g. Warehouse, Zone, Shelf
     public string? Description { get; set; }
     public int? Capacity { get; set; }
+    public int? CurrentOccupancy { get; set; }
     public string? EnvironmentType { get; set; }
     public double? PositionX { get; set; }
     public double? PositionY { get; set; }
