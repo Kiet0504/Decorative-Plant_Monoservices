@@ -62,6 +62,19 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
                 "Gemini API key is not configured. Set AiDiagnosis:GeminiApiKey for ephemeral Live tokens.");
         }
 
+        // Known upstream bug (Google AI dev forum, 2026): new-format API keys that
+        // start with "AQ." return 400 INVALID_ARGUMENT on POST /v1alpha/auth_tokens.
+        // The workaround is a legacy "AIzaSy..." key from Google AI Studio. Warn up-front
+        // so the failure doesn't look like a body/model problem.
+        if (apiKey.StartsWith("AQ.", StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "AiDiagnosis:GeminiApiKey appears to be a new-format AQ.* key. " +
+                "Google's /v1alpha/auth_tokens endpoint currently rejects AQ.* keys with " +
+                "INVALID_ARGUMENT (known issue). Generate a legacy AIzaSy* key in Google AI Studio " +
+                "and set that as the Live-token key.");
+        }
+
         var session = await _db.ArPreviewSessions.AsNoTracking()
             .FirstOrDefaultAsync(s => s.Id == arSessionId, cancellationToken);
 
@@ -93,7 +106,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         // Live ephemeral tokens must pin the Live model (see google-genai CreateAuthTokenConfig + LiveEphemeralParameters).
         // Without this, auth_tokens often returns 400 INVALID_ARGUMENT for Live-only keys.
         var liveModelRaw = string.IsNullOrWhiteSpace(_live.LiveModel)
-            ? "gemini-live-2.5-flash-preview"
+            ? "gemini-3.1-flash-live-preview"
             : _live.LiveModel.Trim();
         var modelResource = liveModelRaw.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
             ? liveModelRaw
@@ -192,7 +205,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ExpireTimeUtc = exp,
             NewSessionExpireTimeUtc = nsExp,
             LiveModel = string.IsNullOrWhiteSpace(_live.LiveModel)
-                ? "gemini-live-2.5-flash-preview"
+                ? "gemini-3.1-flash-live-preview"
                 : _live.LiveModel.Trim(),
             VoiceName = voice,
             SystemInstruction = systemInstruction
@@ -249,7 +262,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             (int)response1.StatusCode,
             raw.Length > 2000 ? raw[..2000] + "…" : raw,
             bodyJson);
-        ThrowTokenError(response1, raw, apiVer);
+        ThrowTokenError(response1, raw, apiVer, apiKey);
         throw new UnreachableException();
     }
 
@@ -313,7 +326,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
     }
 
     [DoesNotReturn]
-    private static void ThrowTokenError(HttpResponseMessage response, string raw, string apiVer)
+    private static void ThrowTokenError(HttpResponseMessage response, string raw, string apiVer, string apiKey)
     {
         var detail = TryExtractGoogleErrorMessage(raw);
         var status = (int)response.StatusCode;
@@ -331,6 +344,17 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         {
             hint =
                 $"HTTP {status} {reason} ({apiVer}). Empty body — confirm AiDiagnosis:GeminiApiKey, server outbound HTTPS to generativelanguage.googleapis.com, and API restrictions on the key.";
+        }
+
+        // Append the most common real-world cause for this specific endpoint:
+        // new-format AQ.* API keys are currently rejected by auth_tokens on v1alpha.
+        if (response.StatusCode == HttpStatusCode.BadRequest
+            && apiKey.StartsWith("AQ.", StringComparison.Ordinal))
+        {
+            hint +=
+                " (Your GeminiApiKey starts with \"AQ.\" — new-format API keys are currently not accepted by " +
+                "POST /v1alpha/auth_tokens. Generate a legacy \"AIzaSy...\" key in Google AI Studio and use that " +
+                "for AiDiagnosis:GeminiApiKey.)";
         }
 
         throw new ValidationException($"Could not create a Live session token. {hint}");
