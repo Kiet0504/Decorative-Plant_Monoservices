@@ -33,6 +33,12 @@ public class UpdateStaffAssignmentCommandHandler : IRequestHandler<UpdateStaffAs
             throw new NotFoundException(nameof(Domain.Entities.StaffAssignment), request.StaffAssignmentId);
         }
 
+        if (staffAssignment.BranchId != request.BranchId)
+        {
+            throw new InvalidOperationException(
+                "This staff assignment does not belong to the branch in the request URL.");
+        }
+
         // 1b. Validate branch_manager can only update staff within their own branch
         if (StaffRoleNormalizer.IsBranchManager(request.CurrentUserRole))
         {
@@ -69,8 +75,8 @@ public class UpdateStaffAssignmentCommandHandler : IRequestHandler<UpdateStaffAs
             }
         }
 
-        // 3. Update Position, IsPrimary
-        staffAssignment.Position = request.Position;
+        // 3. Update Position (keep aligned with role for branch staff), IsPrimary
+        staffAssignment.Position = string.IsNullOrWhiteSpace(request.Position) ? roleNorm : request.Position;
         staffAssignment.IsPrimary = request.IsPrimary;
 
         // 4. Rebuild Permissions JsonDocument entirely
@@ -85,7 +91,10 @@ public class UpdateStaffAssignmentCommandHandler : IRequestHandler<UpdateStaffAs
         // 5. SaveChangesAsync → return ToDto
         await _context.SaveChangesAsync(cancellationToken);
 
-        return staffAssignment.ToDto(staffAssignment.Staff.Email, staffAssignment.Branch.Name);
+        return staffAssignment.ToDto(
+            staffAssignment.Staff.Email,
+            staffAssignment.Branch.Name,
+            staffAssignment.Staff.DisplayName);
     }
 
     private static void ValidateRoleAssignmentPermissions(string currentUserRoleNorm, string roleToAssignNorm)
