@@ -50,6 +50,14 @@ public class ArPreviewController : BaseController
         return Ok(ApiResponse<ProductModelAssetResponse>.SuccessResponse(result));
     }
 
+    [HttpGet("models")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,cultivation_staff,fulfillment_staff,Staff,staff")]
+    public async Task<IActionResult> GetAllModels()
+    {
+        var results = await Mediator.Send(new GetAllProductModelAssetsQuery());
+        return Ok(ApiResponse<List<ProductModelAssetListItemResponse>>.SuccessResponse(results));
+    }
+
     [HttpPost("models/upload")]
     [Authorize(Roles = "admin,store_staff,branch_manager,cultivation_staff,fulfillment_staff,Staff,staff")]
     [Consumes("multipart/form-data")]
