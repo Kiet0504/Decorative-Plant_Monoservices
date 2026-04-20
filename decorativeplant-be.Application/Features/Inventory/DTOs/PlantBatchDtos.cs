@@ -44,6 +44,9 @@ public class PlantBatchDto
     public decimal? PurchaseCost { get; set; }
     public string? ImageUrl { get; set; }
     public DateTime? CreatedAt { get; set; }
+    public Guid? LocationId { get; set; }
+    public string? LocationName { get; set; }
+    public string? CategoryName { get; set; }
 }
 
 public class PlantBatchSummaryDto
@@ -100,4 +103,5 @@ public class UpdatePlantBatchDto
     public Dictionary<string, object>? SourceInfo { get; set; }
     public Dictionary<string, object>? Specs { get; set; }
     public decimal? PurchaseCost { get; set; }
+    public Guid? LocationId { get; set; }
 }

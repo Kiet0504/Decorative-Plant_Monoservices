@@ -34,8 +34,9 @@ public class GetPlantBatchQueryHandler : IRequestHandler<GetPlantBatchQuery, Pla
         // 1. Taxonomy
         if (entity.TaxonomyId.HasValue && entity.Taxonomy == null)
         {
-            var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
-            entity.Taxonomy = await taxRepo.GetByIdAsync(entity.TaxonomyId.Value, cancellationToken);
+            entity.Taxonomy = await _context.PlantTaxonomies
+                .Include(t => t.Category)
+                .FirstOrDefaultAsync(t => t.Id == entity.TaxonomyId.Value, cancellationToken);
         }
         
         // 2. Supplier

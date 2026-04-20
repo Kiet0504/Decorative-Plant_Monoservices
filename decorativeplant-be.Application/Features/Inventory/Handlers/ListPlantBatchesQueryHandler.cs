@@ -60,6 +60,17 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
              filter = Expression.Lambda<Func<PlantBatch, bool>>(body, param);
         }
 
+        List<Guid?> batchIdsInLocation = null;
+        if (request.LocationId.HasValue)
+        {
+             var lid = request.LocationId.Value;
+             batchIdsInLocation = await _context.BatchStocks
+                 .Where(bs => bs.LocationId == lid)
+                 .Select(bs => bs.BatchId)
+                 .Distinct()
+                 .ToListAsync(cancellationToken);
+        }
+
         if (!string.IsNullOrEmpty(request.SearchTerm))
         {
             var term = request.SearchTerm.ToLower();
@@ -81,6 +92,12 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
         var items = await repo.FindAsync(filter, cancellationToken);
         
         IEnumerable<PlantBatch> filteredItems = items;
+        
+        if (batchIdsInLocation != null)
+        {
+            filteredItems = filteredItems.Where(x => batchIdsInLocation.Contains(x.Id)).ToList();
+            totalCount = filteredItems.Count();
+        }
         
         // Apply Health Status Filter (In-memory for JSONB field)
         if (!string.IsNullOrEmpty(request.HealthStatus) && request.HealthStatus != "All Status")
@@ -122,7 +139,9 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
         {
             if (item.TaxonomyId.HasValue && item.Taxonomy == null)
             {
-                item.Taxonomy = await taxRepo.GetByIdAsync(item.TaxonomyId.Value, cancellationToken);
+                item.Taxonomy = await _context.PlantTaxonomies
+                    .Include(t => t.Category)
+                    .FirstOrDefaultAsync(t => t.Id == item.TaxonomyId.Value, cancellationToken);
             }
 
             if (item.BranchId.HasValue && item.Branch == null)

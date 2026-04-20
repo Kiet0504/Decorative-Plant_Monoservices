@@ -23,7 +23,10 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
         var details = new
         {
             description = request.Description,
-            capacity = request.Capacity
+            capacity = request.Capacity,
+            environment_type = request.EnvironmentType?.Trim(),
+            position_x = request.PositionX,
+            position_y = request.PositionY
         };
 
         var entity = new InventoryLocation
@@ -50,7 +53,10 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
             Name = entity.Name,
             Type = entity.Type,
             Description = request.Description,
-            Capacity = request.Capacity
+            Capacity = request.Capacity,
+            EnvironmentType = request.EnvironmentType,
+            PositionX = request.PositionX,
+            PositionY = request.PositionY
         };
     }
 }

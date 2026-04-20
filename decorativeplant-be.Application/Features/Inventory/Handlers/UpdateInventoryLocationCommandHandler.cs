@@ -37,7 +37,10 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
         var detailsObj = new
         {
             description = request.Description,
-            capacity = request.Capacity
+            capacity = request.Capacity,
+            environment_type = request.EnvironmentType?.Trim(),
+            position_x = request.PositionX,
+            position_y = request.PositionY
         };
         location.Details = JsonSerializer.SerializeToDocument(detailsObj);
 
@@ -53,7 +56,10 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
             Name = location.Name,
             Type = location.Type,
             Description = request.Description,
-            Capacity = request.Capacity
+            Capacity = request.Capacity,
+            EnvironmentType = request.EnvironmentType,
+            PositionX = request.PositionX,
+            PositionY = request.PositionY
         };
     }
 }

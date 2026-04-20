@@ -30,4 +30,6 @@ public class UpdatePlantBatchCommand : IRequest<PlantBatchDto>
     
     [JsonPropertyName("total_received")]
     public int? TotalReceived { get; set; }
+    
+    public Guid? LocationId { get; set; }
 }
