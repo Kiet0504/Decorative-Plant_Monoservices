@@ -13,6 +13,14 @@ public class ProductReviewsController : BaseController
 {
     private Guid GetUserId() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? throw new UnauthorizedAccessException());
 
+    [HttpGet]
+    [Authorize(Roles = "admin")]
+    public async Task<IActionResult> GetAll([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    {
+        var result = await Mediator.Send(new GetAllReviewsQuery { Page = page, PageSize = pageSize });
+        return Ok(ApiResponse<PagedResult<ProductReviewResponse>>.SuccessResponse(result));
+    }
+
     [HttpGet("listing/{listingId:guid}")]
     public async Task<IActionResult> GetByListing(Guid listingId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
     {

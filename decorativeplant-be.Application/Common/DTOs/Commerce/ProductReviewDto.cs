@@ -29,6 +29,8 @@ public class ProductReviewResponse
     public string Status { get; set; } = "pending";
     public List<ReviewImageDto> Images { get; set; } = new();
     public DateTime? CreatedAt { get; set; }
+    public string? UserName { get; set; }
+    public string? ProductName { get; set; }
 }
 
 public class ReviewImageDto
