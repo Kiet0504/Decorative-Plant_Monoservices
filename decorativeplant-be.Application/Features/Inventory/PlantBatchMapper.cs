@@ -46,8 +46,26 @@ public static class PlantBatchMapper
             CurrentTotalQuantity = entity.CurrentTotalQuantity ?? 0,
             PurchaseCost = ExtractSourceCost(entity.SourceInfo),
             ImageUrl = entity.Taxonomy?.ImageUrl,
-            CreatedAt = entity.CreatedAt
+            CreatedAt = entity.CreatedAt,
+            CategoryName = entity.Taxonomy?.Category?.Slug ?? entity.Taxonomy?.Category?.Name
         };
+
+        // Populate Location Info from first non-sales stock
+        var primaryStock = entity.BatchStocks?.FirstOrDefault(bs => 
+            bs.Location?.Type != "Sales" && bs.Location?.Type != "Storefront");
+        
+        if (primaryStock != null)
+        {
+            dto.LocationId = primaryStock.LocationId;
+            dto.LocationName = primaryStock.Location?.Name;
+        }
+        else if (entity.BatchStocks != null && entity.BatchStocks.Any())
+        {
+            // Fallback to first stock if no non-sales stock found
+            var fallback = entity.BatchStocks.First();
+            dto.LocationId = fallback.LocationId;
+            dto.LocationName = fallback.Location?.Name;
+        }
 
         // Populate Aggregate Stock Fields
         if (entity.BatchStocks != null && entity.BatchStocks.Any())

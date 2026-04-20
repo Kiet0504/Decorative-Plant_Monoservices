@@ -25,6 +25,7 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
                 .ThenInclude(bs => bs.Location)
             .Include(b => b.ProductListings)
             .Include(b => b.Taxonomy)
+                .ThenInclude(t => t!.Category)
             .Include(b => b.Branch)
             .Include(b => b.Supplier)
             .Include(b => b.ParentBatch) // Fix: Include parent batch to preserve lineage info in response
@@ -182,6 +183,28 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
             
         if (request.Specs != null)
             entity.Specs = PlantBatchMapper.BuildJson(request.Specs);
+
+        // 3. Update primary location if provided
+        if (request.LocationId.HasValue && entity.BatchStocks != null)
+        {
+            var primaryStock = entity.BatchStocks.FirstOrDefault(bs => 
+                bs.Location?.Type != "Sales" && bs.Location?.Type != "Storefront");
+            
+            if (primaryStock != null)
+            {
+                primaryStock.LocationId = request.LocationId.Value;
+                primaryStock.UpdatedAt = DateTime.UtcNow;
+            }
+            else if (entity.BatchStocks.Any())
+            {
+                // Fallback: If for some reason we don't have a non-sales stock yet, 
+                // we should either update the first one or create one. 
+                // In most cases, existing plants in cultivation will have a non-sales stock.
+                var first = entity.BatchStocks.First();
+                first.LocationId = request.LocationId.Value;
+                first.UpdatedAt = DateTime.UtcNow;
+            }
+        }
 
         await _context.SaveChangesAsync(cancellationToken);
 

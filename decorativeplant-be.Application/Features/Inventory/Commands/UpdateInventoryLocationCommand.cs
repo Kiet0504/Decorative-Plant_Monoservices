@@ -12,4 +12,7 @@ public class UpdateInventoryLocationCommand : IRequest<InventoryLocationDto>
     public string Type { get; set; } = "Shelf";
     public string? Description { get; set; }
     public int? Capacity { get; set; }
+    public string? EnvironmentType { get; set; }
+    public double? PositionX { get; set; }
+    public double? PositionY { get; set; }
 }

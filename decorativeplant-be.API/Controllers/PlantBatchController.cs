@@ -60,6 +60,7 @@ public class PlantBatchController : BaseController
         [FromQuery] Guid? taxonomyId = null,
         [FromQuery] Guid? supplierId = null,
         [FromQuery] Guid? branchId = null,
+        [FromQuery] Guid? locationId = null,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20)
     {
@@ -71,6 +72,7 @@ public class PlantBatchController : BaseController
             TaxonomyId = taxonomyId,
             SupplierId = supplierId,
             BranchId = branchId,
+            LocationId = locationId,
             Page = page, 
             PageSize = pageSize 
         };
