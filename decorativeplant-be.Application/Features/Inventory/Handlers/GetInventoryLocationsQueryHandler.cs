@@ -41,14 +41,18 @@ public class GetInventoryLocationsQueryHandler : IRequestHandler<GetInventoryLoc
             Type = l.Type,
             Description = l.Details?.RootElement.TryGetProperty("description", out var desc) == true ? desc.GetString() : null,
             Capacity = l.Details?.RootElement.TryGetProperty("capacity", out var cap) == true && cap.TryGetInt32(out var capVal) ? capVal : null,
-            CurrentOccupancy = l.BatchStocks.Sum(bs => 
-                bs.Quantities?.RootElement.TryGetProperty("quantity", out var q) == true && q.TryGetInt32(out var qVal) ? qVal : 0
-            ),
+            CurrentOccupancy = l.BatchStocks
+                .Where(bs => bs.Batch != null && bs.Batch.BranchId == l.BranchId)
+                .GroupBy(bs => bs.BatchId)
+                .Select(g => g.First())
+                .Sum(bs => bs.Batch!.CurrentTotalQuantity ?? 0),
             EnvironmentType = l.Details?.RootElement.TryGetProperty("environment_type", out var env) == true ? env.GetString() : null,
             PositionX = l.Details?.RootElement.TryGetProperty("position_x", out var posX) == true && posX.TryGetDouble(out var posXVal) ? posXVal : null,
             PositionY = l.Details?.RootElement.TryGetProperty("position_y", out var posY) == true && posY.TryGetDouble(out var posYVal) ? posYVal : null,
             HostedBatches = l.BatchStocks
-                .Where(bs => bs.Batch != null)
+                .GroupBy(bs => bs.BatchId)
+                .Select(g => g.First())
+                .Where(bs => bs.Batch != null && bs.Batch.BranchId == l.BranchId)
                 .Select(bs => {
                     var taxonomy = bs.Batch!.Taxonomy;
                     string? speciesName = taxonomy?.ScientificName ?? "Unknown Species";
