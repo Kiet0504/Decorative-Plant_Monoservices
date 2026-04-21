@@ -40,7 +40,8 @@ public class AiChatController : BaseController
             RoomScanFollowUp = request.RoomScanFollowUp,
             ArSessionId = request.ArSessionId,
             ProductListingId = request.ProductListingId,
-            PlacementContextJson = request.PlacementContextJson
+            PlacementContextJson = request.PlacementContextJson,
+            UtcOffsetMinutes = request.UtcOffsetMinutes
         };
 
         var result = await Mediator.Send(command);

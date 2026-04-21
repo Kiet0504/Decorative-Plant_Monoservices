@@ -19,4 +19,6 @@ public sealed class SendAiChatMessageCommand : IRequest<AiChatReplyDto>
     public Guid? ProductListingId { get; set; }
 
     public string? PlacementContextJson { get; set; }
+
+    public int? UtcOffsetMinutes { get; set; }
 }

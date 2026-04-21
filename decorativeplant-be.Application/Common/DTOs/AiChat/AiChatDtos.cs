@@ -1,4 +1,5 @@
 using decorativeplant_be.Application.Common.DTOs.RoomScan;
+using decorativeplant_be.Application.Common.DTOs.Garden;
 
 namespace decorativeplant_be.Application.Common.DTOs.AiChat;
 
@@ -37,6 +38,12 @@ public sealed class AiChatRequestDto
 
     /// <summary>Optional client-only placement hints (JSON string) merged into prompts when session is missing fields.</summary>
     public string? PlacementContextJson { get; set; }
+
+    /// <summary>
+    /// Minutes to add to UTC to get the user's local time (same as <c>-new Date().getTimezoneOffset()</c> in JavaScript).
+    /// Used for snapping suggested schedules to morning/afternoon/evening in local time.
+    /// </summary>
+    public int? UtcOffsetMinutes { get; set; }
 }
 
 /// <summary>Context from a completed room scan so /ai/chat can refresh recommendations without re-uploading a photo.</summary>
@@ -67,6 +74,13 @@ public sealed class AiChatReplyDto
 
     /// <summary>Populated when the formal Gemini + Ollama diagnosis pipeline ran for this message.</summary>
     public AiChatDiagnosisSummaryDto? Diagnosis { get; set; }
+
+    /// <summary>
+    /// Optional care schedule suggestions for the focused garden plant.
+    /// Returned when the server believes a structured follow-up plan would help (e.g. after photo diagnosis).
+    /// Client may offer an "Accept" action to save these into the care calendar.
+    /// </summary>
+    public List<CareScheduleTaskInfoDto>? SuggestedSchedules { get; set; }
 
     /// <summary>Fresh catalog picks after a room-scan follow-up chat (e.g. user asked for other suggestions).</summary>
     public List<RoomScanRecommendationDto>? NewRecommendations { get; set; }
