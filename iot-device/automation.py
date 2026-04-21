@@ -72,14 +72,14 @@ class HardwareActions:
         1. Flat call: execute("turn_on_pump", 1)
         2. Nested DTO: execute("water_pump", "turn_on", {"duration": 5})
         """
-        if action_name in ["water_pump", "turn_on_pump", "water_now"]:
-            if _is_watering:
-                print("[Action] Device is currently watering. Command skipped.")
-                return False, "Already watering"
-
         success = False
         msg = ""
         try:
+            # 0. Neu action_value la dictionary (do bam nut thu cong tren Web)
+            if isinstance(action_value, dict):
+                params = action_value.get("params") or params
+                action_value = action_value.get("value")
+
             # Normalize action_value
             if isinstance(action_value, str):
                 try:
@@ -103,30 +103,35 @@ class HardwareActions:
             # Neu nhan qua "value" ma lon hon 1 thi mac dinh do la duration (giay)
             if isinstance(action_value, (int, float)) and action_value > 1:
                 duration = action_value
+
+            if is_on and action_name in ["water_pump", "turn_on_pump", "water_now"]:
+                if _is_watering:
+                    print("[Action] Device is currently watering. Command skipped.")
+                    return False, "Already watering"
             
             if duration > 0:
                 is_on = True
 
             if is_on and action_name in ["turn_on_pump", "water_pump", "water_now"]:
-                if duration <= 0:
-                    duration = 5 
-                
                 # --- Tieng tit canh bao truoc khi tuoi (1.5s) ---
-                # Luu y: Do canh bao rat ngan nen tam thoi giu sleep (1.5s khong dang ke)
                 BUZZER_WATER.value(LEVEL_ON)
                 time.sleep(1.5)
                 BUZZER_WATER.value(LEVEL_OFF)
                 time.sleep(0.5)
 
-                print("[Action] Pump STARTING for {}s...".format(duration))
+                print("[Action] Pump STARTING...")
                 _is_watering = True
                 RELAY_PUMP.value(LEVEL_ON) 
                 
-                # Dat lich tat (Non-blocking)
-                _timed_actions[action_name] = time.time() + duration
-                
                 success = True
-                msg = "Pump turned ON (Scheduled for {}s)".format(duration)
+                msg = "Pump turned ON"
+
+                if duration > 0:
+                    # Neu co duration thi moi dat lich tu dong tat
+                    _timed_actions[action_name] = time.time() + duration
+                    msg += " (Scheduled for {}s)".format(duration)
+                else:
+                    msg += " (Continuous ON)"
                 
             elif is_on and action_name in ["fan", "motor", "cooling_fan"]:
                 # --- Tieng tit canh bao (1.5s) ---
@@ -261,7 +266,7 @@ def _save_cooldown_data(rule_id, timestamp):
         print("[Cooldown] Loi khi ghi file flash:", e)
 
 _load_cooldown_data()
-DEFAULT_COOLDOWN = 100 
+DEFAULT_COOLDOWN = 150 
 
 def is_time_synced():
     """Kiem tra xem gio da duoc dong bo (NTP) chua.
@@ -374,20 +379,29 @@ def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
     if not active_rules:
         return
         
+    now = time.time()
     # 1. Sap xep theo Priority (P1 uu tien cao nhat)
     sorted_rules = sorted(active_rules, key=lambda x: x.get('priority', 50))
     
-    print("[Engine] Checking {} rules (sorted by priority)...".format(len(sorted_rules)))
+    print("[Engine] Checking {} rules (Time: {})...".format(len(sorted_rules), now))
     
     # 2. Danh sach cac actuator da duoc dieu khien trong loop nay
     executed_actuators = set()
     
     for rule in sorted_rules:
         rule_name = rule.get('name', 'Unknown')
+        rule_id = rule.get("id", "0000")
+        
+        # 0. Kiem tra Thoi gian nghi (Cooldown)
+        last_run = last_run_execution.get(rule_id, 0)
+        # Neu now < last_run thi chung to mach vua reset gio, ta cho phep chay luon
+        if now > last_run and (now - last_run < DEFAULT_COOLDOWN):
+            # print("  -> Rule [{}] is cooling down ({}s left)".format(rule_name, DEFAULT_COOLDOWN - (now - last_run)))
+            continue
+
         conditions = rule.get("conditions", {}) or {}
         actions = rule.get("actions", {}) or {}
         schedule = rule.get("schedule", {}) or {}
-        rule_id = rule.get("id", "0000")
         
         should_run_time, is_scheduled = check_schedule(rule_id, schedule)
         if not should_run_time:
@@ -417,11 +431,12 @@ def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
             else: 
                 match = True
                 for r in rules_list:
-                    if not _check_single_condition(r, sensor_data):
+                    res = _check_single_condition(r, sensor_data)
+                    if not res:
                         match = False
                         break
                 
-        # Xac dinh tinh hop le
+        # print("  -> Rule [{}]: Match={}, Scheduled={}".format(rule_name, match, is_scheduled))
         is_valid = False
         if is_scheduled and match:
             is_valid = True
@@ -442,6 +457,10 @@ def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
         # 3. Thuc thi neu Hop le
         if is_valid and action_list:
             print("[Automation] Rule [{}] triggered!".format(rule_name))
+            
+            # Ghi thoi gian chay vao Flash mot lan duy nhat cho Rule nay
+            _save_cooldown_data(rule_id, now)
+            
             for a in action_list:
                 comp = a.get("component") or a.get("target_component_key")
                 cmd = a.get("command") or a.get("action_type")
@@ -450,10 +469,8 @@ def evaluate_and_run(sensor_data, active_rules, mqtt_client=None):
                 
                 # KIEM TRA KHOA THIET BI (LOCKING)
                 if comp in executed_actuators:
-                    print("  -> Skip action [{}] cua Rule [{}] vi da bi khoa boi Rule uu tien cao hon".format(comp, rule_name))
                     continue
                 
-                _save_cooldown_data(rule_id, time.time())
                 succ, msg = HardwareActions.execute(comp, val, params, mqtt_client)
                 executed_actuators.add(comp)
                 send_execution_log(rule_id, comp, succ, msg)
