@@ -29,6 +29,25 @@ public class GetIotDeviceByIdQueryHandler : IRequestHandler<GetIotDeviceByIdQuer
             return null;
         }
 
+        bool isAutomationEnabled = true;
+        if (device.DeviceInfo != null)
+        {
+            try
+            {
+                if (device.DeviceInfo.RootElement.TryGetProperty("isAutomationEnabled", out var autoProp))
+                {
+                    isAutomationEnabled = autoProp.ValueKind == JsonValueKind.True || 
+                                          (autoProp.ValueKind == JsonValueKind.False ? false : true);
+                    
+                    if (autoProp.ValueKind == JsonValueKind.String)
+                    {
+                        isAutomationEnabled = !string.Equals(autoProp.GetString(), "false", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
+            catch { }
+        }
+
         return new IotDeviceDto
         {
             Id = device.Id,
@@ -42,6 +61,20 @@ public class GetIotDeviceByIdQueryHandler : IRequestHandler<GetIotDeviceByIdQuer
             Status = device.Status,
             ActivityLog = device.ActivityLog,
             Components = device.Components,
+            IsAutomationEnabled = isAutomationEnabled,
+            AutomationRules = (device.AutomationRules ?? new List<decorativeplant_be.Domain.Entities.AutomationRule>()).Select(r => new AutomationRuleDto
+            {
+                Id = r.Id,
+                DeviceId = r.DeviceId,
+                Name = r.Name,
+                Priority = r.Priority,
+                IsActive = r.IsActive,
+                Schedule = r.Schedule,
+                Conditions = r.Conditions,
+                Actions = r.Actions,
+                BranchId = device.BranchId,
+                CreatedAt = r.CreatedAt
+            }),
             LatestReadings = readings.Select(r => new SensorReadingDto
             {
                 Id = r.Id,
