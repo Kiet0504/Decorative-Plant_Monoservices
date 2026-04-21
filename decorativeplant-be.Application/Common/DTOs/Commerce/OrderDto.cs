@@ -82,12 +82,22 @@ public class OrderResponse
     public string? CarrierName { get; set; }
     public OrderFinancialsDto? Financials { get; set; }
     public DeliveryAddressDto? DeliveryAddress { get; set; }
+    public PickupInfoDto? PickupInfo { get; set; }
     public string? CustomerNote { get; set; }
     public DateTime? CreatedAt { get; set; }
     public DateTime? ConfirmedAt { get; set; }
     public Guid? AssignedStaffId { get; set; }
     public string? AssignedStaffName { get; set; }
     public List<OrderItemResponse> Items { get; set; } = new();
+}
+
+public class PickupInfoDto
+{
+    public string? BranchId { get; set; }
+    public string? BranchName { get; set; }
+    public string? CustomerName { get; set; }
+    public string? CustomerPhone { get; set; }
+    public string? CustomerEmail { get; set; }
 }
 
 public class OrderItemResponse
@@ -125,4 +135,27 @@ public class DeliveryAddressDto
 public class ManualAssignRequest
 {
     public Guid StaffId { get; set; }
+}
+
+public class CreateBopisImmediateRequest
+{
+    public Guid PickupBranchId { get; set; }
+    public string? CustomerName { get; set; }
+    public string? CustomerPhone { get; set; }
+    public string? CustomerEmail { get; set; }
+    public Guid? CustomerUserId { get; set; }
+    public string PaymentMethod { get; set; } = "cash"; // cash|qr_code
+    public string? VoucherCode { get; set; }
+    public List<CreateBopisImmediateItemRequest> Items { get; set; } = new();
+}
+
+public class CreateBopisImmediateItemRequest
+{
+    public Guid ListingId { get; set; }
+    public int Quantity { get; set; }
+}
+
+public class CompleteOrderRequest
+{
+    public string? CompletionNote { get; set; }
 }
