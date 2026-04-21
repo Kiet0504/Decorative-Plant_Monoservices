@@ -17,6 +17,12 @@ public sealed class AiLiveSettings
     public string? VoiceName { get; set; }
 
     /// <summary>
+    /// Max number of "uses" granted to a minted ephemeral token.
+    /// Too-low values can cause the Live WebSocket to open then immediately close during setup.
+    /// </summary>
+    public int AuthTokenUses { get; set; } = 128;
+
+    /// <summary>
     /// Preferred REST segment for <c>POST …/auth_tokens</c> (typically <c>v1alpha</c>; discovery lists this method there).
     /// The service retries the <i>other</i> version automatically on HTTP 404.
     /// </summary>

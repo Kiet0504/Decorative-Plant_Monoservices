@@ -122,9 +122,13 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         // so we omit them and let the server default. tokens.py then
         // `_convert_bidi_setup_to_token_setup` UNWRAPS `setup` before posting, so the C#
         // body is already in the un-wrapped shape.
+        var uses = _live.AuthTokenUses;
+        if (uses < 2) uses = 2;
+        if (uses > 4096) uses = 4096;
+
         var bodyCamel = new Dictionary<string, object?>
         {
-            ["uses"] = 2,
+            ["uses"] = uses,
             ["bidiGenerateContentSetup"] = new Dictionary<string, object?>
             {
                 ["model"] = modelResource,

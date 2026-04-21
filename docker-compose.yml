@@ -99,6 +99,7 @@ services:
       - AiLive__Enabled=${AiLive__Enabled:-true}
       - AiLive__LiveModel=${AiLive__LiveModel:-gemini-3.1-flash-live-preview}
       - AiLive__VoiceName=${AiLive__VoiceName:-}
+      - AiLive__AuthTokenUses=${AiLive__AuthTokenUses:-128}
       - AiLive__AuthTokensApiVersion=${AiLive__AuthTokensApiVersion:-v1alpha}
       # When true, all IOllamaClient traffic and room-scan Ollama fallbacks use Gemini (requires AiDiagnosis__GeminiApiKey)
       - AiRouting__UseGeminiOnly=${AiRouting__UseGeminiOnly:-false}

@@ -27,3 +27,32 @@ public sealed class GeminiLiveTokenResponseDto
     /// <summary>System instruction text for <c>LiveConfig.systemInstruction</c>.</summary>
     public string SystemInstruction { get; set; } = string.Empty;
 }
+
+/// <summary>
+/// Client-side telemetry uploaded by the Flutter app when the Gemini Live
+/// WebSocket fails (handshake, instant close, unexpected error). Surfaces on
+/// the server logs so Android logcat is not the only diagnostic channel.
+/// </summary>
+public sealed class AiLiveClientLogRequestDto
+{
+    /// <summary>Short tag, e.g. <c>ws_closed</c>, <c>connect_error</c>, <c>setup_error</c>.</summary>
+    public string EventType { get; set; } = "ws_closed";
+
+    /// <summary>WebSocket close code (RFC 6455), when known.</summary>
+    public int? Code { get; set; }
+
+    /// <summary>WebSocket close reason text from the server, when known.</summary>
+    public string? Reason { get; set; }
+
+    /// <summary>AR preview session id tied to the failed Live attempt.</summary>
+    public Guid? ArSessionId { get; set; }
+
+    /// <summary>Product listing under discussion during the failed attempt.</summary>
+    public Guid? ProductListingId { get; set; }
+
+    /// <summary>Free-form message / Dart exception toString (will be truncated).</summary>
+    public string? Message { get; set; }
+
+    /// <summary>Dart runtime type of the error, when relevant.</summary>
+    public string? ExceptionType { get; set; }
+}

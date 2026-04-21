@@ -45,13 +45,12 @@ public class OrdersController : BaseController
         {
             // Fulfillment staff only see orders assigned to themselves
             assignedStaffId = GetUserId();
-            if (!effectiveBranchId.HasValue)
-            {
-                effectiveBranchId = await context.StaffAssignments
-                    .Where(s => s.StaffId == assignedStaffId && s.IsPrimary)
-                    .Select(s => (Guid?)s.BranchId)
-                    .FirstOrDefaultAsync();
-            }
+            // Ignore client-provided branchId to prevent stale/incorrect FE profile data
+            // from hiding assigned orders. Branch scope is derived server-side.
+            effectiveBranchId = await context.StaffAssignments
+                .Where(s => s.StaffId == assignedStaffId && s.IsPrimary)
+                .Select(s => (Guid?)s.BranchId)
+                .FirstOrDefaultAsync();
         }
         else if (isStaff)
         {
@@ -430,12 +429,12 @@ public class OrdersController : BaseController
     // Note: `confirmed` (Đã xác nhận) is set by the staff confirm action or payment success, not by any GHN state.
     private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
     {
-        "ready_to_pick" or "picking"                                                             => "processing",
-        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail"  => "shipping",
-        "delivered"                                                                              => "delivered",
-        "waiting_to_return" or "return" or "returned"                                            => "returned",
-        "cancel" or "lost"                                                                       => "cancelled",
-        _                                                                                        => null,
+        "ready_to_pick" or "picking" => "processing",
+        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail" => "shipping",
+        "delivered" => "delivered",
+        "waiting_to_return" or "return" or "returned" => "returned",
+        "cancel" or "lost" => "cancelled",
+        _ => null,
     };
 
     [HttpPost]
@@ -581,8 +580,8 @@ public class OrdersController : BaseController
                     reason: payload.Description ?? payload.Status);
 
             // COD settlement: when the shipper marks the parcel delivered and this is a
-            // COD order, insert a one-time PaymentTransaction so the order is recorded as
-            // paid. Guarded by payment_method and a dedupe check — GHN retries the webhook.
+            // COD order, update the existing pending PaymentTransaction to "success".
+            // Falls back to creating a new record for legacy orders without one.
             if (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered)
             {
                 var isCod = order.TypeInfo != null
@@ -598,26 +597,62 @@ public class OrdersController : BaseController
                     {
                         var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var tot) == true
                             ? tot.GetString() ?? "0" : "0";
-                        var codTx = new PaymentTransaction
+
+                        // Try to find and update the pending COD record created at order time
+                        var pendingCodTx = await context.PaymentTransactions
+                            .Where(p => p.OrderId == order.Id && p.Details != null)
+                            .ToListAsync();
+                        var existingPending = pendingCodTx.FirstOrDefault(p =>
                         {
-                            Id = Guid.NewGuid(),
-                            OrderId = order.Id,
-                            TransactionCode = $"COD-{Guid.NewGuid().ToString()[..8].ToUpper()}",
-                            Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                            var root = p.Details!.RootElement;
+                            var method = root.TryGetProperty("method", out var m) ? m.GetString() : null;
+                            var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
+                            return string.Equals(method, "cod", StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase);
+                        });
+
+                        if (existingPending != null)
+                        {
+                            // Update existing pending → cod_picked_up
+                            var details = new Dictionary<string, object?>();
+                            foreach (var prop in existingPending.Details!.RootElement.EnumerateObject())
                             {
-                                provider = "cash",
-                                method = "cod",
-                                type = "payment",
-                                amount = totalStr,
-                                status = "success",
-                                external_id = payload.OrderCode,
-                                collected_at = DateTime.UtcNow
-                            })),
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        context.PaymentTransactions.Add(codTx);
-                        logger.LogInformation("GHN webhook: recorded COD settlement for order {OrderId} amount {Amount}.",
-                            order.Id, totalStr);
+                                if (prop.Name == "order_ids")
+                                    details[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
+                                else
+                                    details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+                            }
+                            details["status"] = "cod_picked_up";
+                            details["external_id"] = payload.OrderCode;
+                            details["picked_up_at"] = DateTime.UtcNow.ToString("o");
+                            existingPending.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
+                            logger.LogInformation("GHN webhook: updated pending COD PaymentTransaction to cod_picked_up for order {OrderId}.",
+                                order.Id);
+                        }
+                        else
+                        {
+                            // Fallback: create new record (legacy orders without pending record)
+                            var codTx = new PaymentTransaction
+                            {
+                                Id = Guid.NewGuid(),
+                                OrderId = order.Id,
+                                TransactionCode = $"COD-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                                Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                                {
+                                    provider = "cash",
+                                    method = "cod",
+                                    type = "payment",
+                                    amount = totalStr,
+                                    status = "cod_picked_up",
+                                    external_id = payload.OrderCode,
+                                    picked_up_at = DateTime.UtcNow
+                                })),
+                                CreatedAt = DateTime.UtcNow
+                            };
+                            context.PaymentTransactions.Add(codTx);
+                            logger.LogInformation("GHN webhook: created COD settlement (cod_picked_up) for order {OrderId} amount {Amount}.",
+                                order.Id, totalStr);
+                        }
                     }
                 }
             }
@@ -784,8 +819,8 @@ public class OrdersController : BaseController
     private static string? MapGhtkStatusToOrderStatus(int statusId) => statusId switch
     {
         -1 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Cancelled, // hủy đơn
-        1  => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Pending,    // chưa tiếp nhận
-        2  => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,  // đã tiếp nhận
+        1 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Pending,    // chưa tiếp nhận
+        2 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,  // đã tiếp nhận
         // picked / in warehouse / sorting → internal processing
         3 or 4 or 11 or 123 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Processing,
         5 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Shipping,    // đang giao
@@ -841,5 +876,43 @@ public class OrdersController : BaseController
             Request = request
         });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order marked as picked up"));
+    }
+
+    /// <summary>
+    /// Create a BOPIS immediate pickup order for in-store customers.
+    /// Supports cash payment (confirmed immediately) or QR code payment (pending until paid).
+    /// Includes voucher application and automatic stock reservation.
+    /// </summary>
+    [HttpPost("bopis-immediate")]
+    [Authorize(Roles = "store_staff,branch_manager,admin")]
+    public async Task<IActionResult> CreateBopisImmediate([FromBody] CreateBopisImmediateRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await Mediator.Send(new CreateBopisImmediateOrderCommand
+        {
+            StaffUserId = userId.Value,
+            Request = request
+        });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "BOPIS immediate order created successfully", 201));
+    }
+
+    /// <summary>
+    /// Complete a BOPIS order when customer receives items.
+    /// Transitions confirmed → completed and finalizes stock deduction.
+    /// </summary>
+    [HttpPost("{id:guid}/complete")]
+    [Authorize(Roles = "store_staff,branch_manager,admin")]
+    public async Task<IActionResult> CompleteOrder(Guid id, [FromBody] CompleteOrderRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await Mediator.Send(new CompleteOrderCommand
+        {
+            OrderId = id,
+            StaffUserId = userId.Value,
+            Request = request
+        });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order completed successfully"));
     }
 }

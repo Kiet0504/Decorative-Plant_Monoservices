@@ -21,6 +21,10 @@ public class PaymentResponse
     public string? CheckoutUrl { get; set; }
     public string? QrCode { get; set; }
     public DateTime? CreatedAt { get; set; }
+    public DateTime? CollectedAt { get; set; }
+    public string? CollectedBy { get; set; }
+    public DateTime? PickedUpAt { get; set; }
+    public string? PickedUpBy { get; set; }
 }
 
 /// <summary>
