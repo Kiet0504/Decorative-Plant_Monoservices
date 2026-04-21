@@ -227,6 +227,51 @@ public class BranchController : BaseController
         }
     }
 
+    /// <summary>Create or update a staff user account by email and assign them exclusively to this branch (admin or branch manager).</summary>
+    [HttpPost("{branchId:guid}/staff-accounts")]
+    [Authorize(Roles = "admin,branchManager,branch_manager")]
+    public async Task<ActionResult<BranchStaffAccountUserDto>> UpsertStaffAccount(
+        Guid branchId,
+        [FromBody] UpsertBranchStaffAccountBody body)
+    {
+        try
+        {
+            var currentUserRole = HttpContext.Items["CurrentRole"]?.ToString() ?? string.Empty;
+            var currentUserBranchId = HttpContext.Items["CurrentBranchId"] as Guid?;
+
+            var command = new UpsertBranchStaffAccountCommand
+            {
+                Email = body.Email,
+                FullName = body.FullName,
+                Phone = body.Phone,
+                Role = body.Role,
+                Password = body.Password,
+                BranchId = branchId,
+                CurrentUserRole = currentUserRole,
+                CurrentUserBranchId = currentUserBranchId,
+            };
+
+            var result = await Mediator.Send(command);
+            return Ok(result);
+        }
+        catch (NotFoundException ex)
+        {
+            return NotFound(Problem(detail: ex.Message, statusCode: 404));
+        }
+        catch (FluentValidation.ValidationException ex)
+        {
+            return BadRequest(new { errors = ex.Errors });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(Problem(detail: ex.Message, statusCode: 409));
+        }
+        catch (Exception)
+        {
+            return StatusCode(500, Problem("Unexpected error", statusCode: 500));
+        }
+    }
+
     [HttpPost("{branchId:guid}/staff")]
     [Authorize(Roles = "admin,branchManager,branch_manager")]
     public async Task<ActionResult<StaffAssignmentDto>> AssignStaff(Guid branchId, [FromBody] AssignStaffToBranchCommand command)
@@ -276,6 +321,7 @@ public class BranchController : BaseController
 
             var updatedCommand = command with
             {
+                BranchId = branchId,
                 StaffAssignmentId = assignmentId,
                 CurrentUserRole = currentUserRole,
                 CurrentUserBranchId = currentUserBranchId
@@ -313,6 +359,7 @@ public class BranchController : BaseController
 
             await Mediator.Send(new UnassignStaffFromBranchCommand
             {
+                BranchId = branchId,
                 StaffAssignmentId = assignmentId,
                 CurrentUserRole = currentUserRole,
                 CurrentUserId = currentUserId

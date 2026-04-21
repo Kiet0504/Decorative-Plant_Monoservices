@@ -17,6 +17,10 @@ namespace decorativeplant_be.Application.Features.Commerce.Returns.Handlers;
 
 public class CreateReturnRequestHandler : IRequestHandler<CreateReturnRequestCommand, ReturnRequestResponse>
 {
+    // Window measured from DeliveredAt. Beyond this, the buyer must contact support — we don't
+    // want indefinite return exposure on stock that may have already been restocked/aged out.
+    private const int ReturnWindowDays = 7;
+
     private readonly IApplicationDbContext _context;
     public CreateReturnRequestHandler(IApplicationDbContext context) => _context = context;
 
@@ -34,6 +38,14 @@ public class CreateReturnRequestHandler : IRequestHandler<CreateReturnRequestCom
 
         if (order.Status != OrderStatusMachine.Delivered && order.Status != OrderStatusMachine.Completed)
             throw new BadRequestException("Order must be delivered or completed to request a return.");
+
+        if (order.DeliveredAt is { } deliveredAt)
+        {
+            var deadline = deliveredAt.AddDays(ReturnWindowDays);
+            if (DateTime.UtcNow > deadline)
+                throw new BadRequestException(
+                    $"Return window has expired. Returns must be requested within {ReturnWindowDays} days of delivery.");
+        }
 
         var existing = await _context.ReturnRequests
             .AnyAsync(r => r.OrderId == req.OrderId && r.Status != "rejected", ct);
@@ -166,28 +178,34 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
                 // actual payout happens out-of-band.
                 if (status == "refunded" && order != null)
                 {
-                    var paidAmount = ResolvePaidAmount(order);
-                    if (paidAmount > 0)
+                    var paidAmount = await ResolveActuallyPaidAmount(_context, order, ct);
+                    if (paidAmount <= 0)
                     {
-                        _context.PaymentTransactions.Add(new PaymentTransaction
-                        {
-                            Id = Guid.NewGuid(),
-                            OrderId = order.Id,
-                            TransactionCode = $"REF-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
-                            Details = JsonDocument.Parse(JsonSerializer.Serialize(new
-                            {
-                                provider = "payos",
-                                type = "refund",
-                                amount = paidAmount.ToString("0", CultureInfo.InvariantCulture),
-                                status = "pending",
-                                reason = cmd.Request.ResolutionNote ?? "Return refunded",
-                                refunded_by = cmd.ActorUserId,
-                                source = "ReturnRequestRefunded",
-                                return_id = entity.Id,
-                            })),
-                            CreatedAt = DateTime.UtcNow,
-                        });
+                        // COD orders that were cancelled/returned before pickup never collected
+                        // money — refunding them would pay out cash the business never received.
+                        throw new BadRequestException(
+                            "Cannot mark this return as refunded: no completed payment found on the order (likely an unpaid COD). " +
+                            "Use 'approved' instead, which restores stock without triggering a payout.");
                     }
+
+                    _context.PaymentTransactions.Add(new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        TransactionCode = $"REF-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                        Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                        {
+                            provider = ResolveProvider(order),
+                            type = "refund",
+                            amount = paidAmount.ToString("0", CultureInfo.InvariantCulture),
+                            status = "pending",
+                            reason = cmd.Request.ResolutionNote ?? "Return refunded",
+                            refunded_by = cmd.ActorUserId,
+                            source = "ReturnRequestRefunded",
+                            return_id = entity.Id,
+                        })),
+                        CreatedAt = DateTime.UtcNow,
+                    });
                 }
 
                 await _context.SaveChangesAsync(ct);
@@ -203,14 +221,48 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
         return CreateReturnRequestHandler.MapToResponse(entity, order?.OrderCode);
     }
 
-    private static decimal ResolvePaidAmount(OrderHeader order)
+    /// <summary>
+    /// Only count money that actually settled on this order. We look at PaymentTransactions with
+    /// status=paid/completed and subtract any existing refund transactions — so unpaid COD orders
+    /// (no settled payment) return 0 and the caller refuses to open a refund payout.
+    /// </summary>
+    private static async Task<decimal> ResolveActuallyPaidAmount(
+        IApplicationDbContext context, OrderHeader order, CancellationToken ct)
     {
-        if (order.Financials == null) return 0;
-        var root = order.Financials.RootElement;
-        string? raw = null;
-        if (root.TryGetProperty("amount_paid", out var ap)) raw = ap.GetString();
-        else if (root.TryGetProperty("total", out var tt)) raw = tt.GetString();
-        return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0;
+        var payments = await context.PaymentTransactions
+            .Where(p => p.OrderId == order.Id && p.Details != null)
+            .ToListAsync(ct);
+
+        decimal paid = 0, refunded = 0;
+        foreach (var p in payments)
+        {
+            if (p.Details == null) continue;
+            var root = p.Details.RootElement;
+            var type = root.TryGetProperty("type", out var tEl) ? tEl.GetString() : null;
+            var status = root.TryGetProperty("status", out var sEl) ? sEl.GetString() : null;
+            var amount = root.TryGetProperty("amount", out var aEl) ? aEl.GetString() : null;
+            if (!decimal.TryParse(amount, NumberStyles.Any, CultureInfo.InvariantCulture, out var amt)) continue;
+
+            var isRefund = string.Equals(type, "refund", StringComparison.OrdinalIgnoreCase);
+            var settled = string.Equals(status, "paid", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase);
+
+            if (isRefund) refunded += amt;
+            else if (settled) paid += amt;
+        }
+
+        return Math.Max(0, paid - refunded);
+    }
+
+    private static string ResolveProvider(OrderHeader order)
+    {
+        if (order.TypeInfo != null
+            && order.TypeInfo.RootElement.TryGetProperty("payment_method", out var pm))
+        {
+            var v = (pm.GetString() ?? "").Trim().ToLowerInvariant();
+            if (v == "cod") return "offline";
+        }
+        return "payos";
     }
 }
 

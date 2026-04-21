@@ -12,6 +12,9 @@ public class UpdateStaffAssignmentCommandValidator : AbstractValidator<UpdateSta
         RuleFor(x => x.StaffAssignmentId)
             .NotEmpty().WithMessage("Staff Assignment ID is required.");
 
+        RuleFor(x => x.BranchId)
+            .NotEmpty().WithMessage("Branch ID is required.");
+
         RuleFor(x => x.Role)
             .NotEmpty().WithMessage("Role is required.")
             .Must(role => StaffRoleNormalizer.BranchAssignableRoles.Contains(StaffRoleNormalizer.Normalize(role)))

@@ -7,6 +7,8 @@ public class StaffAssignmentDto
     public Guid Id { get; set; }
     public Guid StaffId { get; set; }
     public string StaffEmail { get; set; } = string.Empty;
+    /// <summary>User display name at assignment time (from user_account.display_name).</summary>
+    public string? StaffDisplayName { get; set; }
     public Guid BranchId { get; set; }
     public string BranchName { get; set; } = string.Empty;
     public string? Position { get; set; }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -19,9 +20,15 @@ public class CreateVoucherHandler : IRequestHandler<CreateVoucherCommand, Vouche
     public async Task<VoucherResponse> Handle(CreateVoucherCommand cmd, CancellationToken ct)
     {
         var req = cmd.Request;
+        if (string.IsNullOrWhiteSpace(req.Code)) throw new BadRequestException("Voucher code is required.");
+        VoucherValidation.ValidateTypeAndValue(req.Type, req.Value);
+        VoucherValidation.ValidateNonNegativeAmount(req.MinOrder, nameof(req.MinOrder));
+        VoucherValidation.ValidateNonNegativeAmount(req.MaximumDiscount, nameof(req.MaximumDiscount));
+        VoucherValidation.ValidateDateRange(req.ValidFrom, req.ValidTo);
+
         var entity = new Voucher
         {
-            Id = Guid.NewGuid(), BranchId = req.BranchId, Code = req.Code, IsActive = true,
+            Id = Guid.NewGuid(), BranchId = req.BranchId, Code = req.Code.Trim().ToUpperInvariant(), IsActive = true,
             Info = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
                 name = req.Name, description = req.Description,
@@ -30,8 +37,12 @@ public class CreateVoucherHandler : IRequestHandler<CreateVoucherCommand, Vouche
             })),
             Rules = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
-                min_order_amount = req.MinOrder, usage_limit = req.UsageLimits,
-                applicable_products = req.ApplicableProducts, used_count = 0
+                min_order_amount = req.MinOrder,
+                maximum_discount = req.MaximumDiscount,
+                usage_limit = req.UsageLimits,
+                user_limit = req.UserLimit,
+                applicable_products = req.ApplicableProducts,
+                used_count = 0
             }))
         };
         _context.Vouchers.Add(entity);
@@ -56,9 +67,50 @@ public class CreateVoucherHandler : IRequestHandler<CreateVoucherCommand, Vouche
         {
             var root = e.Rules.RootElement;
             r.MinOrder = root.TryGetProperty("min_order_amount", out var mo) ? mo.GetString() : null;
-            r.UsageLimits = root.TryGetProperty("usage_limit", out var ul) ? ul.GetInt32() : null;
+            r.MaximumDiscount = root.TryGetProperty("maximum_discount", out var md) ? md.GetString() : null;
+            r.UsageLimits = root.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : null;
+            r.UserLimit = root.TryGetProperty("user_limit", out var uul) && uul.ValueKind == JsonValueKind.Number ? uul.GetInt32() : null;
+            r.UsageCount = root.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
+            if (root.TryGetProperty("applicable_products", out var ap) && ap.ValueKind == JsonValueKind.Array)
+            {
+                r.ApplicableProducts = ap.EnumerateArray()
+                    .Select(el => el.ValueKind == JsonValueKind.String && Guid.TryParse(el.GetString(), out var g) ? g : (Guid?)null)
+                    .Where(g => g.HasValue).Select(g => g!.Value).ToList();
+            }
         }
         return r;
+    }
+}
+
+internal static class VoucherValidation
+{
+    public static void ValidateTypeAndValue(string? type, string? value)
+    {
+        var t = (type ?? "").Trim().ToLowerInvariant();
+        if (t is not ("percentage" or "fixed_amount" or "free_shipping"))
+            throw new BadRequestException($"Invalid voucher type '{type}'. Expected percentage|fixed_amount|free_shipping.");
+
+        if (t == "free_shipping") return;
+
+        if (!decimal.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var v) || v < 0)
+            throw new BadRequestException("Voucher value must be a non-negative number.");
+
+        if (t == "percentage" && v > 100)
+            throw new BadRequestException("Percentage voucher value must be between 0 and 100.");
+    }
+
+    public static void ValidateNonNegativeAmount(string? raw, string field)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return;
+        if (!decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var v) || v < 0)
+            throw new BadRequestException($"{field} must be a non-negative number.");
+    }
+
+    public static void ValidateDateRange(string? from, string? to)
+    {
+        if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to)) return;
+        if (DateTime.TryParse(from, out var f) && DateTime.TryParse(to, out var t) && f > t)
+            throw new BadRequestException("validFrom must be on or before validTo.");
     }
 }
 
@@ -70,6 +122,17 @@ public class UpdateVoucherHandler : IRequestHandler<UpdateVoucherCommand, Vouche
     {
         var entity = await _context.Vouchers.FindAsync(new object[] { cmd.Id }, ct) ?? throw new NotFoundException($"Voucher {cmd.Id} not found.");
         var req = cmd.Request;
+
+        // Validate only fields that are being changed. For type/value we resolve the
+        // effective combination (old or new) so partial updates remain consistent.
+        var effectiveType = req.Type ?? (entity.Info?.RootElement.TryGetProperty("discount_type", out var et) == true ? et.GetString() : null);
+        var effectiveValue = req.Value ?? (entity.Info?.RootElement.TryGetProperty("discount_value", out var ev) == true ? ev.GetString() : null);
+        if (req.Type != null || req.Value != null)
+            VoucherValidation.ValidateTypeAndValue(effectiveType, effectiveValue);
+        VoucherValidation.ValidateNonNegativeAmount(req.MinOrder, nameof(req.MinOrder));
+        VoucherValidation.ValidateNonNegativeAmount(req.MaximumDiscount, nameof(req.MaximumDiscount));
+        VoucherValidation.ValidateDateRange(req.ValidFrom, req.ValidTo);
+
         if (req.IsActive.HasValue) entity.IsActive = req.IsActive.Value;
 
         var info = new Dictionary<string, object?>();
@@ -83,9 +146,24 @@ public class UpdateVoucherHandler : IRequestHandler<UpdateVoucherCommand, Vouche
         entity.Info = JsonDocument.Parse(JsonSerializer.Serialize(info));
 
         var rules = new Dictionary<string, object?>();
-        if (entity.Rules != null) foreach (var p in entity.Rules.RootElement.EnumerateObject()) rules[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+        if (entity.Rules != null)
+        {
+            foreach (var p in entity.Rules.RootElement.EnumerateObject())
+            {
+                rules[p.Name] = p.Value.ValueKind switch
+                {
+                    JsonValueKind.String => p.Value.GetString(),
+                    JsonValueKind.Number => p.Value.TryGetInt32(out var i) ? (object)i : p.Value.GetDouble(),
+                    JsonValueKind.Array => JsonSerializer.Deserialize<object?>(p.Value.GetRawText()),
+                    _ => p.Value.GetRawText()
+                };
+            }
+        }
         if (req.MinOrder != null) rules["min_order_amount"] = req.MinOrder;
+        if (req.MaximumDiscount != null) rules["maximum_discount"] = req.MaximumDiscount;
         if (req.UsageLimits.HasValue) rules["usage_limit"] = req.UsageLimits.Value;
+        if (req.UserLimit.HasValue) rules["user_limit"] = req.UserLimit.Value;
+        if (req.ApplicableProducts != null) rules["applicable_products"] = req.ApplicableProducts;
         entity.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
 
         await _context.SaveChangesAsync(ct);
