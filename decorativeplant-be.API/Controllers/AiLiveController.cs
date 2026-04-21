@@ -5,6 +5,7 @@ using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace decorativeplant_be.API.Controllers;
 
@@ -13,10 +14,14 @@ namespace decorativeplant_be.API.Controllers;
 public class AiLiveController : BaseController
 {
     private readonly IGeminiLiveEphemeralTokenService _tokens;
+    private readonly ILogger<AiLiveController> _logger;
 
-    public AiLiveController(IGeminiLiveEphemeralTokenService tokens)
+    public AiLiveController(
+        IGeminiLiveEphemeralTokenService tokens,
+        ILogger<AiLiveController> logger)
     {
         _tokens = tokens;
+        _logger = logger;
     }
 
     /// <summary>Mint a short-lived token and AR context for <c>googleai_dart</c> LiveClient.</summary>
@@ -50,5 +55,47 @@ public class AiLiveController : BaseController
         {
             return NotFound(ApiResponse<GeminiLiveTokenResponseDto>.ErrorResponse(ex.Message));
         }
+    }
+
+    /// <summary>
+    /// Client-telemetry sink: Flutter app posts Gemini Live WebSocket failures here so
+    /// they surface in server logs (Android logcat is noisy and hard to read on-device).
+    /// Intentionally <see cref="AllowAnonymousAttribute"/> so an expired ephemeral-token
+    /// session can still report its own death; no user data is stored.
+    /// </summary>
+    [HttpPost("client-log")]
+    [AllowAnonymous]
+    public ActionResult<ApiResponse<object>> ClientLog(
+        [FromBody] AiLiveClientLogRequestDto request)
+    {
+        if (request == null)
+        {
+            return BadRequest(ApiResponse<object>.ErrorResponse("Empty body."));
+        }
+
+        var evt = string.IsNullOrWhiteSpace(request.EventType) ? "unknown" : request.EventType.Trim();
+        var reason = Truncate(request.Reason, 500);
+        var message = Truncate(request.Message, 1500);
+        var exType = Truncate(request.ExceptionType, 200);
+        var uid = GetUserId();
+
+        _logger.LogWarning(
+            "AiLive client report [{Event}] code={Code} reason={Reason} userId={UserId} arSessionId={ArSessionId} productListingId={ProductListingId} exception={ExceptionType} message={Message}",
+            evt,
+            request.Code,
+            reason ?? "(none)",
+            uid?.ToString() ?? "(anon)",
+            request.ArSessionId?.ToString() ?? "(none)",
+            request.ProductListingId?.ToString() ?? "(none)",
+            exType ?? "(none)",
+            message ?? "(none)");
+
+        return Ok(ApiResponse<object>.SuccessResponse(new { logged = true }, "OK"));
+    }
+
+    private static string? Truncate(string? s, int maxLen)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        return s.Length <= maxLen ? s : s[..maxLen] + "…";
     }
 }
