@@ -119,21 +119,66 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 {
                     int usageLimit = int.MaxValue;
                     int usedCount = 0;
+                    int userLimit = int.MaxValue;
                     decimal minOrder = 0;
+                    decimal maxDiscount = 0;
+                    List<Guid>? applicableProducts = null;
 
                     if (voucher.Rules != null)
                     {
                         var rulesRoot = voucher.Rules.RootElement;
                         usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
+                        userLimit = rulesRoot.TryGetProperty("user_limit", out var uul) && uul.ValueKind == JsonValueKind.Number ? uul.GetInt32() : int.MaxValue;
                         usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
                         minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ? decimal.Parse(mo.GetString() ?? "0", CultureInfo.InvariantCulture) : 0;
+                        if (rulesRoot.TryGetProperty("maximum_discount", out var md) && md.ValueKind == JsonValueKind.String
+                            && decimal.TryParse(md.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var mdVal))
+                            maxDiscount = mdVal;
+                        if (rulesRoot.TryGetProperty("applicable_products", out var ap) && ap.ValueKind == JsonValueKind.Array)
+                        {
+                            applicableProducts = ap.EnumerateArray()
+                                .Select(el => el.ValueKind == JsonValueKind.String && Guid.TryParse(el.GetString(), out var g) ? g : (Guid?)null)
+                                .Where(g => g.HasValue).Select(g => g!.Value).ToList();
+                            if (applicableProducts.Count == 0) applicableProducts = null;
+                        }
                     }
 
-                    decimal eligibleTotal = voucher.BranchId.HasValue
-                        ? enrichedItems.Where(e => e.listing.BranchId == voucher.BranchId).Sum(e => decimal.Parse(e.unitPrice, CultureInfo.InvariantCulture) * e.reqItem.Quantity)
-                        : cartSubtotal;
+                    // Per-user limit: count prior non-voided orders this user has claimed with this voucher.
+                    // Terminal refund/cancel paths roll used_count back via VoucherUsageHelper, so "active"
+                    // orders here means anything not in cancelled/returned/refunded/expired.
+                    if (userLimit < int.MaxValue && cmd.UserId != Guid.Empty)
+                    {
+                        var userUsed = await _context.OrderHeaders.CountAsync(o =>
+                            o.UserId == cmd.UserId && o.VoucherId == voucher.Id
+                            && o.Status != "cancelled" && o.Status != "returned"
+                            && o.Status != "refunded" && o.Status != "expired", ct);
+                        if (userUsed >= userLimit)
+                        {
+                            _logger.LogWarning("Voucher {Code} denied for user {UserId}: per-user limit {Limit} reached.",
+                                req.VoucherCode, cmd.UserId, userLimit);
+                            voucher = null;
+                        }
+                    }
 
-                    if (usedCount < usageLimit && eligibleTotal >= minOrder)
+                    // applicableProducts: restrict eligible subtotal to listings in the whitelist.
+                    IEnumerable<(CreateOrderItemRequest reqItem, ProductListing listing, string unitPrice, string? title, string? image)> eligibleItems =
+                        voucher != null && voucher.BranchId.HasValue
+                            ? enrichedItems.Where(e => e.listing.BranchId == voucher.BranchId)
+                            : enrichedItems;
+                    if (voucher != null && applicableProducts != null)
+                        eligibleItems = eligibleItems.Where(e => applicableProducts.Contains(e.listing.Id));
+
+                    decimal eligibleTotal = voucher != null
+                        ? eligibleItems.Sum(e => decimal.Parse(e.unitPrice, CultureInfo.InvariantCulture) * e.reqItem.Quantity)
+                        : 0;
+
+                    if (voucher != null && eligibleTotal <= 0 && applicableProducts != null)
+                    {
+                        _logger.LogWarning("Voucher {Code} denied: no cart items match applicable_products whitelist.", req.VoucherCode);
+                        voucher = null;
+                    }
+
+                    if (voucher != null && usedCount < usageLimit && eligibleTotal >= minOrder)
                     {
                         if (voucher.Info != null)
                         {
@@ -142,8 +187,17 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                             var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
                             var val = decimal.Parse(valStr, CultureInfo.InvariantCulture);
 
-                            if (type == "percentage") totalDiscount = eligibleTotal * (val / 100);
-                            else if (type == "fixed") totalDiscount = val;
+                            if (type == "percentage")
+                            {
+                                totalDiscount = eligibleTotal * (val / 100);
+                                // Cap percentage discount to maximum_discount when set (0 = unlimited).
+                                if (maxDiscount > 0 && totalDiscount > maxDiscount) totalDiscount = maxDiscount;
+                            }
+                            else if (type == "fixed_amount" || type == "fixed")
+                            {
+                                totalDiscount = val;
+                            }
+                            // free_shipping discount is applied to shipping fee, not subtotal — handled below.
                         }
 
                         if (totalDiscount > eligibleTotal) totalDiscount = eligibleTotal;
@@ -152,8 +206,15 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                         {
                             var rules = new Dictionary<string, object?>();
                             foreach (var p in voucher.Rules.RootElement.EnumerateObject())
-                                rules[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() :
-                                    (p.Value.ValueKind == JsonValueKind.Number ? p.Value.GetDouble() : p.Value.GetRawText());
+                            {
+                                rules[p.Name] = p.Value.ValueKind switch
+                                {
+                                    JsonValueKind.String => p.Value.GetString(),
+                                    JsonValueKind.Number => p.Value.TryGetInt64(out var l) ? (object)l : p.Value.GetDouble(),
+                                    JsonValueKind.Array => JsonSerializer.Deserialize<object?>(p.Value.GetRawText()),
+                                    _ => p.Value.GetRawText()
+                                };
+                            }
                             rules["used_count"] = usedCount + 1;
                             voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rules));
                         }
@@ -217,7 +278,29 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             var orders = new List<OrderHeader>();
             var baseOrderTimestamp = DateTime.UtcNow;
 
-            foreach (var branchGroup in itemsByBranch)
+            // Two-pass discount allocation: round each branch except the last, then give
+            // the last branch whatever remainder is needed so the sum equals totalDiscount
+            // to the cent. Avoids the "refunded 99 when customer was promised 100" drift.
+            var orderedBranches = itemsByBranch.ToList();
+            var branchSubtotals = orderedBranches.ToDictionary(
+                g => g.Key ?? Guid.Empty,
+                g => g.Sum(e => decimal.Parse(e.unitPrice, CultureInfo.InvariantCulture) * e.reqItem.Quantity));
+            var branchDiscounts = new Dictionary<Guid, decimal>();
+            if (totalDiscount > 0 && cartSubtotal > 0)
+            {
+                decimal allocated = 0;
+                for (int i = 0; i < orderedBranches.Count; i++)
+                {
+                    var key = orderedBranches[i].Key ?? Guid.Empty;
+                    decimal share = i == orderedBranches.Count - 1
+                        ? totalDiscount - allocated
+                        : Math.Round(totalDiscount * (branchSubtotals[key] / cartSubtotal), 0);
+                    branchDiscounts[key] = share;
+                    allocated += share;
+                }
+            }
+
+            foreach (var branchGroup in orderedBranches)
             {
                 var branchId = branchGroup.Key;
                 var branchEnrichedItems = branchGroup.ToList();
@@ -246,10 +329,8 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
 
                 var branchShippingFee = shippingFeesByBranch[branchId ?? Guid.Empty];
 
-                // Allocate discount proportionally to branch
-                var branchDiscount = totalDiscount > 0 
-                    ? Math.Round(totalDiscount * (branchSubtotal / cartSubtotal), 0)
-                    : 0;
+                // Allocate discount proportionally to branch (pre-computed above)
+                var branchDiscount = branchDiscounts.TryGetValue(branchId ?? Guid.Empty, out var bd) ? bd : 0;
 
                 decimal branchOrderTotal = branchSubtotal + branchShippingFee - branchDiscount;
                 if (branchOrderTotal < 0) branchOrderTotal = 0;
@@ -795,6 +876,12 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
         if (order.UserId != cmd.UserId)
             throw new BadRequestException("You can only confirm receipt for your own orders.");
 
+        // Idempotent: clients retry on flaky networks and the "complete" tap can double-fire in UI.
+        // Returning the existing state keeps the contract of "after this call, order is Completed"
+        // without re-invoking transition side-effects (queue flush, completed_at bump).
+        if (order.Status == OrderStatusMachine.Completed)
+            return CreateOrderHandler.MapToResponse(order);
+
         var branchId = order.OrderItems?.FirstOrDefault()?.BranchId;
         var wasAssigned = order.AssignedStaffId.HasValue;
 
@@ -855,6 +942,10 @@ public class ConfirmReceiptBatchHandler : IRequestHandler<ConfirmReceiptBatchCom
         // Confirm each order
         foreach (var order in orders)
         {
+            // Skip orders already completed — keeps the batch idempotent under retry.
+            if (order.Status == OrderStatusMachine.Completed)
+                continue;
+
             OrderStatusMachine.Apply(order, OrderStatusMachine.Completed, cmd.UserId,
                 reason: "Customer confirmed receipt", source: "ConfirmReceiptBatch");
 

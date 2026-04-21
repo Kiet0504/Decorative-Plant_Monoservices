@@ -12,7 +12,9 @@ public class CreateVoucherRequest
     public string Type { get; set; } = "percentage"; // percentage|fixed_amount|free_shipping
     public string Value { get; set; } = "0";
     public string? MinOrder { get; set; }
+    public string? MaximumDiscount { get; set; }
     public int? UsageLimits { get; set; }
+    public int? UserLimit { get; set; }
     public List<Guid>? ApplicableProducts { get; set; }
 }
 
@@ -25,7 +27,9 @@ public class UpdateVoucherRequest
     public string? Type { get; set; }
     public string? Value { get; set; }
     public string? MinOrder { get; set; }
+    public string? MaximumDiscount { get; set; }
     public int? UsageLimits { get; set; }
+    public int? UserLimit { get; set; }
     public List<Guid>? ApplicableProducts { get; set; }
     public bool? IsActive { get; set; }
 }
@@ -42,7 +46,11 @@ public class VoucherResponse
     public string? Type { get; set; }
     public string? Value { get; set; }
     public string? MinOrder { get; set; }
+    public string? MaximumDiscount { get; set; }
     public int? UsageLimits { get; set; }
+    public int? UserLimit { get; set; }
+    public int UsageCount { get; set; }
+    public List<Guid>? ApplicableProducts { get; set; }
     public bool IsActive { get; set; }
 }
 
