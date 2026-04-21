@@ -30,6 +30,12 @@ public class UnassignStaffFromBranchCommandHandler : IRequestHandler<UnassignSta
             throw new NotFoundException(nameof(Domain.Entities.StaffAssignment), request.StaffAssignmentId);
         }
 
+        if (staffAssignment.BranchId != request.BranchId)
+        {
+            throw new InvalidOperationException(
+                "This staff assignment does not belong to the branch in the request URL.");
+        }
+
         // 1b. Prevent branch_manager from deleting themselves or other branch managers
         if (StaffRoleNormalizer.IsBranchManager(request.CurrentUserRole))
         {

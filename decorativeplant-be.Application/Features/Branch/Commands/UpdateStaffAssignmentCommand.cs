@@ -7,6 +7,9 @@ namespace decorativeplant_be.Application.Features.Branch.Commands;
 
 public record UpdateStaffAssignmentCommand : IRequest<StaffAssignmentDto>
 {
+    /// <summary>Branch from route; must match the assignment's branch.</summary>
+    public Guid BranchId { get; init; }
+
     public Guid StaffAssignmentId { get; init; }
     public string Role { get; init; } = string.Empty; // branchManager, cultivationStaff, storeStaff, fulfillmentStaff
     public string? Position { get; init; }

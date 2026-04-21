@@ -18,5 +18,9 @@ public class IotDeviceConfiguration : IEntityTypeConfiguration<IotDevice>
         builder.Property(i => i.Components).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.HasOne(i => i.Branch).WithMany(b => b.IotDevices).HasForeignKey(i => i.BranchId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(i => i.Location).WithMany(l => l.IotDevices).HasForeignKey(i => i.LocationId).OnDelete(DeleteBehavior.SetNull);
+
+        builder.HasMany(i => i.SensorReadings).WithOne(s => s.Device).HasForeignKey(s => s.DeviceId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(i => i.AutomationRules).WithOne(a => a.Device).HasForeignKey(a => a.DeviceId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(i => i.IotAlerts).WithOne(a => a.Device).HasForeignKey(a => a.DeviceId).OnDelete(DeleteBehavior.Cascade);
     }
 }

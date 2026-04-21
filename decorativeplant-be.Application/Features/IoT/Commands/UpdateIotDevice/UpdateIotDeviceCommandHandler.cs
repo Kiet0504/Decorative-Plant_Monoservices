@@ -45,6 +45,7 @@ public class UpdateIotDeviceCommandHandler : IRequestHandler<UpdateIotDeviceComm
 
         // 1. Reconstruct DeviceInfo metadata
         var deviceInfoDict = new Dictionary<string, object>();
+        bool? masterAutomationStatus = null;
         
         // Start with existing database state
         if (device.DeviceInfo != null)
@@ -59,7 +60,24 @@ public class UpdateIotDeviceCommandHandler : IRequestHandler<UpdateIotDeviceComm
         if (request.Device.DeviceInfo != null)
         {
             try {
-                var incoming = JsonSerializer.Deserialize<Dictionary<string, object>>(request.Device.DeviceInfo.RootElement.GetRawText());
+                var root = request.Device.DeviceInfo.RootElement;
+                
+                // Track if master toggle is being changed (Check both casings)
+                JsonElement autoProp = default;
+                bool found = root.TryGetProperty("isAutomationEnabled", out autoProp) || 
+                             root.TryGetProperty("IsAutomationEnabled", out autoProp);
+
+                if (found)
+                {
+                    if (autoProp.ValueKind == JsonValueKind.True) masterAutomationStatus = true;
+                    else if (autoProp.ValueKind == JsonValueKind.False) masterAutomationStatus = false;
+                    else if (autoProp.ValueKind == JsonValueKind.String)
+                    {
+                        masterAutomationStatus = !string.Equals(autoProp.GetString(), "false", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+
+                var incoming = JsonSerializer.Deserialize<Dictionary<string, object>>(root.GetRawText());
                 if (incoming != null)
                 {
                     foreach (var kvp in incoming)
@@ -75,14 +93,21 @@ public class UpdateIotDeviceCommandHandler : IRequestHandler<UpdateIotDeviceComm
         if (request.Device.Type != null) deviceInfoDict["type"] = request.Device.Type;
 
         // 2. Update core fields
-        // We use request.Device.BranchId if it's provided (not null). 
-        // Note: For PATCH, we only update if the property was included. 
-        // In simple DTOs, we check if it's not null.
         if (request.Device.BranchId.HasValue) device.BranchId = request.Device.BranchId.Value == Guid.Empty ? null : request.Device.BranchId;
         if (request.Device.LocationId.HasValue) device.LocationId = request.Device.LocationId.Value == Guid.Empty ? null : request.Device.LocationId;
-        
+
         device.DeviceInfo = deviceInfoDict.Count > 0 ? JsonSerializer.SerializeToDocument(deviceInfoDict) : device.DeviceInfo;
         device.Status = request.Device.Status ?? device.Status;
+
+        // 3. Synchronize Automation Rules if master toggle changed
+        if (masterAutomationStatus.HasValue && device.AutomationRules != null)
+        {
+            foreach (var rule in device.AutomationRules)
+            {
+                rule.IsActive = masterAutomationStatus.Value;
+                // No need to call UpdateAsync explicitly as EF tracks these included entities
+            }
+        }
         
         // Handle explicit components update
         if (request.Device.Components != null)

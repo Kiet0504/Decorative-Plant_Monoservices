@@ -27,7 +27,7 @@ public class GetStaffAssignmentsByBranchQueryHandler : IRequestHandler<GetStaffA
             .ToListAsync(cancellationToken);
 
         return staffAssignments
-            .Select(sa => sa.ToDto(sa.Staff.Email, sa.Branch.Name))
+            .Select(sa => sa.ToDto(sa.Staff.Email, sa.Branch.Name, sa.Staff.DisplayName))
             .ToList();
     }
 }

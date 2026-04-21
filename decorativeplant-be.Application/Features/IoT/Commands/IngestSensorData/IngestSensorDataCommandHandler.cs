@@ -80,6 +80,32 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
         await _iotRepository.UpdateIotDeviceAsync(device, cancellationToken);
 
         // --- Automatic Alert & Conflict Detection ---
+        bool isAutomationEnabled = true;
+        if (device.DeviceInfo != null)
+        {
+            try
+            {
+                if (device.DeviceInfo.RootElement.TryGetProperty("isAutomationEnabled", out var autoProp))
+                {
+                    isAutomationEnabled = autoProp.ValueKind == JsonValueKind.True || 
+                                          (autoProp.ValueKind == JsonValueKind.False ? false : true);
+                    
+                    if (autoProp.ValueKind == JsonValueKind.String)
+                    {
+                        isAutomationEnabled = !string.Equals(autoProp.GetString(), "false", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        if (!isAutomationEnabled)
+        {
+            Console.WriteLine($"[Diagnostic] Automation is DISABLED globally for device {device.Id}. Skipping rules.");
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
         var rules = await _iotRepository.GetAutomationRulesAsync(device.Id, null, cancellationToken);
         var activeRules = rules.Where(r => r.IsActive).ToList();
 

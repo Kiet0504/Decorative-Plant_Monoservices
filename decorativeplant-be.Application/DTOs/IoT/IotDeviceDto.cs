@@ -16,5 +16,7 @@ public class IotDeviceDto
     public string? LocationName { get; set; }
     public JsonDocument? ActivityLog { get; set; }
     public JsonDocument? Components { get; set; }
+    public bool IsAutomationEnabled { get; set; }
+    public IEnumerable<AutomationRuleDto>? AutomationRules { get; set; }
     public IEnumerable<SensorReadingDto>? LatestReadings { get; set; }
 }
