@@ -55,6 +55,10 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
             // 2. Extract Alert Details from JSONB alert_info
             var alertMessage = "Abnormal behavior detected!";
             var severity = "WARNING";
+            var componentName = alert.ComponentKey ?? "Sensor";
+            var value = "--";
+            var unit = "";
+            var threshold = "--";
             
             if (alert.AlertInfo != null)
             {
@@ -63,14 +67,28 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
                 var msg = root.TryGetProperty("message", out var m) ? m.GetString() : null;
                 severity = root.TryGetProperty("severity", out var s) ? s.GetString()?.ToUpper() ?? "WARNING" : "WARNING";
 
+                // New detailed fields
+                if (root.TryGetProperty("componentName", out var cn)) componentName = cn.GetString() ?? componentName;
+                if (root.TryGetProperty("value", out var v)) value = v.ValueKind == JsonValueKind.Number ? v.GetDecimal().ToString("F1") : v.GetString() ?? value;
+                if (root.TryGetProperty("unit", out var u)) unit = u.GetString() ?? unit;
+                if (root.TryGetProperty("threshold", out var th)) threshold = th.ValueKind == JsonValueKind.Number ? th.GetDecimal().ToString("F1") : th.GetString() ?? threshold;
+
                 if (!string.IsNullOrEmpty(title) && !string.IsNullOrEmpty(msg))
                     alertMessage = $"{title}: {msg}";
                 else
                     alertMessage = title ?? msg ?? alertMessage;
+                
+                // Fallback for component name from key if still generic
+                if (componentName == "Sensor" && !string.IsNullOrEmpty(alert.ComponentKey))
+                {
+                    componentName = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(alert.ComponentKey.Replace("_", " "));
+                }
             }
 
-            // 3. Extract Device Name
+            // 3. Extract Device Name & Location
             var deviceName = "Unknown Device";
+            var locationName = device.Location?.Name ?? "General Area";
+
             if (device.DeviceInfo != null)
             {
                 if (device.DeviceInfo.RootElement.TryGetProperty("name", out var n))
@@ -79,33 +97,14 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
                 }
             }
 
-            // 4. Determine Dynamic Action based on Alert Type
-            string? action = null;
-            bool isMoistureRelated = alert.ComponentKey?.Contains("moisture") == true || 
-                                     alertMessage.ToLower().Contains("dry") || 
-                                     alertMessage.ToLower().Contains("water");
-
-            // Extract flags from AlertInfo
-            bool isConnectivity = false;
-            bool isConflict = false;
-            if (alert.AlertInfo != null)
-            {
-                var root = alert.AlertInfo.RootElement;
-                isConnectivity = root.TryGetProperty("isConnectivityAlert", out var conn) && conn.GetBoolean();
-                isConflict = root.TryGetProperty("conflictingRules", out _) || root.TryGetProperty("triggeredRules", out _);
-            }
-
-            // Define action only if it makes sense (e.g., moisture alert on a live device)
-            if (isMoistureRelated && !isConnectivity && !isConflict)
-            {
-                action = "water_now";
-            }
-
             var apiSecretKey = _configuration["ApiSettings:SecretKey"] ?? "decorative_plant_default_secret_2024";
             var baseUrl = _configuration["ApiSettings:BaseUrl"] ?? "http://localhost:8080";
             
             string? actionUrl = null;
             string? actionToken = null;
+
+            // Simple check for water_now action (backward compatibility)
+            var action = (alert.ComponentKey?.Contains("moisture") == true) ? "water_now" : null;
 
             if (!string.IsNullOrEmpty(action))
             {
@@ -122,6 +121,13 @@ public class IotAlertTriggeredNotificationHandler : INotificationHandler<IotAler
             {
                 { "Severity", severity },
                 { "AlertMessage", alertMessage },
+                { "DeviceName", deviceName },
+                { "Location", locationName },
+                { "ComponentName", componentName },
+                { "Value", value },
+                { "Unit", unit },
+                { "Threshold", threshold },
+                { "Time", (alert.CreatedAt ?? DateTime.UtcNow).AddHours(7).ToString("yyyy-MM-dd HH:mm:ss") },
                 { "ActionUrl", actionUrl ?? "" },
                 { "ActionToken", actionToken ?? "" },
                 { "HasAction", (action != null).ToString().ToLower() }

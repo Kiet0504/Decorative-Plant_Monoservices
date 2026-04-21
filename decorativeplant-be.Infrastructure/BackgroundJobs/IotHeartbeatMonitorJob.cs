@@ -1,6 +1,7 @@
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -55,6 +56,7 @@ public class IotHeartbeatMonitorJob : BackgroundService
 
         var now = DateTime.UtcNow;
         var activeDevices = context.IotDevices
+            .Include(d => d.Location)
             .Where(d => d.Status == "Active")
             .ToList();
 
