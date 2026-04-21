@@ -43,6 +43,7 @@ public class CreateIotAlertCommandHandler : IRequestHandler<CreateIotAlertComman
         try
         {
             var device = await _context.IotDevices
+                .Include(d => d.Location)
                 .AsNoTracking()
                 .FirstOrDefaultAsync(d => d.Id == request.DeviceId, cancellationToken);
 
