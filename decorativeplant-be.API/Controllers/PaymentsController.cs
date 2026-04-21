@@ -11,6 +11,9 @@ namespace decorativeplant_be.API.Controllers;
 [Route("api/v{version:apiVersion}/payments")]
 public class PaymentsController : BaseController
 {
+    private readonly ILogger<PaymentsController> _logger;
+    public PaymentsController(ILogger<PaymentsController> logger) => _logger = logger;
+
     private Guid GetUserId() => Guid.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? throw new UnauthorizedAccessException());
 
     /// <summary>
@@ -51,13 +54,35 @@ public class PaymentsController : BaseController
         // Read raw body to preserve exact JSON for signature verification
         using var reader = new StreamReader(Request.Body);
         var rawBody = await reader.ReadToEndAsync();
-        
-        var request = System.Text.Json.JsonSerializer.Deserialize<PayOSWebhookRequest>(rawBody, 
-            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        
+
+        if (string.IsNullOrWhiteSpace(rawBody))
+        {
+            _logger.LogWarning("PayOS webhook received with empty body.");
+            return BadRequest(new { success = false, message = "Empty webhook body" });
+        }
+
+        PayOSWebhookRequest? request;
+        try
+        {
+            request = System.Text.Json.JsonSerializer.Deserialize<PayOSWebhookRequest>(rawBody,
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            // Log the raw body (truncated) so we can diagnose payload drift from PayOS without
+            // having to reconstruct what was delivered.
+            _logger.LogError(ex, "PayOS webhook JSON parse failed. Raw body (truncated): {Body}",
+                rawBody.Length > 2000 ? rawBody[..2000] + "…[truncated]" : rawBody);
+            return BadRequest(new { success = false, message = "Malformed webhook JSON" });
+        }
+
         if (request == null)
+        {
+            _logger.LogWarning("PayOS webhook deserialized to null. Raw body: {Body}",
+                rawBody.Length > 2000 ? rawBody[..2000] + "…[truncated]" : rawBody);
             return BadRequest(new { success = false, message = "Invalid webhook body" });
-        
+        }
+
         var result = await Mediator.Send(new HandlePayOSWebhookCommand { Webhook = request, RawJsonBody = rawBody });
         return Ok(new { success = result });
     }
