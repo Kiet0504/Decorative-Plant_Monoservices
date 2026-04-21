@@ -14,25 +14,27 @@ namespace decorativeplant_be.Application.Features.Commerce.Orders;
 /// </summary>
 public static class GhnOrderHelper
 {
-    public static async Task TryCreateGhnOrderAsync(OrderHeader order, IShippingService shippingService, ILogger logger)
+    public static async Task<bool> TryCreateGhnOrderAsync(OrderHeader order, IShippingService shippingService, ILogger logger)
     {
         logger.LogInformation("GHN: Starting shipment creation for Order {OrderCode} (ID: {OrderId})", order.OrderCode, order.Id);
 
         if (order.DeliveryAddress == null)
         {
             logger.LogWarning("GHN: Skipping - DeliveryAddress is null for Order {OrderCode}", order.OrderCode);
-            return;
+            MarkHandoffFailure(order, "DeliveryAddress missing");
+            return false;
         }
         if (order.OrderItems == null || order.OrderItems.Count == 0)
         {
             logger.LogWarning("GHN: Skipping - No OrderItems for Order {OrderCode}", order.OrderCode);
-            return;
+            MarkHandoffFailure(order, "No order items");
+            return false;
         }
 
         if (order.Notes != null && order.Notes.RootElement.TryGetProperty("shipments", out _))
         {
             logger.LogInformation("GHN: Skipping - Shipments already exist for Order {OrderCode}", order.OrderCode);
-            return;
+            return true;
         }
 
         try
@@ -91,7 +93,8 @@ public static class GhnOrderHelper
             if (!res.Success || string.IsNullOrEmpty(res.OrderCode))
             {
                 logger.LogError("GHN Error for Order {OrderCode}: {Message}", order.OrderCode, res.Message);
-                return;
+                MarkHandoffFailure(order, res.Message ?? "Unknown GHN error");
+                return false;
             }
 
             var shipment = new { branch_id = branchId?.ToString(), tracking_code = res.OrderCode, carrier = "GHN" };
@@ -99,7 +102,7 @@ public static class GhnOrderHelper
             var notes = new Dictionary<string, object?>();
             if (order.Notes != null)
                 foreach (var prop in order.Notes.RootElement.EnumerateObject())
-                    if (prop.Name != "shipments")
+                    if (prop.Name != "shipments" && prop.Name != "ghn_handoff_failed" && prop.Name != "ghn_handoff_error")
                         notes[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
             // Keep JSONB shape backward-compatible (array) — FE/staff dashboards already read shipments[].
             notes["shipments"] = new[] { shipment };
@@ -110,7 +113,29 @@ public static class GhnOrderHelper
             // without waiting for the first GHN webhook.
             OrderStatusMachine.ApplyFromExternalSource(order, OrderStatusMachine.Processing,
                 source: "GHN", reason: "GHN order created, awaiting pickup");
+            return true;
         }
-        catch (Exception ex) { logger.LogError(ex, "GHN Error for {OrderCode}", order.OrderCode); }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "GHN Error for {OrderCode}", order.OrderCode);
+            MarkHandoffFailure(order, ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Stamps the order with a visible failure flag so the staff dashboard can surface
+    /// "carrier handoff needs retry" instead of silently leaving the order stuck in confirmed.
+    /// </summary>
+    private static void MarkHandoffFailure(OrderHeader order, string reason)
+    {
+        var notes = new Dictionary<string, object?>();
+        if (order.Notes != null)
+            foreach (var prop in order.Notes.RootElement.EnumerateObject())
+                notes[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+        notes["ghn_handoff_failed"] = true;
+        notes["ghn_handoff_error"] = reason;
+        notes["ghn_handoff_failed_at"] = DateTime.UtcNow.ToString("o");
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
     }
 }

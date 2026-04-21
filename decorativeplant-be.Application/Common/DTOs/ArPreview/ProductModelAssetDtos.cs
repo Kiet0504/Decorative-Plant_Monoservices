@@ -10,3 +10,9 @@ public class ProductModelAssetResponse
     public JsonDocument? BoundingBox { get; set; }
 }
 
+public class ProductModelAssetListItemResponse : ProductModelAssetResponse
+{
+    public Guid Id { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+

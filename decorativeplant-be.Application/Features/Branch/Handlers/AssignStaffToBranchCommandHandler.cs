@@ -135,7 +135,7 @@ public class AssignStaffToBranchCommandHandler : IRequestHandler<AssignStaffToBr
         }
 
         // 6. Return ToDto
-        return staffAssignment.ToDto(staff.Email, branch.Name);
+        return staffAssignment.ToDto(staff.Email, branch.Name, staff.DisplayName);
     }
 
     private static void ValidateRoleAssignmentPermissions(string currentUserRoleNorm, string roleToAssignNorm)

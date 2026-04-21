@@ -64,6 +64,22 @@ public class BranchScopedAccessMiddleware
             }
         }
 
+        // Step 3b — Branch manager: only read resources for their own branch when route carries a branch id
+        if (HttpMethods.IsGet(context.Request.Method) && roleNorm == "branch_manager")
+        {
+            var routeBranchIdBm = TryGetBranchIdFromRoute(context);
+            if (routeBranchIdBm.HasValue && routeBranchIdBm != (Guid?)context.Items["CurrentBranchId"])
+            {
+                context.Response.StatusCode = 403;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    code = "CROSS_BRANCH_READ",
+                    message = "Access denied: branch managers can only view their assigned branch"
+                });
+                return;
+            }
+        }
+
         // Step 4 — Staff GET guard
         if (HttpMethods.IsGet(context.Request.Method) &&
             roleNorm is "cultivation_staff" or "store_staff" or "fulfillment_staff")

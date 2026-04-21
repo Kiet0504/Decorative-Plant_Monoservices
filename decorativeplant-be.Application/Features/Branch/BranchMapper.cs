@@ -36,11 +36,13 @@ public static class BranchMapper
     public static StaffAssignmentDto ToDto(
         this StaffAssignment sa,
         string staffEmail,
-        string branchName) => new()
+        string branchName,
+        string? staffDisplayName = null) => new()
     {
         Id = sa.Id,
         StaffId = sa.StaffId,
         StaffEmail = staffEmail,
+        StaffDisplayName = staffDisplayName,
         BranchId = sa.BranchId,
         BranchName = branchName,
         Position = sa.Position,
