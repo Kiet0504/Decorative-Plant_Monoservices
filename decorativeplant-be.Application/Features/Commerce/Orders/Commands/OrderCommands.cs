@@ -56,3 +56,16 @@ public class ManualAssignOrderCommand : IRequest<OrderResponse>
     /// <summary>fulfillment_staff to assign.</summary>
     public Guid StaffId { get; set; }
 }
+
+public class CreateBopisImmediateOrderCommand : IRequest<OrderResponse>
+{
+    public Guid StaffUserId { get; set; }
+    public CreateBopisImmediateRequest Request { get; set; } = null!;
+}
+
+public class CompleteOrderCommand : IRequest<OrderResponse>
+{
+    public Guid OrderId { get; set; }
+    public Guid StaffUserId { get; set; }
+    public CompleteOrderRequest Request { get; set; } = null!;
+}

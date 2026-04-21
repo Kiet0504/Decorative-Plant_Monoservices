@@ -45,13 +45,12 @@ public class OrdersController : BaseController
         {
             // Fulfillment staff only see orders assigned to themselves
             assignedStaffId = GetUserId();
-            if (!effectiveBranchId.HasValue)
-            {
-                effectiveBranchId = await context.StaffAssignments
-                    .Where(s => s.StaffId == assignedStaffId && s.IsPrimary)
-                    .Select(s => (Guid?)s.BranchId)
-                    .FirstOrDefaultAsync();
-            }
+            // Ignore client-provided branchId to prevent stale/incorrect FE profile data
+            // from hiding assigned orders. Branch scope is derived server-side.
+            effectiveBranchId = await context.StaffAssignments
+                .Where(s => s.StaffId == assignedStaffId && s.IsPrimary)
+                .Select(s => (Guid?)s.BranchId)
+                .FirstOrDefaultAsync();
         }
         else if (isStaff)
         {
@@ -877,5 +876,43 @@ public class OrdersController : BaseController
             Request = request
         });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order marked as picked up"));
+    }
+
+    /// <summary>
+    /// Create a BOPIS immediate pickup order for in-store customers.
+    /// Supports cash payment (confirmed immediately) or QR code payment (pending until paid).
+    /// Includes voucher application and automatic stock reservation.
+    /// </summary>
+    [HttpPost("bopis-immediate")]
+    [Authorize(Roles = "store_staff,branch_manager,admin")]
+    public async Task<IActionResult> CreateBopisImmediate([FromBody] CreateBopisImmediateRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await Mediator.Send(new CreateBopisImmediateOrderCommand
+        {
+            StaffUserId = userId.Value,
+            Request = request
+        });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "BOPIS immediate order created successfully", 201));
+    }
+
+    /// <summary>
+    /// Complete a BOPIS order when customer receives items.
+    /// Transitions confirmed → completed and finalizes stock deduction.
+    /// </summary>
+    [HttpPost("{id:guid}/complete")]
+    [Authorize(Roles = "store_staff,branch_manager,admin")]
+    public async Task<IActionResult> CompleteOrder(Guid id, [FromBody] CompleteOrderRequest request)
+    {
+        var userId = GetUserId();
+        if (userId == null) return Unauthorized();
+        var result = await Mediator.Send(new CompleteOrderCommand
+        {
+            OrderId = id,
+            StaffUserId = userId.Value,
+            Request = request
+        });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order completed successfully"));
     }
 }

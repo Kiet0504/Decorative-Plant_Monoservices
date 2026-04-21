@@ -507,6 +507,18 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 City = root.TryGetProperty("city", out var c) ? c.GetString() : null
             };
         }
+        if (o.PickupInfo != null)
+        {
+            var root = o.PickupInfo.RootElement;
+            response.PickupInfo = new PickupInfoDto
+            {
+                BranchId = root.TryGetProperty("branch_id", out var bid) ? bid.GetString() : null,
+                BranchName = root.TryGetProperty("branch_name", out var bname) ? bname.GetString() : null,
+                CustomerName = root.TryGetProperty("customer_name", out var cname) ? cname.GetString() : null,
+                CustomerPhone = root.TryGetProperty("customer_phone", out var cphone) ? cphone.GetString() : null,
+                CustomerEmail = root.TryGetProperty("customer_email", out var cemail) ? cemail.GetString() : null
+            };
+        }
         if (o.Notes != null)
         {
             var root = o.Notes.RootElement;
@@ -1502,6 +1514,530 @@ public class ManualAssignOrderHandler : IRequestHandler<ManualAssignOrderCommand
         _logger.LogInformation(
             "ManualAssignOrderHandler: Order {OrderCode} manually assigned to staff {StaffId} by manager {ManagerId}.",
             order.OrderCode, cmd.StaffId, cmd.ManagerId);
+
+        return CreateOrderHandler.MapToResponse(order);
+    }
+}
+
+// ── BOPIS Immediate Order Handler ──
+public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmediateOrderCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly ILogger<CreateBopisImmediateOrderHandler> _logger;
+    private readonly IStockService _stockService;
+    private readonly IEmailService _emailService;
+
+    public CreateBopisImmediateOrderHandler(
+        IApplicationDbContext context,
+        ILogger<CreateBopisImmediateOrderHandler> logger,
+        IStockService stockService,
+        IEmailService emailService)
+    {
+        _context = context;
+        _logger = logger;
+        _stockService = stockService;
+        _emailService = emailService;
+    }
+
+    public async Task<OrderResponse> Handle(CreateBopisImmediateOrderCommand cmd, CancellationToken ct)
+    {
+        var req = cmd.Request;
+
+        var strategy = _context.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync(ct);
+            try
+            {
+                // 1. Validate pickup branch exists
+                var branch = await _context.Branches.FirstOrDefaultAsync(b => b.Id == req.PickupBranchId, ct);
+                if (branch == null)
+                    throw new NotFoundException($"Branch {req.PickupBranchId} not found");
+
+                // 2. Get products from the specific pickup branch only (not using allocation service for BOPIS)
+                var requestedListingIds = req.Items.Select(i => i.ListingId).ToList();
+
+                // Query listings that belong to the pickup branch
+                var branchListings = await _context.ProductListings
+                    .Include(l => l.Batch)
+                    .Where(l => requestedListingIds.Contains(l.Id) && l.BranchId == req.PickupBranchId)
+                    .ToListAsync(ct);
+
+                // Build enriched items from branch listings
+                var enrichedItems = new List<(CreateOrderItemRequest reqItem, ProductListing listing, string unitPrice, string? title, string? image)>();
+
+                foreach (var requestItem in req.Items)
+                {
+                    var listing = branchListings.FirstOrDefault(l => l.Id == requestItem.ListingId);
+
+                    if (listing == null)
+                    {
+                        // Try to find sibling listing in this branch by TaxonomyId
+                        var primaryListing = await _context.ProductListings
+                            .Include(l => l.Batch)
+                            .FirstOrDefaultAsync(l => l.Id == requestItem.ListingId, ct);
+
+                        if (primaryListing?.Batch?.TaxonomyId != null)
+                        {
+                            listing = await _context.ProductListings
+                                .Include(l => l.Batch)
+                                .Where(l => l.BranchId == req.PickupBranchId
+                                    && l.Batch != null
+                                    && l.Batch.TaxonomyId == primaryListing.Batch.TaxonomyId)
+                                .FirstOrDefaultAsync(ct);
+                        }
+
+                        if (listing == null)
+                            throw new BadRequestException($"Product not available at the selected pickup branch");
+                    }
+
+                    // Check if listing is active
+                    var isActive = listing.StatusInfo != null
+                        && listing.StatusInfo.RootElement.TryGetProperty("status", out var st)
+                        && st.GetString() == "active";
+
+                    if (!isActive)
+                        throw new BadRequestException($"Product '{listing.Id}' is not available for order");
+
+                    // Extract product info
+                    string? title = null;
+                    string unitPrice = "0";
+                    string? image = null;
+
+                    if (listing.ProductInfo != null)
+                    {
+                        var root = listing.ProductInfo.RootElement;
+                        title = root.TryGetProperty("title", out var t) ? t.GetString() : null;
+                        unitPrice = root.TryGetProperty("price", out var p) ? p.GetString() ?? "0" : "0";
+                    }
+                    if (listing.Images?.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        var first = listing.Images.RootElement.EnumerateArray().FirstOrDefault();
+                        image = first.TryGetProperty("url", out var u) ? u.GetString() : null;
+                    }
+
+                    // Get available stock
+                    int availableStock = 0;
+                    if (listing.ProductInfo != null && listing.ProductInfo.RootElement.TryGetProperty("stock_quantity", out var sq))
+                    {
+                        availableStock = sq.GetInt32();
+                    }
+
+                    if (availableStock < requestItem.Quantity)
+                        throw new BadRequestException($"Insufficient stock for '{title ?? listing.Id.ToString()}'. Available: {availableStock}, requested: {requestItem.Quantity}");
+
+                    enrichedItems.Add((
+                        reqItem: new CreateOrderItemRequest { ListingId = listing.Id, Quantity = requestItem.Quantity },
+                        listing: listing,
+                        unitPrice: unitPrice,
+                        title: title,
+                        image: image
+                    ));
+                }
+
+                // 3. Reserve stock and calculate subtotal
+                decimal cartSubtotal = 0;
+                foreach (var e in enrichedItems)
+                {
+                    if (!decimal.TryParse(e.unitPrice, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedPrice))
+                        throw new BadRequestException($"Invalid price for '{e.title ?? e.reqItem.ListingId.ToString()}'.");
+                    var itemSubtotal = parsedPrice * e.reqItem.Quantity;
+                    cartSubtotal += itemSubtotal;
+
+                    var productName = e.title ?? e.reqItem.ListingId.ToString();
+                    await _stockService.ReserveStockAsync(e.listing.Id, e.listing.BranchId, e.reqItem.Quantity, productName, ct);
+                }
+
+                // 4. Apply voucher if provided
+                decimal totalDiscount = 0;
+                Voucher? voucher = null;
+                Guid? appliedVoucherId = null;
+
+                if (!string.IsNullOrEmpty(req.VoucherCode))
+                {
+                    var pending = await _context.Vouchers.FirstOrDefaultAsync(v => v.Code == req.VoucherCode && v.IsActive, ct);
+                    if (pending != null)
+                    {
+                        await _context.AcquireVoucherLockAsync(pending.Id, ct);
+                        voucher = await _context.Vouchers.FirstOrDefaultAsync(v => v.Id == pending.Id, ct);
+                    }
+
+                    if (voucher != null)
+                    {
+                        // Validate voucher for branch
+                        if (voucher.BranchId.HasValue && voucher.BranchId != req.PickupBranchId)
+                        {
+                            _logger.LogWarning("Voucher {Code} belongs to branch {BranchId} but order is for branch {PickupBranch}.",
+                                req.VoucherCode, voucher.BranchId, req.PickupBranchId);
+                            voucher = null;
+                        }
+                    }
+
+                    if (voucher != null)
+                    {
+                        int usageLimit = int.MaxValue;
+                        int usedCount = 0;
+                        int userLimit = int.MaxValue;
+                        decimal minOrder = 0;
+                        decimal maxDiscount = 0;
+
+                        if (voucher.Rules != null)
+                        {
+                            var rulesRoot = voucher.Rules.RootElement;
+                            usageLimit = rulesRoot.TryGetProperty("usage_limit", out var ul) && ul.ValueKind == JsonValueKind.Number ? ul.GetInt32() : int.MaxValue;
+                            userLimit = rulesRoot.TryGetProperty("user_limit", out var uul) && uul.ValueKind == JsonValueKind.Number ? uul.GetInt32() : int.MaxValue;
+                            usedCount = rulesRoot.TryGetProperty("used_count", out var uc) && uc.ValueKind == JsonValueKind.Number ? uc.GetInt32() : 0;
+                            minOrder = rulesRoot.TryGetProperty("min_order_amount", out var mo) && mo.ValueKind == JsonValueKind.String ?
+                                decimal.Parse(mo.GetString() ?? "0", CultureInfo.InvariantCulture) : 0;
+                            if (rulesRoot.TryGetProperty("maximum_discount", out var md) && md.ValueKind == JsonValueKind.String
+                                && decimal.TryParse(md.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var mdVal))
+                                maxDiscount = mdVal;
+                        }
+
+                        // Check usage limits
+                        if (req.CustomerUserId.HasValue && userLimit < int.MaxValue)
+                        {
+                            var userUsed = await _context.OrderHeaders.CountAsync(o =>
+                                o.UserId == req.CustomerUserId && o.VoucherId == voucher.Id
+                                && o.Status != "cancelled" && o.Status != "returned"
+                                && o.Status != "refunded" && o.Status != "expired", ct);
+                            if (userUsed >= userLimit)
+                            {
+                                _logger.LogWarning("Voucher {Code} denied for user {UserId}: per-user limit {Limit} reached.",
+                                    req.VoucherCode, req.CustomerUserId, userLimit);
+                                voucher = null;
+                            }
+                        }
+
+                        if (voucher != null && usedCount < usageLimit && cartSubtotal >= minOrder)
+                        {
+                            if (voucher.Info != null)
+                            {
+                                var infoRoot = voucher.Info.RootElement;
+                                var type = infoRoot.TryGetProperty("discount_type", out var dt) ? dt.GetString() : null;
+                                var valStr = infoRoot.TryGetProperty("discount_value", out var dv) ? dv.GetString() ?? "0" : "0";
+                                var val = decimal.Parse(valStr, CultureInfo.InvariantCulture);
+
+                                if (type == "percentage")
+                                {
+                                    totalDiscount = cartSubtotal * (val / 100);
+                                    if (maxDiscount > 0 && totalDiscount > maxDiscount) totalDiscount = maxDiscount;
+                                }
+                                else if (type == "fixed_amount" || type == "fixed")
+                                {
+                                    totalDiscount = val;
+                                }
+
+                                totalDiscount = Math.Round(totalDiscount, 0, MidpointRounding.AwayFromZero);
+                            }
+
+                            // Increment voucher usage
+                            appliedVoucherId = voucher.Id;
+                            if (voucher.Rules != null)
+                            {
+                                var rulesDict = JsonSerializer.Deserialize<Dictionary<string, object>>(voucher.Rules.RootElement.GetRawText()) ?? new();
+                                var currentUsed = rulesDict.ContainsKey("used_count") && int.TryParse(rulesDict["used_count"].ToString(), out var cu) ? cu : 0;
+                                rulesDict["used_count"] = currentUsed + 1;
+                                voucher.Rules = JsonDocument.Parse(JsonSerializer.Serialize(rulesDict));
+                            }
+                        }
+                        else
+                        {
+                            voucher = null;
+                        }
+                    }
+                }
+
+                // 5. Calculate totals (no shipping for BOPIS)
+                decimal total = cartSubtotal - totalDiscount;
+                if (total < 0) total = 0;
+
+                // 6. Create order
+                var orderCode = $"BOPIS-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+                var now = DateTime.UtcNow;
+
+                var order = new OrderHeader
+                {
+                    Id = Guid.NewGuid(),
+                    OrderCode = orderCode,
+                    UserId = req.CustomerUserId,
+                    VoucherId = appliedVoucherId,
+                    Status = req.PaymentMethod == "cash" ? OrderStatusMachine.Confirmed : OrderStatusMachine.Pending,
+                    TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        order_type = "bopis_immediate",
+                        fulfillment_method = "pickup",
+                        payment_method = req.PaymentMethod,
+                        branch_id = req.PickupBranchId.ToString()
+                    })),
+                    Financials = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        subtotal = cartSubtotal.ToString("F0", CultureInfo.InvariantCulture),
+                        shipping = "0",
+                        discount = totalDiscount.ToString("F0", CultureInfo.InvariantCulture),
+                        tax = "0",
+                        total = total.ToString("F0", CultureInfo.InvariantCulture),
+                        amount_paid = req.PaymentMethod == "cash" ? total.ToString("F0", CultureInfo.InvariantCulture) : "0",
+                        remaining_balance = req.PaymentMethod == "cash" ? "0" : total.ToString("F0", CultureInfo.InvariantCulture)
+                    })),
+                    Notes = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        customer_note = "",
+                        internal_note = $"BOPIS immediate pickup order created by staff {cmd.StaffUserId}",
+                        status_history = new[]
+                        {
+                            new
+                            {
+                                from = "",
+                                to = req.PaymentMethod == "cash" ? "confirmed" : "pending",
+                                at = now.ToString("o"),
+                                by = cmd.StaffUserId.ToString(),
+                                reason = req.PaymentMethod == "cash" ? "Cash payment received at counter" : "Awaiting payment",
+                                source = "BopisImmediateCreate"
+                            }
+                        }
+                    })),
+                    PickupInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        branch_id = req.PickupBranchId.ToString(),
+                        branch_name = branch.Name,
+                        customer_name = req.CustomerName,
+                        customer_phone = req.CustomerPhone,
+                        customer_email = req.CustomerEmail
+                    })),
+                    CreatedAt = now,
+                    ConfirmedAt = req.PaymentMethod == "cash" ? now : null
+                };
+
+                _context.OrderHeaders.Add(order);
+
+                // 7. Create order items
+                foreach (var e in enrichedItems)
+                {
+                    var itemPrice = decimal.Parse(e.unitPrice, CultureInfo.InvariantCulture);
+                    var itemSubtotal = itemPrice * e.reqItem.Quantity;
+
+                    var orderItem = new OrderItem
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        ListingId = e.listing.Id,
+                        StockId = null,
+                        BranchId = e.listing.BranchId,
+                        Quantity = e.reqItem.Quantity,
+                        Pricing = JsonDocument.Parse(JsonSerializer.Serialize(new
+                        {
+                            unit_price = itemPrice.ToString("F0", CultureInfo.InvariantCulture),
+                            subtotal = itemSubtotal.ToString("F0", CultureInfo.InvariantCulture)
+                        })),
+                        Snapshots = JsonDocument.Parse(JsonSerializer.Serialize(new
+                        {
+                            title_snapshot = e.title,
+                            image_snapshot = e.image
+                        }))
+                    };
+
+                    _context.OrderItems.Add(orderItem);
+                }
+
+                // 8. Create payment transaction if cash
+                if (req.PaymentMethod == "cash")
+                {
+                    var cashTx = new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        TransactionCode = $"CASH-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                        Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                        {
+                            provider = "cash",
+                            method = "cash",
+                            type = "payment",
+                            amount = total.ToString("F0", CultureInfo.InvariantCulture),
+                            status = "success",
+                            collected_at = now.ToString("o")
+                        })),
+                        CreatedAt = now
+                    };
+                    _context.PaymentTransactions.Add(cashTx);
+                }
+
+                await _context.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+
+                _logger.LogInformation("CreateBopisImmediateOrderHandler: Created BOPIS order {OrderCode} for branch {BranchId} with payment method {PaymentMethod}",
+                    orderCode, req.PickupBranchId, req.PaymentMethod);
+
+                // Send email notification to customer if email provided
+                if (!string.IsNullOrEmpty(req.CustomerEmail))
+                {
+                    try
+                    {
+                        var itemCount = enrichedItems.Sum(e => e.reqItem.Quantity);
+                        var itemsList = string.Join(", ", enrichedItems.Select(e => $"{e.title} x{e.reqItem.Quantity}"));
+
+                        var bodyHtml = $@"
+                            <div style='font-family:sans-serif;max-width:600px;margin:0 auto;color:#1f2937;'>
+                                <h2 style='color:#2d5f4d;'>BOPIS Order Confirmation</h2>
+                                <p>Dear <strong>{System.Net.WebUtility.HtmlEncode(req.CustomerName ?? "Customer")}</strong>,</p>
+                                <p>Thank you for your order! Your BOPIS (Buy Online, Pick Up In Store) order has been created successfully.</p>
+
+                                <table style='width:100%;border-collapse:collapse;margin:20px 0;border:1px solid #e5e7eb;'>
+                                    <tr style='background:#f9fafb;'>
+                                        <th style='text-align:left;padding:12px;border-bottom:1px solid #e5e7eb;'>Order Code</th>
+                                        <td style='padding:12px;border-bottom:1px solid #e5e7eb;font-weight:bold;'>{System.Net.WebUtility.HtmlEncode(orderCode)}</td>
+                                    </tr>
+                                    <tr>
+                                        <th style='text-align:left;padding:12px;border-bottom:1px solid #e5e7eb;'>Pickup Branch</th>
+                                        <td style='padding:12px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(branch.Name ?? "")}</td>
+                                    </tr>
+                                    <tr style='background:#f9fafb;'>
+                                        <th style='text-align:left;padding:12px;border-bottom:1px solid #e5e7eb;'>Items</th>
+                                        <td style='padding:12px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(itemsList)} ({itemCount} item{(itemCount > 1 ? "s" : "")})</td>
+                                    </tr>
+                                    <tr>
+                                        <th style='text-align:left;padding:12px;border-bottom:1px solid #e5e7eb;'>Total Amount</th>
+                                        <td style='padding:12px;border-bottom:1px solid #e5e7eb;font-weight:bold;color:#2d5f4d;'>{total.ToString("N0", CultureInfo.InvariantCulture)} VND</td>
+                                    </tr>
+                                    <tr style='background:#f9fafb;'>
+                                        <th style='text-align:left;padding:12px;border-bottom:1px solid #e5e7eb;'>Payment Method</th>
+                                        <td style='padding:12px;border-bottom:1px solid #e5e7eb;'>{(req.PaymentMethod == "cash" ? "Cash (Paid)" : "QR Code (Pending)")}</td>
+                                    </tr>
+                                    <tr>
+                                        <th style='text-align:left;padding:12px;'>Status</th>
+                                        <td style='padding:12px;font-weight:bold;color:#16a34a;'>{(req.PaymentMethod == "cash" ? "Confirmed & Paid" : "Awaiting Payment")}</td>
+                                    </tr>
+                                </table>
+
+                                <div style='background:#ecfdf5;border-left:4px solid #10b981;padding:16px;margin:20px 0;'>
+                                    <p style='margin:0;font-weight:bold;color:#059669;'>Next Steps:</p>
+                                    <ul style='margin:8px 0;padding-left:20px;'>
+                                        {(req.PaymentMethod == "cash" ?
+                                            "<li>Your order is confirmed and ready for pickup!</li>" :
+                                            "<li>Please complete payment to confirm your order</li>")}
+                                        <li>Visit our store at <strong>{System.Net.WebUtility.HtmlEncode(branch.Name ?? "")}</strong></li>
+                                        <li>Show your order code to our staff</li>
+                                        <li>Collect your plants and enjoy!</li>
+                                    </ul>
+                                </div>
+
+                                <p style='color:#6b7280;font-size:14px;margin-top:20px;'>
+                                    If you have any questions, please contact us at {System.Net.WebUtility.HtmlEncode(req.CustomerPhone ?? "")}
+                                </p>
+
+                                <p style='margin-top:30px;'>Best regards,<br/><strong>Decorative Plant Team</strong></p>
+                            </div>";
+
+                        var plainText = $@"
+BOPIS Order Confirmation
+
+Dear {req.CustomerName ?? "Customer"},
+
+Thank you for your order! Your BOPIS (Buy Online, Pick Up In Store) order has been created successfully.
+
+Order Details:
+- Order Code: {orderCode}
+- Pickup Branch: {branch.Name}
+- Items: {itemsList} ({itemCount} item{(itemCount > 1 ? "s" : "")})
+- Total Amount: {total.ToString("N0", CultureInfo.InvariantCulture)} VND
+- Payment Method: {(req.PaymentMethod == "cash" ? "Cash (Paid)" : "QR Code (Pending)")}
+- Status: {(req.PaymentMethod == "cash" ? "Confirmed & Paid" : "Awaiting Payment")}
+
+Next Steps:
+{(req.PaymentMethod == "cash" ?
+    "- Your order is confirmed and ready for pickup!" :
+    "- Please complete payment to confirm your order")}
+- Visit our store at {branch.Name}
+- Show your order code to our staff
+- Collect your plants and enjoy!
+
+If you have any questions, please contact us at {req.CustomerPhone ?? ""}
+
+Best regards,
+Decorative Plant Team";
+
+                        await _emailService.SendAsync(new Application.Common.DTOs.Email.EmailMessage
+                        {
+                            To = req.CustomerEmail,
+                            ToName = req.CustomerName,
+                            Subject = $"BOPIS Order Confirmation - {orderCode}",
+                            BodyPlainText = plainText,
+                            BodyHtml = bodyHtml,
+                        }, ct);
+
+                        _logger.LogInformation("CreateBopisImmediateOrderHandler: Sent confirmation email to {Email} for order {OrderCode}",
+                            req.CustomerEmail, orderCode);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "CreateBopisImmediateOrderHandler: Failed to send email to {Email} for order {OrderCode}",
+                            req.CustomerEmail, orderCode);
+                        // Don't fail the order creation if email fails
+                    }
+                }
+
+                // Return the order response
+                var createdOrder = await _context.OrderHeaders
+                    .Include(o => o.OrderItems)
+                    .FirstOrDefaultAsync(o => o.Id == order.Id, ct);
+
+                return CreateOrderHandler.MapToResponse(createdOrder!);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(ct);
+                throw;
+            }
+        });
+    }
+}
+
+// ── Complete Order Handler ──
+public class CompleteOrderHandler : IRequestHandler<CompleteOrderCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly ILogger<CompleteOrderHandler> _logger;
+    private readonly IStockService _stockService;
+
+    public CompleteOrderHandler(
+        IApplicationDbContext context,
+        ILogger<CompleteOrderHandler> logger,
+        IStockService stockService)
+    {
+        _context = context;
+        _logger = logger;
+        _stockService = stockService;
+    }
+
+    public async Task<OrderResponse> Handle(CompleteOrderCommand cmd, CancellationToken ct)
+    {
+        var order = await _context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == cmd.OrderId, ct);
+
+        if (order == null)
+            throw new NotFoundException($"Order {cmd.OrderId} not found");
+
+        // Validate order can be completed
+        if (order.Status != OrderStatusMachine.Confirmed && order.Status != "ready_for_pickup")
+            throw new BadRequestException($"Order must be in 'confirmed' or 'ready_for_pickup' status to complete. Current status: {order.Status}");
+
+        // Transition to completed
+        OrderStatusMachine.Apply(order, OrderStatusMachine.Completed,
+            changedBy: cmd.StaffUserId,
+            reason: cmd.Request.CompletionNote ?? "Order completed and handed to customer",
+            source: "StaffComplete");
+
+        // Finalize stock (deduct from available)
+        if (order.OrderItems != null && order.OrderItems.Count > 0)
+        {
+            await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
+        }
+
+        await _context.SaveChangesAsync(ct);
+
+        _logger.LogInformation("CompleteOrderHandler: Order {OrderCode} completed by staff {StaffId}",
+            order.OrderCode, cmd.StaffUserId);
 
         return CreateOrderHandler.MapToResponse(order);
     }

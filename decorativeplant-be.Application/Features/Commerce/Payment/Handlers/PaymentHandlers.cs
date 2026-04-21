@@ -42,7 +42,19 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         // Validate order ownership — user can only pay for their own orders
         foreach (var order in orders)
         {
-            if (order.UserId != cmd.UserId)
+            var isOwner = order.UserId == cmd.UserId;
+            var isBopisImmediateGuest = false;
+
+            // BOPIS immediate orders created by staff for walk-in customers often have null UserId.
+            // Allow payment-link creation in that case while keeping ownership check for online orders.
+            if (!isOwner && order.UserId == null && order.TypeInfo != null)
+            {
+                var root = order.TypeInfo.RootElement;
+                var orderType = root.TryGetProperty("order_type", out var ot) ? ot.GetString() : null;
+                isBopisImmediateGuest = string.Equals(orderType, "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (!isOwner && !isBopisImmediateGuest)
                 throw new BadRequestException($"Order {order.OrderCode} does not belong to you.");
 
             if (order.Status != "pending")
@@ -337,11 +349,27 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
                         foreach (var order in orders)
                         {
+                            var isBopisImmediate = order.TypeInfo != null
+                                && order.TypeInfo.RootElement.TryGetProperty("order_type", out var ot)
+                                && string.Equals(ot.GetString(), "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+
                             if (order.Status == "pending")
                             {
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
+
+                                // BOPIS immediate: once payment is paid, it should move to confirmed
+                                // so store staff can complete handover at counter.
+                                if (isBopisImmediate)
+                                {
+                                    decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
+                                        .ApplyFromExternalSource(
+                                            order,
+                                            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,
+                                            source: "PayOSWebhook",
+                                            reason: "Payment confirmed");
+                                }
                             }
 
                             var notesObj = new Dictionary<string, object?>();
@@ -645,11 +673,27 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
 
                         foreach (var order in orders)
                         {
+                            var isBopisImmediate = order.TypeInfo != null
+                                && order.TypeInfo.RootElement.TryGetProperty("order_type", out var ot)
+                                && string.Equals(ot.GetString(), "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+
                             if (order.Status == "pending")
                             {
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
+
+                                // BOPIS immediate: after successful sync, move pending -> confirmed
+                                // so staff can see "Complete Order" action in UI.
+                                if (isBopisImmediate)
+                                {
+                                    decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
+                                        .ApplyFromExternalSource(
+                                            order,
+                                            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,
+                                            source: "PayOSSync",
+                                            reason: "Payment sync confirmed");
+                                }
                             }
 
                             var notesObj = new Dictionary<string, object?>();
