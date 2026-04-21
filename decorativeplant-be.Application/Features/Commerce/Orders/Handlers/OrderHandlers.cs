@@ -359,13 +359,8 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 _context.OrderHeaders.Add(order);
                 orders.Add(order);
 
-                // COD flow: auto-confirm and create GHN shipment
-                if (NormalizePaymentMethod(req.PaymentMethod) == "cod")
-                {
-                    OrderStatusMachine.Apply(order, OrderStatusMachine.Confirmed,
-                        changedBy: cmd.UserId, reason: "COD auto-confirm", source: "CreateOrder");
-                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
-                }
+                // COD and bank_transfer both start as "pending".
+                // Fulfillment staff will manually confirm → pack → ship.
             }
             
             // Clear items from user's shopping cart immediately after order creation.
@@ -392,59 +387,63 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 }
             }
 
+            // Create PaymentTransaction records for COD orders so payment status
+            // can be tracked from the start without relying on GHN webhooks.
+            // Status starts as "pending" — updated to "success" when delivery is confirmed.
+            if (NormalizePaymentMethod(req.PaymentMethod) == "cod")
+            {
+                foreach (var order in orders)
+                {
+                    var totalStr = "0";
+                    if (order.Financials != null
+                        && order.Financials.RootElement.TryGetProperty("total", out var tot))
+                        totalStr = tot.GetString() ?? "0";
+
+                    _context.PaymentTransactions.Add(new PaymentTransaction
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        TransactionCode = $"COD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                        Details = JsonDocument.Parse(JsonSerializer.Serialize(new
+                        {
+                            provider = "cash",
+                            method = "cod",
+                            type = "payment",
+                            amount = totalStr,
+                            status = "pending",
+                            order_ids = new[] { order.Id }
+                        })),
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+                _logger.LogInformation("Created COD PaymentTransaction(s) for {Count} order(s)", orders.Count);
+            }
+
             _logger.LogInformation("Created {OrderCount} split orders from {BranchCount} branch(es) for user {UserId}",
                 orders.Count, itemsByBranch.Count, cmd.UserId);
 
             await _context.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
-            // Notify branch staff for COD orders (bank_transfer notifications fire
-            // later in the PayOS webhook handler, once payment is actually confirmed).
+            // Notify branch staff about new COD orders so they appear on the dashboard.
+            // Bank-transfer notifications fire later in the PayOS webhook handler,
+            // once payment is actually confirmed — don't double-notify here.
             // Fire-and-log — never block the response on email.
-            var user = cmd.UserId != Guid.Empty ? await _context.UserAccounts.FirstOrDefaultAsync(u => u.Id == cmd.UserId, ct) : null;
-            var customerEmail = user?.Email;
-
-            foreach (var order in orders.Where(o => o.Status == OrderStatusMachine.Confirmed))
+            var isCodOrder = NormalizePaymentMethod(req.PaymentMethod) == "cod";
+            if (isCodOrder)
             {
-                if (!string.IsNullOrEmpty(customerEmail) && user != null)
+                var user = cmd.UserId != Guid.Empty ? await _context.UserAccounts.FirstOrDefaultAsync(u => u.Id == cmd.UserId, ct) : null;
+
+                foreach (var order in orders)
                 {
                     try
                     {
-                        var total = "0";
-                        if (order.Financials != null)
-                        {
-                            total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
-                        }
-
-                        var model = new Dictionary<string, string>
-                        {
-                            { "CustomerName", user.DisplayName ?? "Customer" },
-                            { "OrderCode", order.OrderCode ?? "N/A" },
-                            { "BranchName", "Decorative Plant Store" },
-                            { "Total", total }
-                        };
-
-                        await _emailTemplateService.SendTemplateAsync(
-                            "OrderConfirmed",
-                            model,
-                            customerEmail,
-                            $"Order Confirmed - {order.OrderCode}",
-                            user.DisplayName,
-                            ct);
+                        await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
+                        _logger.LogError(ex, "Staff notify failed for Order {OrderCode}", order.OrderCode);
                     }
-                }
-
-                try
-                {
-                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Staff notify failed for Order {OrderCode}", order.OrderCode);
                 }
             }
 
@@ -564,48 +563,129 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
 
     public async Task<OrderResponse> Handle(UpdateOrderStatusCommand cmd, CancellationToken ct)
     {
-        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
-            ?? throw new NotFoundException($"Order {cmd.Id} not found.");
-
         var normalizedStatus = cmd.Request.Status?.ToLowerInvariant() ?? "";
 
         // Block staff from setting "completed" — only the customer may do that via POST /confirm-receipt
         if (normalizedStatus == OrderStatusMachine.Completed)
             throw new BadRequestException("Only the customer can mark an order as completed (via Confirm Receipt).");
 
-        // Validate + append audit entry
-        OrderStatusMachine.Apply(order, normalizedStatus, cmd.ActorUserId,
-            reason: cmd.Request.RejectionReason ?? cmd.Request.InternalNote,
-            source: "StaffUpdate");
+        OrderResponse response = null!;
+        Guid? flushBranchId = null;
 
-        // Merge side-note fields (internal_note, tracking_code, carrier_name) while preserving history.
-        var notesDict = MergeNotes(order,
-            internalNote: cmd.Request.InternalNote,
-            rejectionReason: cmd.Request.RejectionReason,
-            trackingCode: cmd.Request.TrackingCode,
-            carrierName: cmd.Request.CarrierName);
-        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
-
-        // If order is confirmed, try to create GHN shipments
-        if (normalizedStatus == OrderStatusMachine.Confirmed)
+        var strategy = _context.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
-        }
-
-        await _context.SaveChangesAsync(ct);
-
-        // When a slot frees up, immediately try to assign the oldest queued order
-        if (SlotFreedStatuses.Contains(normalizedStatus) && order.AssignedStaffId.HasValue)
-        {
-            var branchId = order.OrderItems?.FirstOrDefault()?.BranchId;
-            if (branchId.HasValue)
+            using var transaction = await _context.Database.BeginTransactionAsync(ct);
+            try
             {
-                try { await _orderAssignment.TryFlushQueueAsync(branchId.Value, ct); }
-                catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after status update for Order {OrderCode}.", order.OrderCode); }
+                var order = await _context.OrderHeaders.Include(o => o.OrderItems)
+                    .FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
+                    ?? throw new NotFoundException($"Order {cmd.Id} not found.");
+
+                var previousStatus = order.Status; // capture before Apply mutates it
+
+                // Validate + append audit entry
+                OrderStatusMachine.Apply(order, normalizedStatus, cmd.ActorUserId,
+                    reason: cmd.Request.RejectionReason ?? cmd.Request.InternalNote,
+                    source: "StaffUpdate");
+
+                // Merge side-note fields (internal_note, tracking_code, carrier_name) while preserving history.
+                var notesDict = MergeNotes(order,
+                    internalNote: cmd.Request.InternalNote,
+                    rejectionReason: cmd.Request.RejectionReason,
+                    trackingCode: cmd.Request.TrackingCode,
+                    carrierName: cmd.Request.CarrierName);
+                order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+
+                // If order is confirmed, try to create GHN shipments
+                if (normalizedStatus == OrderStatusMachine.Confirmed)
+                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+
+                // Restore stock when staff cancels a paid delivery order.
+                // payment_status=paid is the authoritative flag that stock was deducted by the payment webhook.
+                // BOPIS stock is managed via the StockTransfer flow — not restored here.
+                if (normalizedStatus == OrderStatusMachine.Cancelled
+                    && !OrderStatusMachine.IsBopis(previousStatus)
+                    && order.OrderItems != null)
+                {
+                    var stockWasDeducted = order.Notes.RootElement.TryGetProperty("payment_status", out var ps)
+                        && string.Equals(ps.GetString(), "paid", StringComparison.OrdinalIgnoreCase);
+                    if (stockWasDeducted)
+                        await _stockService.RestoreOrderStockAsync(order.OrderItems, ct);
+                }
+
+                // COD settlement: when staff marks the order as "delivered", update the
+                // pending COD PaymentTransaction to "success" so payment is tracked
+                // without relying on GHN webhooks.
+                if (normalizedStatus == OrderStatusMachine.Delivered)
+                {
+                    var isCod = order.TypeInfo != null
+                        && order.TypeInfo.RootElement.TryGetProperty("payment_method", out var pm)
+                        && string.Equals(pm.GetString(), "cod", StringComparison.OrdinalIgnoreCase);
+                    if (isCod)
+                    {
+                        var codPayments = await _context.PaymentTransactions
+                            .Where(p => p.OrderId == order.Id && p.Details != null)
+                            .ToListAsync(ct);
+                        var pendingCod = codPayments.FirstOrDefault(p =>
+                        {
+                            var root = p.Details!.RootElement;
+                            var method = root.TryGetProperty("method", out var m) ? m.GetString() : null;
+                            var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
+                            return string.Equals(method, "cod", StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase);
+                        });
+
+                        if (pendingCod != null)
+                        {
+                            var details = new Dictionary<string, object?>();
+                            foreach (var prop in pendingCod.Details!.RootElement.EnumerateObject())
+                            {
+                                if (prop.Name == "order_ids")
+                                    details[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
+                                else
+                                    details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                                        ? prop.Value.GetString() : prop.Value.GetRawText();
+                            }
+                            details["status"] = "cod_picked_up";
+                            details["picked_up_at"] = DateTime.UtcNow.ToString("o");
+                            details["picked_up_by"] = cmd.ActorUserId;
+                            
+                            // Store the staff name for easier display in UI
+                            var staffName = await _context.UserAccounts
+                                .Where(u => u.Id == cmd.ActorUserId)
+                                .Select(u => u.DisplayName)
+                                .FirstOrDefaultAsync(ct);
+                            details["picked_up_by_name"] = staffName ?? "Unknown Staff";
+
+                            pendingCod.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
+                            _logger.LogInformation("Staff {StaffName} ({StaffId}) delivered COD order {OrderId}: PaymentTransaction updated to cod_picked_up.", staffName, cmd.ActorUserId, order.Id);
+                        }
+                    }
+                }
+
+                await _context.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+                response = CreateOrderHandler.MapToResponse(order);
+
+                if (SlotFreedStatuses.Contains(normalizedStatus) && order.AssignedStaffId.HasValue)
+                    flushBranchId = order.OrderItems?.FirstOrDefault()?.BranchId;
             }
+            catch
+            {
+                await transaction.RollbackAsync(ct);
+                throw;
+            }
+        });
+
+        // When a slot frees up, immediately try to assign the oldest queued order (outside transaction — best-effort)
+        if (flushBranchId.HasValue)
+        {
+            try { await _orderAssignment.TryFlushQueueAsync(flushBranchId.Value, ct); }
+            catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after status update for Order {OrderId}.", cmd.Id); }
         }
 
-        return CreateOrderHandler.MapToResponse(order);
+        return response;
     }
 
     private static Dictionary<string, object?> MergeNotes(
@@ -790,6 +870,7 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
     /// Cancels the PayOS payment link if still unpaid, otherwise records a pending
     /// offline refund PaymentTransaction so finance can reconcile. Swallows and logs
     /// errors — gateway hiccups must not block order cancellation.
+    /// FIX #1: Update pending PaymentTransaction.Details.status to "cancelled" when cancelling unpaid link.
     /// </summary>
     private async Task TryHandlePayOSOnCancelAsync(
         OrderHeader order,
@@ -827,6 +908,7 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
                         reason,
                         refunded_by = actorId,
                         source_payment_id = p.Id,
+                        refund_expires_at = DateTime.UtcNow.AddDays(30).ToString("o"), // FIX #3: Track refund timeout
                     })),
                     CreatedAt = DateTime.UtcNow,
                 });
@@ -846,6 +928,23 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
             try
             {
                 await _payOS.CancelPaymentLinkAsync(payosOrderCode, reason, ct);
+
+                // FIX #1: Mark payment as cancelled in DB
+                var details = new Dictionary<string, object?>();
+                if (p.Details != null)
+                {
+                    foreach (var prop in p.Details.RootElement.EnumerateObject())
+                    {
+                        if (prop.Name == "status")
+                            details[prop.Name] = "cancelled";
+                        else
+                            details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+                    }
+                }
+                details["cancelled_at"] = DateTime.UtcNow.ToString("o");
+                details["cancelled_reason"] = reason;
+                p.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
+                _context.PaymentTransactions.Update(p);
             }
             catch (Exception ex)
             {

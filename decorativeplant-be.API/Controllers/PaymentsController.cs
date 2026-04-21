@@ -94,4 +94,12 @@ public class PaymentsController : BaseController
         var result = await Mediator.Send(new SyncPaymentCommand { OrderId = orderId });
         return Ok(new ApiResponse<bool> { Data = result });
     }
+
+    [HttpPost("{id:guid}/confirm-cod")]
+    [Authorize]
+    public async Task<IActionResult> ConfirmCodReceived(Guid id)
+    {
+        var result = await Mediator.Send(new ConfirmCodReceivedCommand { PaymentId = id, StaffId = GetUserId() });
+        return Ok(ApiResponse<PaymentResponse>.SuccessResponse(result, "COD Payment Confirmed"));
+    }
 }
