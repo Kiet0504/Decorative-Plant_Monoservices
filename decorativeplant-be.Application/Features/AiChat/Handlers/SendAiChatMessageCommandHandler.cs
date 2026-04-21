@@ -12,6 +12,7 @@ using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Common.Settings;
 using decorativeplant_be.Application.Features.AiChat;
 using decorativeplant_be.Application.Features.AiChat.Commands;
+using decorativeplant_be.Application.Features.Garden.Queries;
 using decorativeplant_be.Application.Features.Garden;
 using decorativeplant_be.Application.Features.RoomScan.Services;
 using decorativeplant_be.Application.Services;
@@ -44,6 +45,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     private readonly IUserContentSafetyService _contentSafety;
     private readonly IPlantAssistantScopeService _plantScope;
     private readonly IApplicationDbContext _db;
+    private readonly IMediator _mediator;
     private readonly ILogger<SendAiChatMessageCommandHandler> _logger;
 
     public SendAiChatMessageCommandHandler(
@@ -61,6 +63,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         IOptions<AiRoutingSettings> aiRouting,
         IUserContentSafetyService contentSafety,
         IPlantAssistantScopeService plantScope,
+        IMediator mediator,
         ILogger<SendAiChatMessageCommandHandler> logger)
     {
         _userAccountService = userAccountService;
@@ -77,6 +80,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         _aiRouting = aiRouting.Value;
         _contentSafety = contentSafety;
         _plantScope = plantScope;
+        _mediator = mediator;
         _logger = logger;
     }
 
@@ -206,11 +210,32 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                     "AI chat: formal Gemini+Ollama diagnosis completed for user {UserId} (disease label: {Disease}).",
                     request.UserId,
                     diagnosis.Disease);
+                List<CareScheduleTaskInfoDto>? suggestedSchedules = null;
+                if (focusPlant != null)
+                {
+                    try
+                    {
+                        var plan = await _mediator.Send(new GenerateGardenPlantAiSchedulePlanQuery
+                        {
+                            UserId = request.UserId,
+                            PlantId = focusPlant.Id,
+                            HorizonDays = 30,
+                            UtcOffsetMinutes = request.UtcOffsetMinutes
+                        }, cancellationToken);
+                        suggestedSchedules = plan.Tasks;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "AI chat: could not generate suggested schedules after diagnosis.");
+                    }
+                }
+
                 return new AiChatReplyDto
                 {
                     Reply = FormatDiagnosisAsChatReply(diagnosis),
                     SuggestedIntent = PlantChatIntentDetector.DiseaseDiagnosisIntent,
                     Diagnosis = ToDiagnosisSummary(diagnosis),
+                    SuggestedSchedules = suggestedSchedules,
                     ResolvedIntent = AiChatIntentResolver.ResolvedFormalDiagnosis
                 };
             }
