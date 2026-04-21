@@ -51,6 +51,7 @@ public class IotRepository : IIotRepository
         return await _context.Set<IotDevice>()
             .Include(d => d.Location)
             .Include(d => d.Branch)
+            .Include(d => d.AutomationRules)
             .FirstOrDefaultAsync(d => d.Id == id, cancellationToken);
     }
 

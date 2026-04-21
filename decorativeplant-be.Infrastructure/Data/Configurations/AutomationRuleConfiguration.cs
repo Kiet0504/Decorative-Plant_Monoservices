@@ -15,6 +15,6 @@ public class AutomationRuleConfiguration : IEntityTypeConfiguration<AutomationRu
         builder.Property(a => a.Schedule).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(a => a.Conditions).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(a => a.Actions).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
-        builder.HasOne(a => a.Device).WithMany(d => d.AutomationRules).HasForeignKey(a => a.DeviceId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(a => a.Device).WithMany(d => d.AutomationRules).HasForeignKey(a => a.DeviceId).OnDelete(DeleteBehavior.Cascade);
     }
 }

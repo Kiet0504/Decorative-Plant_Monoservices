@@ -309,7 +309,30 @@ def check_schedule(rule_id, schedule_dict):
 
 def _check_single_condition(r, sensor_data):
     comp = r.get("component") or r.get("component_key")
-    current_val = sensor_data.get(comp, None)
+    if not comp:
+        return False
+        
+    # 1. Tim cac giá trị cảm biến khớp (chính xác hoặc theo nhóm)
+    matching_values = []
+    if comp in sensor_data:
+        matching_values.append(float(sensor_data[comp]))
+    else:
+        # Tim theo prefix (ví dụ: humidity_sensor_1, humidity_sensor_2)
+        prefix = comp.lower()
+        for k, v in sensor_data.items():
+            k_low = k.lower()
+            if k_low.startswith(prefix + "_") or k_low.startswith(prefix + " #") or k_low == prefix:
+                try:
+                    matching_values.append(float(v))
+                except:
+                    pass
+    
+    if not matching_values:
+        return False
+
+    # 2. Tính trung bình cộng (Aggregation)
+    c_val = sum(matching_values) / len(matching_values)
+    
     op = r.get("operator")
     val = r.get("value")
     if val is None:
@@ -322,10 +345,8 @@ def _check_single_condition(r, sensor_data):
             val = logic_dict[op]
 
     res = False
-    if current_val is not None and val is not None:
+    if val is not None:
         try:
-            c_val = float(current_val)
-            
             # Handle range-based operators
             if isinstance(val, str) and "-" in val:
                 min_max = val.split("-")
