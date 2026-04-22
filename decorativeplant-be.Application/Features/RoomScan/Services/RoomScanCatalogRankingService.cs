@@ -37,7 +37,9 @@ public sealed class RoomScanCatalogRankingService : IRoomScanCatalogRankingServi
         var catalogQuery = new GetProductListingsQuery
         {
             BranchId = request.BranchId,
-            GroupBySpecies = false,
+            // For recommendations we want UNIQUE plants, not per-branch duplicates.
+            // Grouping keeps one representative listing per species/title while preserving real inventory constraints.
+            GroupBySpecies = true,
             Page = 1,
             PageSize = Math.Max(_options.MaxCatalogSnippets, 200),
             SortBy = "inventory",
