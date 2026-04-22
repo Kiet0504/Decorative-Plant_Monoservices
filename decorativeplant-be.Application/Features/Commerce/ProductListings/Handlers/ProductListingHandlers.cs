@@ -132,7 +132,10 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             if (root.TryGetProperty("taxonomy_info", out var ti) && ti.ValueKind != JsonValueKind.Null) response.TaxonomyInfo = JsonDocument.Parse(ti.GetRawText());
         }
 
-        // --- NEW: Force Taxonomy name for consistency in Admin view if Batch data is available ---
+        // Taxonomy fields (scientific name + taxonomy id) come from the batch when available.
+        // IMPORTANT: Do NOT override the product listing title for customer-facing surfaces.
+        // The listing title is what the shop is actually selling/branding ("Lan Y", etc.).
+        // Overriding it with taxonomy common-name can make AI/shop surfaces look "wrong".
         if (e.Batch?.Taxonomy != null)
         {
             string taxVi = "";
@@ -145,7 +148,11 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             }
             
             var targetTitle = !string.IsNullOrEmpty(taxVi) ? taxVi : (!string.IsNullOrEmpty(taxEn) ? taxEn : e.Batch.Taxonomy.ScientificName);
-            if (!string.IsNullOrEmpty(targetTitle)) response.Title = targetTitle;
+            // Keep the listing's own title if present; only fill from taxonomy when missing.
+            if (string.IsNullOrWhiteSpace(response.Title) && !string.IsNullOrEmpty(targetTitle))
+            {
+                response.Title = targetTitle;
+            }
             
             response.ScientificName = e.Batch.Taxonomy.ScientificName;
             response.TaxonomyId = e.Batch.TaxonomyId;
@@ -599,7 +606,9 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 // Filter out items with 0 price for customers (unless viewing all listings as staff)
                 .Where(p => query.Status == "all" || decimal.Parse(p.Price ?? "0") > 0)
                 // Filter out draft items for customers
-                .Where(p => query.Status == "all" || p.Status == "active")
+                .Where(p => query.Status == "all" || p.Status is "active" or "published")
+                // Filter out private/hidden items for customers
+                .Where(p => query.Status == "all" || p.Visibility == "public")
                 .ToList();
         }
         else
@@ -621,6 +630,7 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                     .Where(p => p.Status == "active" || p.Status == "published")
                     .Where(p => decimal.TryParse(p.Price ?? "0", out var pr) && pr > 0)
                     .Where(p => p.StockQuantity > 0)
+                    .Where(p => p.Visibility == "public")
                     .ToList();
             }
         }
