@@ -740,6 +740,10 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 "Do not substitute a plant from My Garden or a generic species name as a store product unless it matches a catalog title. " +
                 "Lead with those picks; do not reply with only \"open the Shop tab\" when catalog lines are present. " +
                 "If the user asks about a plant name that is NOT in the provided catalog list, do not claim our store \"doesn't have it\" — say it is not in the CURRENT in-stock picks (it may be out of stock, unpublished, or spelled differently) and then offer the closest alternatives from the provided list.");
+
+            sb.AppendLine(
+                "When referring to a product, mention AT MOST one listingId per plant. " +
+                "Do not write multiple ids like \"(listingId A or B)\" — pick the best match and present a single id.");
         }
         else
         {
