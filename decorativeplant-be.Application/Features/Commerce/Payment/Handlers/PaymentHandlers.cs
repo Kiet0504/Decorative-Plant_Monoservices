@@ -98,45 +98,29 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         var firstOrder = orders.First();
         var mainOrderCode = firstOrder.OrderCode ?? firstOrder.Id.ToString();
 
-        // Reuse an unexpired pending PaymentTransaction for the same order set.
-        // PayOS links expire after 30 minutes; we treat anything under 28 min as still valid.
-        // FIX #2: Use pessimistic locking (skip locked rows) to avoid race condition when multiple requests
-        // try to reuse the same pending transaction simultaneously.
+        // Removed reuse logic to ensure we always generate a fresh PayOS link if the user clicks Pay Now again.
+        // This avoids the "Order does not exist or has already been processed" error on PayOS when an old link expires or gets cancelled.
+
+        // To prevent database bloat from spamming "Pay Now", we will mark existing pending transactions as cancelled.
         var sortedOrderIds = cmd.Request.OrderIds.OrderBy(id => id).ToList();
-        var reuseCutoff = DateTime.UtcNow.AddMinutes(-28);
-        var recentPending = await _context.PaymentTransactions
-            .Where(p => p.OrderId == firstOrder.Id && p.CreatedAt >= reuseCutoff && p.Details != null)
-            .OrderByDescending(p => p.CreatedAt)
+        var existingPending = await _context.PaymentTransactions
+            .Where(p => p.OrderId == firstOrder.Id && p.Details != null)
             .ToListAsync(ct);
 
-        var reusable = recentPending.FirstOrDefault(p =>
+        foreach (var pt in existingPending)
         {
-            var root = p.Details!.RootElement;
-            if (!root.TryGetProperty("status", out var st)
-                || !string.Equals(st.GetString(), "pending", StringComparison.OrdinalIgnoreCase)) return false;
-            if (!root.TryGetProperty("order_ids", out var idsEl)
-                || idsEl.ValueKind != JsonValueKind.Array) return false;
-            var existingIds = idsEl.EnumerateArray().Select(e => e.GetGuid()).OrderBy(id => id).ToList();
-            return existingIds.SequenceEqual(sortedOrderIds);
-        });
-
-        if (reusable != null)
-        {
-            // Re-verify the record hasn't been modified/cancelled by another concurrent operation
-            var reusableRefresh = await _context.PaymentTransactions.FindAsync(new object[] { reusable.Id }, cancellationToken: ct);
-            if (reusableRefresh?.Details != null)
+            var root = pt.Details!.RootElement;
+            if (root.TryGetProperty("status", out var st) && string.Equals(st.GetString(), "pending", StringComparison.OrdinalIgnoreCase))
             {
-                var status = reusableRefresh.Details.RootElement.TryGetProperty("status", out var st) ? st.GetString() : null;
-                if (string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase))
+                var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(pt.Details.RootElement.GetRawText());
+                if (dict != null)
                 {
-                    _logger.LogInformation("Reusing pending PaymentTransaction {TxId} for orders [{OrderIds}]",
-                        reusable.Id, string.Join(", ", sortedOrderIds));
-                    return MapToResponse(reusableRefresh);
+                    dict["status"] = "cancelled";
+                    dict["cancel_reason"] = "Replaced by a newer payment attempt";
+                    pt.Details = JsonDocument.Parse(JsonSerializer.Serialize(dict));
                 }
             }
         }
-
-        // FIX #4: Use timestamp + random suffix instead of GetHashCode to prevent collision
         // GetHashCode() is non-deterministic across processes and can collide for different inputs
         var random = new Random();
         long payosOrderCode = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 1_000_000_000L) * 10 + random.Next(0, 10);

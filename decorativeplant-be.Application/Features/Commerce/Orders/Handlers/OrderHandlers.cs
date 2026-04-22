@@ -414,13 +414,6 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 _context.OrderHeaders.Add(order);
                 orders.Add(order);
 
-                // COD flow: auto-confirm and create GHN shipment
-                if (NormalizePaymentMethod(req.PaymentMethod) == "cod")
-                {
-                    OrderStatusMachine.Apply(order, OrderStatusMachine.Confirmed,
-                        changedBy: cmd.UserId, reason: "COD auto-confirm", source: "CreateOrder");
-                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
-                }
             }
             
             // Clear items from user's shopping cart immediately after order creation.
