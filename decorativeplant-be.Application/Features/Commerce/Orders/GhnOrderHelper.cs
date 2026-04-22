@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Services;
@@ -31,7 +32,11 @@ public static class GhnOrderHelper
             return false;
         }
 
-        if (order.Notes != null && order.Notes.RootElement.TryGetProperty("shipments", out _))
+        // Only skip when we already have a non-empty shipments array (not merely a key or empty array).
+        if (order.Notes != null
+            && order.Notes.RootElement.TryGetProperty("shipments", out var existingShipments)
+            && existingShipments.ValueKind == JsonValueKind.Array
+            && existingShipments.GetArrayLength() > 0)
         {
             logger.LogInformation("GHN: Skipping - Shipments already exist for Order {OrderCode}", order.OrderCode);
             return true;
@@ -39,14 +44,41 @@ public static class GhnOrderHelper
 
         try
         {
+            // Staff offline ship-from-branch: DeliveryAddress JSON is GHN-only (name, phone, address, district, ward).
             var da = order.DeliveryAddress.RootElement;
 
-            string GetProp(params string[] keys) {
-                foreach (var k in keys) if (da.TryGetProperty(k, out var p)) return p.GetString() ?? "";
+            /// <summary>GHN ward / phone may arrive as JSON string or number depending on channel serialization.</summary>
+            static string ReadStringish(JsonElement p)
+            {
+                return p.ValueKind switch
+                {
+                    JsonValueKind.String => p.GetString() ?? "",
+                    JsonValueKind.Number => p.GetRawText().Trim(),
+                    _ => "",
+                };
+            }
+
+            string GetProp(params string[] keys)
+            {
+                foreach (var k in keys)
+                {
+                    if (!da.TryGetProperty(k, out var p)) continue;
+                    var s = ReadStringish(p);
+                    if (!string.IsNullOrEmpty(s)) return s;
+                }
+
                 return "";
             }
-            int GetIntProp(int def, params string[] keys) {
-                foreach (var k in keys) if (da.TryGetProperty(k, out var p)) return p.ValueKind == JsonValueKind.Number ? p.GetInt32() : (int.TryParse(p.GetString(), out var v) ? v : def);
+
+            int GetIntProp(int def, params string[] keys)
+            {
+                foreach (var k in keys)
+                {
+                    if (!da.TryGetProperty(k, out var p)) continue;
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var i)) return i;
+                    if (p.ValueKind == JsonValueKind.String && int.TryParse(p.GetString(), out var v)) return v;
+                }
+
                 return def;
             }
 
@@ -99,11 +131,11 @@ public static class GhnOrderHelper
 
             var shipment = new { branch_id = branchId?.ToString(), tracking_code = res.OrderCode, carrier = "GHN" };
 
-            var notes = new Dictionary<string, object?>();
-            if (order.Notes != null)
-                foreach (var prop in order.Notes.RootElement.EnumerateObject())
-                    if (prop.Name != "shipments" && prop.Name != "ghn_handoff_failed" && prop.Name != "ghn_handoff_error")
-                        notes[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+            var notes = OfflineDeliveryDeliveredMailHelper.CloneNotesToDictionary(order);
+            notes.Remove("shipments");
+            notes.Remove("ghn_handoff_failed");
+            notes.Remove("ghn_handoff_error");
+            notes.Remove("ghn_handoff_failed_at");
             // Keep JSONB shape backward-compatible (array) — FE/staff dashboards already read shipments[].
             notes["shipments"] = new[] { shipment };
             order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
@@ -124,10 +156,7 @@ public static class GhnOrderHelper
     /// </summary>
     private static void MarkHandoffFailure(OrderHeader order, string reason)
     {
-        var notes = new Dictionary<string, object?>();
-        if (order.Notes != null)
-            foreach (var prop in order.Notes.RootElement.EnumerateObject())
-                notes[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
+        var notes = OfflineDeliveryDeliveredMailHelper.CloneNotesToDictionary(order);
         notes["ghn_handoff_failed"] = true;
         notes["ghn_handoff_error"] = reason;
         notes["ghn_handoff_failed_at"] = DateTime.UtcNow.ToString("o");

@@ -61,14 +61,20 @@ public class OrderAssignmentQueueJob : BackgroundService
         var assignmentService = scope.ServiceProvider.GetRequiredService<IOrderAssignmentService>();
         var emailService = scope.ServiceProvider.GetRequiredService<IEmailService>();
 
-        var queuedOrders = await context.OrderHeaders
+        var candidateOrders = await context.OrderHeaders
             .Include(o => o.OrderItems)
             .Where(o => o.AssignedStaffId == null
                      && o.Status != null
                      && QueueableStatuses.Contains(o.Status))
             .OrderBy(o => o.CreatedAt)  // FIFO
-            .Take(50)
+            .Take(80)
             .ToListAsync(ct);
+
+        // Pickup and staff offline-channel orders are never workload-auto-assigned here.
+        var queuedOrders = candidateOrders
+            .Where(o => !OrderTypeInfoHelper.SkipsFulfillmentWorkloadPipeline(o))
+            .Take(50)
+            .ToList();
 
         if (queuedOrders.Count == 0) return;
 

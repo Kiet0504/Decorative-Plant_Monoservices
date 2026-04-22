@@ -16,6 +16,13 @@ namespace decorativeplant_be.Application.Features.Commerce.Payment.Handlers;
 
 using decorativeplant_be.Application.Features.Commerce.Orders;
 
+/// <summary>In-store / counter immediate pickup orders that share PayOS guest + confirm rules.</summary>
+internal static class CounterImmediatePickupOrderTypes
+{
+    public static bool Matches(string? orderType) =>
+        string.Equals(orderType, "bopis_immediate", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(orderType, "offline_pickup", StringComparison.OrdinalIgnoreCase);
+}
 
 public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, PaymentResponse>
 {
@@ -51,7 +58,7 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
             {
                 var root = order.TypeInfo.RootElement;
                 var orderType = root.TryGetProperty("order_type", out var ot) ? ot.GetString() : null;
-                isBopisImmediateGuest = string.Equals(orderType, "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+                isBopisImmediateGuest = CounterImmediatePickupOrderTypes.Matches(orderType);
             }
 
             if (!isOwner && !isBopisImmediateGuest)
@@ -365,7 +372,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                         {
                             var isBopisImmediate = order.TypeInfo != null
                                 && order.TypeInfo.RootElement.TryGetProperty("order_type", out var ot)
-                                && string.Equals(ot.GetString(), "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+                                && CounterImmediatePickupOrderTypes.Matches(ot.GetString());
 
                             if (order.Status == "pending")
                             {
@@ -373,34 +380,40 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
 
-                                // BOPIS immediate: once payment is paid, it should move to confirmed
+                                // Counter immediate pickup: once payment is paid, it should move to confirmed
                                 // so store staff can complete handover at counter.
                                 if (isBopisImmediate)
                                 {
-                                    decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
-                                        .ApplyFromExternalSource(
-                                            order,
-                                            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,
-                                            source: "PayOSWebhook",
-                                            reason: "Payment confirmed");
+                                    OrderStatusMachine.ApplyFromExternalSource(
+                                        order,
+                                        OrderStatusMachine.Confirmed,
+                                        source: "PayOSWebhook",
+                                        reason: "Payment confirmed");
+                                }
+                                // Ship-from-branch (counter) + home delivery + PayOS: must reach confirmed and
+                                // seed GHN shipment metadata here — same paid gate as BOPIS. Otherwise the order
+                                // stays pending until staff "Confirm", and TryCreateGhn on that transition can
+                                // race or be skipped while fulfillment expects GHN rows for "Hand to GHN".
+                                else if (OrderTypeInfoHelper.IsOfflineCounterDeliveryShipOrder(order))
+                                {
+                                    OrderStatusMachine.ApplyFromExternalSource(
+                                        order,
+                                        OrderStatusMachine.Confirmed,
+                                        source: "PayOSWebhook",
+                                        reason: "Payment confirmed (offline ship-from-branch delivery)");
+                                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                                 }
                             }
 
-                            var notesObj = new Dictionary<string, object?>();
-                            if (order.Notes != null)
-                            {
-                                foreach (var prop in order.Notes.RootElement.EnumerateObject())
-                                    notesObj[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
-                                        ? prop.Value.GetString() : prop.Value.GetRawText();
-                            }
-                            // FIX #4: Sync payment_status from PaymentTransaction to OrderHeader.Notes
+                            // FIX #4: Sync payment fields while preserving JSON kinds (status_history[], shipments[], …).
+                            var notesObj = OfflineDeliveryDeliveredMailHelper.CloneNotesToDictionary(order);
                             notesObj["payment_status"] = "paid";
                             notesObj["payment_confirmed_at"] = DateTime.UtcNow.ToString("o");
                             order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
 
-                            // Status stays `pending` — fulfillment staff must manually confirm,
-                            // pack, and hand to carrier. No auto-advance on payment so the
-                            // staff workflow (Confirm → Pack → Ship) is not bypassed.
+                            // Most bank_transfer orders stay `pending` until fulfillment confirms.
+                            // Exceptions: counter BOPIS / offline_pickup (auto-confirmed above) and
+                            // offline counter ship-from-branch delivery (auto-confirmed + GHN seed above).
                         }
                     }
                 }
@@ -465,37 +478,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
             foreach (var order in orders)
             {
-                try
-                {
-                    if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
-                    {
-                        var total = "0";
-                        if (order.Financials != null)
-                        {
-                            total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
-                        }
-
-                        var model = new Dictionary<string, string>
-                        {
-                            { "CustomerName", order.User.DisplayName ?? "Customer" },
-                            { "OrderCode", order.OrderCode ?? "N/A" },
-                            { "BranchName", "Decorative Plant Store" },
-                            { "Total", total }
-                        };
-
-                        await _emailTemplateService.SendTemplateAsync(
-                            "OrderConfirmed",
-                            model,
-                            order.User.Email,
-                            $"Order Confirmed - {order.OrderCode}",
-                            order.User.DisplayName,
-                            ct);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
-                }
+                await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
+                    order, order.User, _emailTemplateService, _logger, ct);
 
                 // Also notify fulfillment_staff/branch_manager at the order's branch.
                 // Fire-and-log: never block the webhook ack on email delivery.
@@ -689,7 +673,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                         {
                             var isBopisImmediate = order.TypeInfo != null
                                 && order.TypeInfo.RootElement.TryGetProperty("order_type", out var ot)
-                                && string.Equals(ot.GetString(), "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+                                && CounterImmediatePickupOrderTypes.Matches(ot.GetString());
 
                             if (order.Status == "pending")
                             {
@@ -697,7 +681,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
 
-                                // BOPIS immediate: after successful sync, move pending -> confirmed
+                                // Counter immediate pickup: after successful sync, move pending -> confirmed
                                 // so staff can see "Complete Order" action in UI.
                                 if (isBopisImmediate)
                                 {
@@ -742,37 +726,8 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
 
                 foreach (var order in syncedOrders)
                 {
-                    try
-                    {
-                        if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
-                        {
-                            var total = "0";
-                            if (order.Financials != null)
-                            {
-                                total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
-                            }
-
-                            var model = new Dictionary<string, string>
-                            {
-                                { "CustomerName", order.User.DisplayName ?? "Customer" },
-                                { "OrderCode", order.OrderCode ?? "N/A" },
-                                { "BranchName", "Decorative Plant Store" },
-                                { "Total", total }
-                            };
-
-                            await _emailTemplateService.SendTemplateAsync(
-                                "OrderConfirmed",
-                                model,
-                                order.User.Email,
-                                $"Order Confirmed - {order.OrderCode}",
-                                order.User.DisplayName,
-                                ct);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode} during sync", order.OrderCode);
-                    }
+                    await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
+                        order, order.User, _emailTemplateService, _logger, ct);
 
                     try
                     {

@@ -34,7 +34,8 @@ public interface IBranchAllocationService
     /// </summary>
     Task<List<AllocationResult>> AllocateAsync(
         List<(Guid ListingId, int Quantity)> requestedItems,
-        CancellationToken ct);
+        CancellationToken ct,
+        Guid? fulfillFromBranchId = null);
 }
 
 public class BranchAllocationService : IBranchAllocationService
@@ -100,7 +101,8 @@ public class BranchAllocationService : IBranchAllocationService
 
     public async Task<List<AllocationResult>> AllocateAsync(
         List<(Guid ListingId, int Quantity)> requestedItems,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? fulfillFromBranchId = null)
     {
         // ══════════════════════════════════════════════════════════
         // Phase 1: Resolve each cart item to its product title
@@ -166,6 +168,20 @@ public class BranchAllocationService : IBranchAllocationService
 
             if (string.IsNullOrEmpty(title))
             {
+                if (fulfillFromBranchId.HasValue && primaryListing.BranchId != fulfillFromBranchId.Value)
+                {
+                    throw new BadRequestException(
+                        $"Listing {listingId} is not stocked at the selected branch.");
+                }
+
+                var primaryStock = GetAvailableStockFromMap(primaryListing, stockMap);
+                if (fulfillFromBranchId.HasValue && primaryStock < qty)
+                {
+                    throw new BadRequestException(
+                        $"Insufficient stock at branch for listing {listingId}. Available: {primaryStock}, requested: {qty}.");
+                }
+
+                var stockForPhase2 = fulfillFromBranchId.HasValue ? primaryStock : qty;
                 cartProducts.Add(new CartProduct
                 {
                     Title = title ?? listingId.ToString(),
@@ -174,7 +190,7 @@ public class BranchAllocationService : IBranchAllocationService
                     QuantityNeeded = qty,
                     SiblingListings = new List<(ProductListing listing, int stock)>
                     {
-                        (primaryListing, qty)
+                        (primaryListing, stockForPhase2)
                     }
                 });
                 continue;
@@ -203,6 +219,13 @@ public class BranchAllocationService : IBranchAllocationService
                 var stock = GetAvailableStockFromMap(s, stockMap);
                 if (stock > 0)
                     siblingsWithStock.Add((s, stock));
+            }
+
+            if (fulfillFromBranchId.HasValue)
+            {
+                siblingsWithStock = siblingsWithStock
+                    .Where(s => s.listing.BranchId == fulfillFromBranchId.Value)
+                    .ToList();
             }
 
             // Validate total stock

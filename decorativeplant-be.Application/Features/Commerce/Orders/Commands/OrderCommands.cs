@@ -29,6 +29,13 @@ public class ConfirmReceiptCommand : IRequest<OrderResponse>
     public Guid UserId { get; set; }
 }
 
+/// <summary>Offline ship-from-branch: customer completes order via link in email (no login).</summary>
+public class ConfirmReceiptByTokenCommand : IRequest<OrderResponse>
+{
+    public Guid OrderId { get; set; }
+    public string Token { get; set; } = "";
+}
+
 public class ConfirmReceiptBatchCommand : IRequest<List<OrderResponse>>
 {
     public List<Guid> OrderIds { get; set; } = new();
