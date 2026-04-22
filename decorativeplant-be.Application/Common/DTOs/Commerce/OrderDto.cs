@@ -28,6 +28,7 @@ public class UpdateOrderStatusRequest
     public string? RejectionReason { get; set; }
     public string? TrackingCode { get; set; }
     public string? CarrierName { get; set; }
+    public List<string>? EvidenceImageUrls { get; set; }
 }
 
 public class CancelOrderRequest
@@ -88,6 +89,7 @@ public class OrderResponse
     public DateTime? ConfirmedAt { get; set; }
     public Guid? AssignedStaffId { get; set; }
     public string? AssignedStaffName { get; set; }
+    public List<string>? EvidenceImageUrls { get; set; }
     public List<OrderItemResponse> Items { get; set; } = new();
 }
 

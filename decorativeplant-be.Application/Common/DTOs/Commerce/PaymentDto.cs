@@ -25,6 +25,10 @@ public class PaymentResponse
     public string? CollectedBy { get; set; }
     public DateTime? PickedUpAt { get; set; }
     public string? PickedUpBy { get; set; }
+    public DateTime? RefundedAt { get; set; }
+    public string? RefundedBy { get; set; }
+    public string? RefundNote { get; set; }
+    public List<string>? RefundEvidenceImages { get; set; }
 }
 
 /// <summary>

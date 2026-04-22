@@ -526,6 +526,14 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             response.PaymentStatus = root.TryGetProperty("payment_status", out var ps) ? ps.GetString() : null;
             response.TrackingCode = root.TryGetProperty("tracking_code", out var tc) ? tc.GetString() : null;
             response.CarrierName = root.TryGetProperty("carrier_name", out var cn2) ? cn2.GetString() : null;
+            if (root.TryGetProperty("evidence_images", out var imagesElement) && imagesElement.ValueKind == JsonValueKind.Array)
+            {
+                response.EvidenceImageUrls = imagesElement.EnumerateArray()
+                    .Select(x => x.GetString())
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Cast<string>()
+                    .ToList();
+            }
         }
         if (o.OrderItems != null)
         {
@@ -606,7 +614,8 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
                     internalNote: cmd.Request.InternalNote,
                     rejectionReason: cmd.Request.RejectionReason,
                     trackingCode: cmd.Request.TrackingCode,
-                    carrierName: cmd.Request.CarrierName);
+                    carrierName: cmd.Request.CarrierName,
+                    evidenceImageUrls: cmd.Request.EvidenceImageUrls);
                 order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
 
                 // If order is confirmed, try to create GHN shipments
@@ -703,7 +712,8 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
     private static Dictionary<string, object?> MergeNotes(
         OrderHeader order,
         string? internalNote, string? rejectionReason,
-        string? trackingCode, string? carrierName)
+        string? trackingCode, string? carrierName,
+        List<string>? evidenceImageUrls = null)
     {
         var dict = new Dictionary<string, object?>();
         if (order.Notes != null)
@@ -718,6 +728,26 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
         if (!string.IsNullOrEmpty(rejectionReason))  dict["rejection_reason"] = rejectionReason;
         if (!string.IsNullOrEmpty(trackingCode))     dict["tracking_code"]    = trackingCode;
         if (!string.IsNullOrEmpty(carrierName))      dict["carrier_name"]     = carrierName;
+        if (evidenceImageUrls != null && evidenceImageUrls.Count > 0)
+        {
+            // Append to existing evidence_images if any
+            var existing = new List<string>();
+            if (dict.TryGetValue("evidence_images", out var prev) && prev != null)
+            {
+                var prevStr = prev.ToString();
+                if (!string.IsNullOrEmpty(prevStr))
+                {
+                    try
+                    {
+                        var arr = JsonSerializer.Deserialize<List<string>>(prevStr);
+                        if (arr != null) existing.AddRange(arr);
+                    }
+                    catch { /* ignore parse errors on legacy data */ }
+                }
+            }
+            existing.AddRange(evidenceImageUrls);
+            dict["evidence_images"] = existing;
+        }
         return dict;
     }
 }

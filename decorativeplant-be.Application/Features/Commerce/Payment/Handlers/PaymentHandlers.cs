@@ -213,6 +213,20 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
                 r.PickedUpAt = DateTime.TryParse(pat.GetString(), out var pdt) ? pdt : null;
 
             r.PickedUpBy = root.TryGetProperty("picked_up_by_name", out var pbn) ? pbn.GetString() : null;
+
+            if (root.TryGetProperty("refunded_at", out var rat) && rat.ValueKind == JsonValueKind.String)
+                r.RefundedAt = DateTime.TryParse(rat.GetString(), out var rdt) ? rdt : null;
+
+            r.RefundedBy = root.TryGetProperty("refunded_by_name", out var rbn) ? rbn.GetString() : null;
+            r.RefundNote = root.TryGetProperty("refund_note", out var rn) ? rn.GetString() : null;
+            if (root.TryGetProperty("refund_evidence_images", out var imagesElement) && imagesElement.ValueKind == JsonValueKind.Array)
+            {
+                r.RefundEvidenceImages = imagesElement.EnumerateArray()
+                    .Select(x => x.GetString())
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Cast<string>()
+                    .ToList();
+            }
         }
         return r;
     }
@@ -856,6 +870,94 @@ public class ConfirmCodReceivedCommandHandler : IRequestHandler<ConfirmCodReceiv
         }
 
         _logger.LogInformation("Staff {StaffName} ({StaffId}) confirmed receipt of COD money for transaction {PaymentId}.", staffName, request.StaffId, payment.Id);
+
+        await _context.SaveChangesAsync(ct);
+        return CreatePaymentHandler.MapToResponse(payment);
+    }
+}
+
+public class MarkRefundedCommandHandler : IRequestHandler<MarkRefundedCommand, PaymentResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly ILogger<MarkRefundedCommandHandler> _logger;
+
+    public MarkRefundedCommandHandler(IApplicationDbContext context, ILogger<MarkRefundedCommandHandler> logger)
+    {
+        _context = context;
+        _logger = logger;
+    }
+
+    public async Task<PaymentResponse> Handle(MarkRefundedCommand request, CancellationToken ct)
+    {
+        var payment = await _context.PaymentTransactions.FindAsync(new object[] { request.PaymentId }, ct);
+        if (payment == null || payment.Details == null)
+            throw new NotFoundException("Payment transaction not found.");
+
+        var root = payment.Details.RootElement;
+        var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
+
+        // Only allow refund on payments that have been paid/success
+        var refundableStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "paid", "success", "cod_picked_up" };
+
+        if (status == null || !refundableStatuses.Contains(status))
+            throw new BadRequestException(
+                $"Only paid/success/cod_picked_up payments can be marked as refunded. Current status: {status ?? "null"}");
+
+        if (string.Equals(status, "refunded", StringComparison.OrdinalIgnoreCase))
+            throw new BadRequestException("This payment has already been marked as refunded.");
+
+        var details = new Dictionary<string, object?>();
+        foreach (var prop in root.EnumerateObject())
+        {
+            if (prop.Name == "order_ids")
+                details[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
+            else
+                details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                    ? prop.Value.GetString() : prop.Value.GetRawText();
+        }
+
+        details["status"] = "refunded";
+        details["refunded_at"] = DateTime.UtcNow.ToString("o");
+        details["refunded_by"] = request.StaffId;
+
+        var staffName = await _context.UserAccounts
+            .Where(u => u.Id == request.StaffId)
+            .Select(u => u.DisplayName)
+            .FirstOrDefaultAsync(ct);
+        details["refunded_by_name"] = staffName ?? "Unknown Staff";
+
+        if (!string.IsNullOrWhiteSpace(request.Note))
+            details["refund_note"] = request.Note;
+
+        if (request.EvidenceImageUrls != null && request.EvidenceImageUrls.Count > 0)
+            details["refund_evidence_images"] = request.EvidenceImageUrls;
+
+        payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
+
+        // Sync refunded status to OrderHeader.Notes
+        var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId }, ct);
+        if (order != null)
+        {
+            var notesObj = new Dictionary<string, object?>();
+            if (order.Notes != null)
+            {
+                foreach (var prop in order.Notes.RootElement.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String)
+                        notesObj[prop.Name] = prop.Value.GetString();
+                    else
+                        notesObj[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
+                }
+            }
+            notesObj["payment_status"] = "refunded";
+            notesObj["refunded_at"] = DateTime.UtcNow.ToString("o");
+            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+        }
+
+        _logger.LogInformation(
+            "Staff {StaffName} ({StaffId}) marked payment {PaymentId} as refunded. Note: {Note}",
+            staffName, request.StaffId, payment.Id, request.Note ?? "(none)");
 
         await _context.SaveChangesAsync(ct);
         return CreatePaymentHandler.MapToResponse(payment);
