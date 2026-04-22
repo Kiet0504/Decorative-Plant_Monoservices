@@ -23,8 +23,12 @@ public sealed class AiLiveSettings
     public int AuthTokenUses { get; set; } = 128;
 
     /// <summary>
-    /// Preferred REST segment for <c>POST …/auth_tokens</c> (typically <c>v1alpha</c>; discovery lists this method there).
-    /// The service retries the <i>other</i> version automatically on HTTP 404.
+    /// Preferred REST segment for <c>POST …/auth_tokens</c>. Defaults to <c>v1alpha</c> —
+    /// the only API surface where <c>auth_tokens</c> actually exists (v1beta returns 404).
+    /// The patched <c>googleai_dart</c> in <c>packages/googleai_dart</c> correctly opens the
+    /// WebSocket on <c>/v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=…</c>
+    /// when a caller supplies an ephemeral token, so v1alpha is the only version that works
+    /// end-to-end. The service retries the alternate version automatically on HTTP 404.
     /// </summary>
     public string AuthTokensApiVersion { get; set; } = "v1alpha";
 }

@@ -96,6 +96,11 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
             ? "https://generativelanguage.googleapis.com"
             : _gemini.GeminiBaseUrl.TrimEnd('/');
 
+        // Prefer v1alpha: Google's `auth_tokens` endpoint only exists on /v1alpha/ — v1beta
+        // returns 404. Our patched googleai_dart (packages/googleai_dart) correctly consumes
+        // v1alpha tokens on the Constrained WebSocket endpoint; upstream 6.1.0 does not and
+        // silently drops the WS at TLS upgrade. The retry-on-404 path tries v1beta as a
+        // defensive fallback in case Google ever migrates the endpoint.
         var preferredVer = string.IsNullOrWhiteSpace(_live.AuthTokensApiVersion)
             ? "v1alpha"
             : _live.AuthTokensApiVersion.Trim().TrimStart('/');
