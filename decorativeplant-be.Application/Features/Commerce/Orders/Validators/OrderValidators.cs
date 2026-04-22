@@ -28,6 +28,10 @@ public class CreateOrderCommandValidator : AbstractValidator<CreateOrderCommand>
         RuleFor(x => x.Request.DeliveryAddress!.RecipientName).NotEmpty().When(x => x.Request.DeliveryAddress != null);
         RuleFor(x => x.Request.DeliveryAddress!.Phone).NotEmpty().When(x => x.Request.DeliveryAddress != null);
         RuleFor(x => x.Request.DeliveryAddress!.AddressLine1).NotEmpty().When(x => x.Request.DeliveryAddress != null);
+        RuleFor(x => x.Request.DeliveryAddress!.Email)
+            .EmailAddress()
+            .When(x => !string.IsNullOrWhiteSpace(x.Request.DeliveryAddress?.Email))
+            .WithMessage("Invalid recipient email.");
 
         RuleFor(x => x.Request.Items)
             .NotEmpty().WithMessage("Order must contain at least one item.");
@@ -51,6 +55,15 @@ public class UpdateOrderStatusCommandValidator : AbstractValidator<UpdateOrderSt
     {
         RuleFor(x => x.Id).NotEmpty();
         RuleFor(x => x.Request.Status).NotEmpty().WithMessage("Status is required.");
+    }
+}
+
+public class ConfirmReceiptByTokenCommandValidator : AbstractValidator<ConfirmReceiptByTokenCommand>
+{
+    public ConfirmReceiptByTokenCommandValidator()
+    {
+        RuleFor(x => x.OrderId).NotEmpty();
+        RuleFor(x => x.Token).NotEmpty().MinimumLength(32).WithMessage("Token is required.");
     }
 }
 

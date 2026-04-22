@@ -2,9 +2,11 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Interfaces;
+using decorativeplant_be.Application.Common.Options;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
 using decorativeplant_be.Application.Services;
@@ -36,6 +38,7 @@ public class OrdersController : BaseController
         Guid? userId = null;
         Guid? effectiveBranchId = branchId;
         Guid? assignedStaffId = null;
+        Guid? fulfillmentQueueStaffId = null;
 
         if (isAdmin)
         {
@@ -43,12 +46,13 @@ public class OrdersController : BaseController
         }
         else if (isFulfillmentStaff)
         {
-            // Fulfillment staff only see orders assigned to themselves
-            assignedStaffId = GetUserId();
+            // Branch queue: unassigned orders at this branch + orders assigned to this user.
+            var fulfillmentStaffId = GetUserId();
+            fulfillmentQueueStaffId = fulfillmentStaffId;
             // Ignore client-provided branchId to prevent stale/incorrect FE profile data
             // from hiding assigned orders. Branch scope is derived server-side.
             effectiveBranchId = await context.StaffAssignments
-                .Where(s => s.StaffId == assignedStaffId && s.IsPrimary)
+                .Where(s => s.StaffId == fulfillmentStaffId && s.IsPrimary)
                 .Select(s => (Guid?)s.BranchId)
                 .FirstOrDefaultAsync();
         }
@@ -74,6 +78,7 @@ public class OrdersController : BaseController
             UserId = userId,
             BranchId = effectiveBranchId,
             AssignedStaffId = assignedStaffId,
+            FulfillmentQueueStaffId = fulfillmentQueueStaffId,
             Status = status,
             Page = page,
             PageSize = pageSize
@@ -429,12 +434,12 @@ public class OrdersController : BaseController
     // Note: `confirmed` (Đã xác nhận) is set by the staff confirm action or payment success, not by any GHN state.
     private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
     {
-        "ready_to_pick" or "picking" => "processing",
-        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail" => "shipping",
-        "delivered" => "delivered",
-        "waiting_to_return" or "return" or "returned" => "returned",
-        "cancel" or "lost" => "cancelled",
-        _ => null,
+        "ready_to_pick" or "picking"                                                             => "processing",
+        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail"  => "shipping",
+        "delivered"                                                                              => "delivered",
+        "waiting_to_return" or "return" or "returned"                                            => "returned",
+        "cancel" or "lost"                                                                       => "cancelled",
+        _                                                                                        => null,
     };
 
     [HttpPost]
@@ -447,9 +452,38 @@ public class OrdersController : BaseController
 
     [HttpPatch("{id:guid}/status")]
     [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
-    public async Task<IActionResult> UpdateStatus(Guid id, [FromBody] UpdateOrderStatusRequest request)
+    public async Task<IActionResult> UpdateStatus(
+        Guid id,
+        [FromBody] UpdateOrderStatusRequest request,
+        [FromServices] IApplicationDbContext context)
     {
-        var result = await Mediator.Send(new UpdateOrderStatusCommand { Id = id, ActorUserId = GetUserId(), Request = request });
+        var actorUserId = GetUserId();
+        if (User.IsInRole("fulfillment_staff") && actorUserId.HasValue)
+        {
+            var order = await context.OrderHeaders
+                .Include(o => o.OrderItems)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(o => o.Id == id);
+            if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+
+            var actorBranchId = await context.StaffAssignments
+                .Where(s => s.StaffId == actorUserId && s.IsPrimary)
+                .Select(s => (Guid?)s.BranchId)
+                .FirstOrDefaultAsync();
+
+            var belongsToBranch = actorBranchId.HasValue
+                                  && order.OrderItems.Any(oi => oi.BranchId == actorBranchId);
+            if (!belongsToBranch) return Forbid();
+
+            if (order.AssignedStaffId.HasValue && order.AssignedStaffId != actorUserId) return Forbid();
+        }
+
+        var result = await Mediator.Send(new UpdateOrderStatusCommand
+        {
+            Id = id,
+            ActorUserId = actorUserId,
+            Request = request,
+        });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result));
     }
 
@@ -468,6 +502,22 @@ public class OrdersController : BaseController
         var userId = GetUserId();
         if (userId == null) return Unauthorized();
         var result = await Mediator.Send(new ConfirmReceiptCommand { OrderId = id, UserId = userId.Value });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order confirmed as received"));
+    }
+
+    /// <summary>
+    /// Offline ship-from-branch: customer confirms receipt via signed link in email (no login).
+    /// Does not replace POST /confirm-receipt for online account holders.
+    /// </summary>
+    [HttpPost("{id:guid}/confirm-receipt-by-token")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ConfirmReceiptByToken(Guid id, [FromBody] ConfirmReceiptByTokenRequest request)
+    {
+        var result = await Mediator.Send(new ConfirmReceiptByTokenCommand
+        {
+            OrderId = id,
+            Token = request?.Token?.Trim() ?? "",
+        });
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order confirmed as received"));
     }
 
@@ -505,6 +555,8 @@ public class OrdersController : BaseController
         [FromServices] IApplicationDbContext context,
         [FromServices] IStockService stockService,
         [FromServices] IOptions<GhnSettings> ghnOptions,
+        [FromServices] IEmailService emailService,
+        [FromServices] IOptions<CustomerPortalLinksOptions> portalLinks,
         [FromServices] ILogger<OrdersController> logger)
     {
         // 1) Token header check. Empty config = disabled (dev only).
@@ -580,8 +632,8 @@ public class OrdersController : BaseController
                     reason: payload.Description ?? payload.Status);
 
             // COD settlement: when the shipper marks the parcel delivered and this is a
-            // COD order, update the existing pending PaymentTransaction to "success".
-            // Falls back to creating a new record for legacy orders without one.
+            // COD order, insert a one-time PaymentTransaction so the order is recorded as
+            // paid. Guarded by payment_method and a dedupe check — GHN retries the webhook.
             if (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered)
             {
                 var isCod = order.TypeInfo != null
@@ -597,63 +649,41 @@ public class OrdersController : BaseController
                     {
                         var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var tot) == true
                             ? tot.GetString() ?? "0" : "0";
-
-                        // Try to find and update the pending COD record created at order time
-                        var pendingCodTx = await context.PaymentTransactions
-                            .Where(p => p.OrderId == order.Id && p.Details != null)
-                            .ToListAsync();
-                        var existingPending = pendingCodTx.FirstOrDefault(p =>
+                        var codTx = new PaymentTransaction
                         {
-                            var root = p.Details!.RootElement;
-                            var method = root.TryGetProperty("method", out var m) ? m.GetString() : null;
-                            var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
-                            return string.Equals(method, "cod", StringComparison.OrdinalIgnoreCase)
-                                && string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase);
-                        });
-
-                        if (existingPending != null)
-                        {
-                            // Update existing pending → cod_picked_up
-                            var details = new Dictionary<string, object?>();
-                            foreach (var prop in existingPending.Details!.RootElement.EnumerateObject())
+                            Id = Guid.NewGuid(),
+                            OrderId = order.Id,
+                            TransactionCode = $"COD-{Guid.NewGuid().ToString()[..8].ToUpper()}",
+                            Details = JsonDocument.Parse(JsonSerializer.Serialize(new
                             {
-                                if (prop.Name == "order_ids")
-                                    details[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
-                                else
-                                    details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
-                            }
-                            details["status"] = "cod_picked_up";
-                            details["external_id"] = payload.OrderCode;
-                            details["picked_up_at"] = DateTime.UtcNow.ToString("o");
-                            existingPending.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
-                            logger.LogInformation("GHN webhook: updated pending COD PaymentTransaction to cod_picked_up for order {OrderId}.",
-                                order.Id);
-                        }
-                        else
-                        {
-                            // Fallback: create new record (legacy orders without pending record)
-                            var codTx = new PaymentTransaction
-                            {
-                                Id = Guid.NewGuid(),
-                                OrderId = order.Id,
-                                TransactionCode = $"COD-{Guid.NewGuid().ToString()[..8].ToUpper()}",
-                                Details = JsonDocument.Parse(JsonSerializer.Serialize(new
-                                {
-                                    provider = "cash",
-                                    method = "cod",
-                                    type = "payment",
-                                    amount = totalStr,
-                                    status = "cod_picked_up",
-                                    external_id = payload.OrderCode,
-                                    picked_up_at = DateTime.UtcNow
-                                })),
-                                CreatedAt = DateTime.UtcNow
-                            };
-                            context.PaymentTransactions.Add(codTx);
-                            logger.LogInformation("GHN webhook: created COD settlement (cod_picked_up) for order {OrderId} amount {Amount}.",
-                                order.Id, totalStr);
-                        }
+                                provider = "cash",
+                                method = "cod",
+                                type = "payment",
+                                amount = totalStr,
+                                status = "success",
+                                external_id = payload.OrderCode,
+                                collected_at = DateTime.UtcNow
+                            })),
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        context.PaymentTransactions.Add(codTx);
+                        logger.LogInformation("GHN webhook: recorded COD settlement for order {OrderId} amount {Amount}.",
+                            order.Id, totalStr);
                     }
+                }
+            }
+
+            if (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered
+                && OrderCustomerNotificationHelper.IsOfflineDeliveryOrder(order))
+            {
+                try
+                {
+                    await OfflineDeliveryDeliveredMailHelper.TryIssueTokenAndNotifyForDeliveredOfflineOrderAsync(
+                        order, portalLinks, emailService, logger, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "GHN webhook: offline delivered confirmation email failed for order {OrderId}", order.Id);
                 }
             }
 
@@ -715,6 +745,8 @@ public class OrdersController : BaseController
         [FromServices] IApplicationDbContext context,
         [FromServices] IStockService stockService,
         [FromServices] IOptions<GhtkSettings> ghtkOptions,
+        [FromServices] IEmailService emailService,
+        [FromServices] IOptions<CustomerPortalLinksOptions> portalLinks,
         [FromServices] ILogger<OrdersController> logger)
     {
         // 1) Shared-secret header check (empty config disables — dev only).
@@ -784,6 +816,20 @@ public class OrdersController : BaseController
                 .ApplyFromExternalSource(order, mapped, source: "GhtkWebhook",
                     reason: payload.Reason ?? payload.StatusText ?? $"GHTK status {payload.StatusId}");
 
+            if (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered
+                && OrderCustomerNotificationHelper.IsOfflineDeliveryOrder(order))
+            {
+                try
+                {
+                    await OfflineDeliveryDeliveredMailHelper.TryIssueTokenAndNotifyForDeliveredOfflineOrderAsync(
+                        order, portalLinks, emailService, logger, CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "GHTK webhook: offline delivered confirmation email failed for order {OrderId}", order.Id);
+                }
+            }
+
             // Restore stock if GHTK ended the order without delivery and we hadn't already closed locally.
             if (!wasTerminalBefore &&
                 (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Returned ||
@@ -819,8 +865,8 @@ public class OrdersController : BaseController
     private static string? MapGhtkStatusToOrderStatus(int statusId) => statusId switch
     {
         -1 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Cancelled, // hủy đơn
-        1 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Pending,    // chưa tiếp nhận
-        2 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,  // đã tiếp nhận
+        1  => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Pending,    // chưa tiếp nhận
+        2  => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,  // đã tiếp nhận
         // picked / in warehouse / sorting → internal processing
         3 or 4 or 11 or 123 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Processing,
         5 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Shipping,    // đang giao

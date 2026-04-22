@@ -3,11 +3,13 @@ using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
 using decorativeplant_be.Application.Common.Interfaces;
+using decorativeplant_be.Application.Common.Options;
 using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
 using decorativeplant_be.Application.Features.Commerce.Vouchers;
@@ -63,7 +65,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             // 1. Use Branch Allocation Service to resolve optimal branch for each item
             //    Chain Store model: customer sends listingId (primary), BE finds best branch with stock
             var requestedItems = req.Items.Select(i => (i.ListingId, i.Quantity)).ToList();
-            var allocations = await _allocationService.AllocateAsync(requestedItems, ct);
+            var allocations = await _allocationService.AllocateAsync(requestedItems, ct, req.FulfillFromBranchId);
 
             // Map allocations to enriched items
             var enrichedItems = allocations.Select(a => (
@@ -300,6 +302,59 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 }
             }
 
+            // Staff "Create offline order" ship-from-branch: keep DeliveryAddress JSON GHN-only (no email).
+            // Recipient email lives on Notes.recipient_email so templates still resolve the inbox.
+            var isStaffOfflineBranchDelivery =
+                string.Equals(req.OrderType?.Trim(), "offline", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(req.FulfillmentMethod?.Trim(), "delivery", StringComparison.OrdinalIgnoreCase)
+                && req.FulfillFromBranchId.HasValue;
+
+            JsonDocument? initialDeliveryAddress = null;
+            JsonDocument? initialNotesFromRequest = null;
+            if (req.DeliveryAddress != null)
+            {
+                if (isStaffOfflineBranchDelivery)
+                {
+                    initialDeliveryAddress = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        recipient_name = req.DeliveryAddress.RecipientName,
+                        phone = req.DeliveryAddress.Phone,
+                        address_line_1 = req.DeliveryAddress.AddressLine1,
+                        city = req.DeliveryAddress.City,
+                        district_id = req.DeliveryAddress.DistrictId,
+                        ward_code = req.DeliveryAddress.WardCode,
+                    }));
+                    var noteSeed = new Dictionary<string, object?>();
+                    if (!string.IsNullOrWhiteSpace(req.CustomerNote)) noteSeed["customer_note"] = req.CustomerNote;
+                    if (!string.IsNullOrWhiteSpace(req.DeliveryAddress.Email))
+                        noteSeed[OrderCustomerNotificationHelper.NotesRecipientEmailKey] = req.DeliveryAddress.Email.Trim();
+                    if (noteSeed.Count > 0)
+                        initialNotesFromRequest = JsonDocument.Parse(JsonSerializer.Serialize(noteSeed));
+                }
+                else
+                {
+                    initialDeliveryAddress = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        recipient_name = req.DeliveryAddress.RecipientName,
+                        phone = req.DeliveryAddress.Phone,
+                        address_line_1 = req.DeliveryAddress.AddressLine1,
+                        city = req.DeliveryAddress.City,
+                        district_id = req.DeliveryAddress.DistrictId,
+                        ward_code = req.DeliveryAddress.WardCode,
+                        email = string.IsNullOrWhiteSpace(req.DeliveryAddress.Email)
+                            ? null
+                            : req.DeliveryAddress.Email.Trim(),
+                    }));
+                    initialNotesFromRequest = !string.IsNullOrEmpty(req.CustomerNote)
+                        ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote }))
+                        : null;
+                }
+            }
+            else if (!string.IsNullOrEmpty(req.CustomerNote))
+            {
+                initialNotesFromRequest = JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote }));
+            }
+
             foreach (var branchGroup in orderedBranches)
             {
                 var branchId = branchGroup.Key;
@@ -346,8 +401,8 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                     TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new { order_type = req.OrderType, fulfillment_method = req.FulfillmentMethod, payment_method = NormalizePaymentMethod(req.PaymentMethod), branch_id = branchId })),
                     Financials = JsonDocument.Parse(JsonSerializer.Serialize(new { subtotal = branchSubtotal.ToString("0", CultureInfo.InvariantCulture), shipping = branchShippingFee.ToString("0", CultureInfo.InvariantCulture), discount = branchDiscount.ToString("0", CultureInfo.InvariantCulture), tax = "0", total = branchOrderTotal.ToString("0", CultureInfo.InvariantCulture) })),
                     Status = "pending",
-                    Notes = !string.IsNullOrEmpty(req.CustomerNote) ? JsonDocument.Parse(JsonSerializer.Serialize(new { customer_note = req.CustomerNote })) : null,
-                    DeliveryAddress = req.DeliveryAddress != null ? JsonDocument.Parse(JsonSerializer.Serialize(new { recipient_name = req.DeliveryAddress.RecipientName, phone = req.DeliveryAddress.Phone, address_line_1 = req.DeliveryAddress.AddressLine1, city = req.DeliveryAddress.City, district_id = req.DeliveryAddress.DistrictId, ward_code = req.DeliveryAddress.WardCode })) : null,
+                    Notes = initialNotesFromRequest,
+                    DeliveryAddress = initialDeliveryAddress,
                     CreatedAt = baseOrderTimestamp,
                     OrderItems = branchOrderItems
                 };
@@ -359,8 +414,13 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 _context.OrderHeaders.Add(order);
                 orders.Add(order);
 
-                // COD and bank_transfer both start as "pending".
-                // Fulfillment staff will manually confirm → pack → ship.
+                // COD flow: auto-confirm and create GHN shipment
+                if (NormalizePaymentMethod(req.PaymentMethod) == "cod")
+                {
+                    OrderStatusMachine.Apply(order, OrderStatusMachine.Confirmed,
+                        changedBy: cmd.UserId, reason: "COD auto-confirm", source: "CreateOrder");
+                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+                }
             }
             
             // Clear items from user's shopping cart immediately after order creation.
@@ -387,63 +447,29 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 }
             }
 
-            // Create PaymentTransaction records for COD orders so payment status
-            // can be tracked from the start without relying on GHN webhooks.
-            // Status starts as "pending" — updated to "success" when delivery is confirmed.
-            if (NormalizePaymentMethod(req.PaymentMethod) == "cod")
-            {
-                foreach (var order in orders)
-                {
-                    var totalStr = "0";
-                    if (order.Financials != null
-                        && order.Financials.RootElement.TryGetProperty("total", out var tot))
-                        totalStr = tot.GetString() ?? "0";
-
-                    _context.PaymentTransactions.Add(new PaymentTransaction
-                    {
-                        Id = Guid.NewGuid(),
-                        OrderId = order.Id,
-                        TransactionCode = $"COD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}",
-                        Details = JsonDocument.Parse(JsonSerializer.Serialize(new
-                        {
-                            provider = "cash",
-                            method = "cod",
-                            type = "payment",
-                            amount = totalStr,
-                            status = "pending",
-                            order_ids = new[] { order.Id }
-                        })),
-                        CreatedAt = DateTime.UtcNow
-                    });
-                }
-                _logger.LogInformation("Created COD PaymentTransaction(s) for {Count} order(s)", orders.Count);
-            }
-
             _logger.LogInformation("Created {OrderCount} split orders from {BranchCount} branch(es) for user {UserId}",
                 orders.Count, itemsByBranch.Count, cmd.UserId);
 
             await _context.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
-            // Notify branch staff about new COD orders so they appear on the dashboard.
-            // Bank-transfer notifications fire later in the PayOS webhook handler,
-            // once payment is actually confirmed — don't double-notify here.
+            // Notify branch staff for COD orders (bank_transfer notifications fire
+            // later in the PayOS webhook handler, once payment is actually confirmed).
             // Fire-and-log — never block the response on email.
-            var isCodOrder = NormalizePaymentMethod(req.PaymentMethod) == "cod";
-            if (isCodOrder)
-            {
-                var user = cmd.UserId != Guid.Empty ? await _context.UserAccounts.FirstOrDefaultAsync(u => u.Id == cmd.UserId, ct) : null;
+            var user = cmd.UserId != Guid.Empty ? await _context.UserAccounts.FirstOrDefaultAsync(u => u.Id == cmd.UserId, ct) : null;
 
-                foreach (var order in orders)
+            foreach (var order in orders.Where(o => o.Status == OrderStatusMachine.Confirmed))
+            {
+                await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
+                    order, user, _emailTemplateService, _logger, ct);
+
+                try
                 {
-                    try
-                    {
-                        await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Staff notify failed for Order {OrderCode}", order.OrderCode);
-                    }
+                    await NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Staff notify failed for Order {OrderCode}", order.OrderCode);
                 }
             }
 
@@ -504,7 +530,17 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
                 RecipientName = root.TryGetProperty("recipient_name", out var rn) ? rn.GetString() ?? "" : "",
                 Phone = root.TryGetProperty("phone", out var ph) ? ph.GetString() ?? "" : "",
                 AddressLine1 = root.TryGetProperty("address_line_1", out var a1) ? a1.GetString() ?? "" : "",
-                City = root.TryGetProperty("city", out var c) ? c.GetString() : null
+                City = root.TryGetProperty("city", out var c) ? c.GetString() : null,
+                DistrictId = root.TryGetProperty("district_id", out var did) && did.ValueKind == JsonValueKind.Number
+                    ? did.GetInt32()
+                    : (root.TryGetProperty("districtId", out var did2) && did2.ValueKind == JsonValueKind.Number ? did2.GetInt32() : 0),
+                WardCode = root.TryGetProperty("ward_code", out var wc) ? wc.GetString() ?? ""
+                    : (root.TryGetProperty("wardCode", out var wc2) ? wc2.GetString() ?? "" : ""),
+                Email = root.TryGetProperty("email", out var em)
+                    ? em.GetString()
+                    : (o.Notes != null && o.Notes.RootElement.TryGetProperty(OrderCustomerNotificationHelper.NotesRecipientEmailKey, out var rem)
+                        ? rem.GetString()
+                        : null),
             };
         }
         if (o.PickupInfo != null)
@@ -563,141 +599,109 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
     private readonly IShippingService _shippingService;
     private readonly ILogger<UpdateOrderStatusHandler> _logger;
     private readonly IOrderAssignmentService _orderAssignment;
+    private readonly IEmailService _emailService;
+    private readonly IOptions<CustomerPortalLinksOptions> _portalLinks;
 
-    public UpdateOrderStatusHandler(IApplicationDbContext context, IStockService stockService, IShippingService shippingService, ILogger<UpdateOrderStatusHandler> logger, IOrderAssignmentService orderAssignment)
+    public UpdateOrderStatusHandler(
+        IApplicationDbContext context,
+        IStockService stockService,
+        IShippingService shippingService,
+        ILogger<UpdateOrderStatusHandler> logger,
+        IOrderAssignmentService orderAssignment,
+        IEmailService emailService,
+        IOptions<CustomerPortalLinksOptions> portalLinks)
     {
         _context = context;
         _stockService = stockService;
         _shippingService = shippingService;
         _logger = logger;
         _orderAssignment = orderAssignment;
+        _emailService = emailService;
+        _portalLinks = portalLinks;
     }
 
     public async Task<OrderResponse> Handle(UpdateOrderStatusCommand cmd, CancellationToken ct)
     {
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
+            ?? throw new NotFoundException($"Order {cmd.Id} not found.");
+
         var normalizedStatus = cmd.Request.Status?.ToLowerInvariant() ?? "";
+        var previousStatus = order.Status;
 
         // Block staff from setting "completed" — only the customer may do that via POST /confirm-receipt
         if (normalizedStatus == OrderStatusMachine.Completed)
             throw new BadRequestException("Only the customer can mark an order as completed (via Confirm Receipt).");
 
-        OrderResponse response = null!;
-        Guid? flushBranchId = null;
+        // Validate + append audit entry
+        OrderStatusMachine.Apply(order, normalizedStatus, cmd.ActorUserId,
+            reason: cmd.Request.RejectionReason ?? cmd.Request.InternalNote,
+            source: "StaffUpdate");
 
-        var strategy = _context.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
+        // Merge side-note fields (internal_note, tracking_code, carrier_name) while preserving history.
+        var notesDict = MergeNotes(order,
+            internalNote: cmd.Request.InternalNote,
+            rejectionReason: cmd.Request.RejectionReason,
+            trackingCode: cmd.Request.TrackingCode,
+            carrierName: cmd.Request.CarrierName);
+
+        string? offlineDeliveredMailToken = null;
+        if (normalizedStatus == OrderStatusMachine.Delivered
+            && !string.Equals(previousStatus, OrderStatusMachine.Delivered, StringComparison.OrdinalIgnoreCase)
+            && OrderCustomerNotificationHelper.IsOfflineDeliveryOrder(order))
         {
-            using var transaction = await _context.Database.BeginTransactionAsync(ct);
-            try
-            {
-                var order = await _context.OrderHeaders.Include(o => o.OrderItems)
-                    .FirstOrDefaultAsync(o => o.Id == cmd.Id, ct)
-                    ?? throw new NotFoundException($"Order {cmd.Id} not found.");
-
-                var previousStatus = order.Status; // capture before Apply mutates it
-
-                // Validate + append audit entry
-                OrderStatusMachine.Apply(order, normalizedStatus, cmd.ActorUserId,
-                    reason: cmd.Request.RejectionReason ?? cmd.Request.InternalNote,
-                    source: "StaffUpdate");
-
-                // Merge side-note fields (internal_note, tracking_code, carrier_name) while preserving history.
-                var notesDict = MergeNotes(order,
-                    internalNote: cmd.Request.InternalNote,
-                    rejectionReason: cmd.Request.RejectionReason,
-                    trackingCode: cmd.Request.TrackingCode,
-                    carrierName: cmd.Request.CarrierName);
-                order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
-
-                // If order is confirmed, try to create GHN shipments
-                if (normalizedStatus == OrderStatusMachine.Confirmed)
-                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
-
-                // Restore stock when staff cancels a paid delivery order.
-                // payment_status=paid is the authoritative flag that stock was deducted by the payment webhook.
-                // BOPIS stock is managed via the StockTransfer flow — not restored here.
-                if (normalizedStatus == OrderStatusMachine.Cancelled
-                    && !OrderStatusMachine.IsBopis(previousStatus)
-                    && order.OrderItems != null)
-                {
-                    var stockWasDeducted = order.Notes.RootElement.TryGetProperty("payment_status", out var ps)
-                        && string.Equals(ps.GetString(), "paid", StringComparison.OrdinalIgnoreCase);
-                    if (stockWasDeducted)
-                        await _stockService.RestoreOrderStockAsync(order.OrderItems, ct);
-                }
-
-                // COD settlement: when staff marks the order as "delivered", update the
-                // pending COD PaymentTransaction to "success" so payment is tracked
-                // without relying on GHN webhooks.
-                if (normalizedStatus == OrderStatusMachine.Delivered)
-                {
-                    var isCod = order.TypeInfo != null
-                        && order.TypeInfo.RootElement.TryGetProperty("payment_method", out var pm)
-                        && string.Equals(pm.GetString(), "cod", StringComparison.OrdinalIgnoreCase);
-                    if (isCod)
-                    {
-                        var codPayments = await _context.PaymentTransactions
-                            .Where(p => p.OrderId == order.Id && p.Details != null)
-                            .ToListAsync(ct);
-                        var pendingCod = codPayments.FirstOrDefault(p =>
-                        {
-                            var root = p.Details!.RootElement;
-                            var method = root.TryGetProperty("method", out var m) ? m.GetString() : null;
-                            var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
-                            return string.Equals(method, "cod", StringComparison.OrdinalIgnoreCase)
-                                && string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase);
-                        });
-
-                        if (pendingCod != null)
-                        {
-                            var details = new Dictionary<string, object?>();
-                            foreach (var prop in pendingCod.Details!.RootElement.EnumerateObject())
-                            {
-                                if (prop.Name == "order_ids")
-                                    details[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
-                                else
-                                    details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
-                                        ? prop.Value.GetString() : prop.Value.GetRawText();
-                            }
-                            details["status"] = "cod_picked_up";
-                            details["picked_up_at"] = DateTime.UtcNow.ToString("o");
-                            details["picked_up_by"] = cmd.ActorUserId;
-                            
-                            // Store the staff name for easier display in UI
-                            var staffName = await _context.UserAccounts
-                                .Where(u => u.Id == cmd.ActorUserId)
-                                .Select(u => u.DisplayName)
-                                .FirstOrDefaultAsync(ct);
-                            details["picked_up_by_name"] = staffName ?? "Unknown Staff";
-
-                            pendingCod.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
-                            _logger.LogInformation("Staff {StaffName} ({StaffId}) delivered COD order {OrderId}: PaymentTransaction updated to cod_picked_up.", staffName, cmd.ActorUserId, order.Id);
-                        }
-                    }
-                }
-
-                await _context.SaveChangesAsync(ct);
-                await transaction.CommitAsync(ct);
-                response = CreateOrderHandler.MapToResponse(order);
-
-                if (SlotFreedStatuses.Contains(normalizedStatus) && order.AssignedStaffId.HasValue)
-                    flushBranchId = order.OrderItems?.FirstOrDefault()?.BranchId;
-            }
-            catch
-            {
-                await transaction.RollbackAsync(ct);
-                throw;
-            }
-        });
-
-        // When a slot frees up, immediately try to assign the oldest queued order (outside transaction — best-effort)
-        if (flushBranchId.HasValue)
-        {
-            try { await _orderAssignment.TryFlushQueueAsync(flushBranchId.Value, ct); }
-            catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after status update for Order {OrderId}.", cmd.Id); }
+            offlineDeliveredMailToken = OfflineDeliveryDeliveredMailHelper.CreateNewToken();
+            OfflineDeliveryDeliveredMailHelper.MergeConfirmTokenIntoNotes(
+                notesDict,
+                offlineDeliveredMailToken,
+                DateTimeOffset.UtcNow.AddDays(30));
         }
 
-        return response;
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+
+        // If order is confirmed, try to create GHN shipments
+        if (normalizedStatus == OrderStatusMachine.Confirmed)
+        {
+            await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+        }
+        else if (normalizedStatus == OrderStatusMachine.Processing)
+        {
+            // Retry: Confirm → GHN can fail silently (carrier API); Pack step can recover before Hand to GHN.
+            var hasShipments = order.Notes?.RootElement.TryGetProperty("shipments", out var shEl) == true
+                && shEl.ValueKind == JsonValueKind.Array
+                && shEl.GetArrayLength() > 0;
+            if (!hasShipments && OrderTypeInfoHelper.IsDeliveryFulfillment(order))
+            {
+                await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
+            }
+        }
+
+        await _context.SaveChangesAsync(ct);
+
+        if (offlineDeliveredMailToken != null)
+        {
+            try
+            {
+                await OfflineDeliveryDeliveredMailHelper.TrySendDeliveredConfirmEmailAsync(
+                    order, offlineDeliveredMailToken, _portalLinks, _emailService, _logger, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send offline delivered confirmation email for {OrderCode}", order.OrderCode);
+            }
+        }
+
+        // When a slot frees up, immediately try to assign the oldest queued order
+        if (SlotFreedStatuses.Contains(normalizedStatus) && order.AssignedStaffId.HasValue)
+        {
+            var branchId = order.OrderItems?.FirstOrDefault()?.BranchId;
+            if (branchId.HasValue)
+            {
+                try { await _orderAssignment.TryFlushQueueAsync(branchId.Value, ct); }
+                catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after status update for Order {OrderCode}.", order.OrderCode); }
+            }
+        }
+
+        return CreateOrderHandler.MapToResponse(order);
     }
 
     private static Dictionary<string, object?> MergeNotes(
@@ -882,7 +886,6 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
     /// Cancels the PayOS payment link if still unpaid, otherwise records a pending
     /// offline refund PaymentTransaction so finance can reconcile. Swallows and logs
     /// errors — gateway hiccups must not block order cancellation.
-    /// FIX #1: Update pending PaymentTransaction.Details.status to "cancelled" when cancelling unpaid link.
     /// </summary>
     private async Task TryHandlePayOSOnCancelAsync(
         OrderHeader order,
@@ -920,7 +923,6 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
                         reason,
                         refunded_by = actorId,
                         source_payment_id = p.Id,
-                        refund_expires_at = DateTime.UtcNow.AddDays(30).ToString("o"), // FIX #3: Track refund timeout
                     })),
                     CreatedAt = DateTime.UtcNow,
                 });
@@ -940,23 +942,6 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
             try
             {
                 await _payOS.CancelPaymentLinkAsync(payosOrderCode, reason, ct);
-
-                // FIX #1: Mark payment as cancelled in DB
-                var details = new Dictionary<string, object?>();
-                if (p.Details != null)
-                {
-                    foreach (var prop in p.Details.RootElement.EnumerateObject())
-                    {
-                        if (prop.Name == "status")
-                            details[prop.Name] = "cancelled";
-                        else
-                            details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.GetRawText();
-                    }
-                }
-                details["cancelled_at"] = DateTime.UtcNow.ToString("o");
-                details["cancelled_reason"] = reason;
-                p.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
-                _context.PaymentTransactions.Update(p);
             }
             catch (Exception ex)
             {
@@ -1017,6 +1002,70 @@ public class ConfirmReceiptHandler : IRequestHandler<ConfirmReceiptCommand, Orde
         {
             try { await _orderAssignment.TryFlushQueueAsync(branchId.Value, ct); }
             catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after ConfirmReceipt for Order {OrderId}.", cmd.OrderId); }
+        }
+
+        return CreateOrderHandler.MapToResponse(order);
+    }
+}
+
+public class ConfirmReceiptByTokenHandler : IRequestHandler<ConfirmReceiptByTokenCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly IOrderAssignmentService _orderAssignment;
+    private readonly ILogger<ConfirmReceiptByTokenHandler> _logger;
+
+    public ConfirmReceiptByTokenHandler(
+        IApplicationDbContext context,
+        IOrderAssignmentService orderAssignment,
+        ILogger<ConfirmReceiptByTokenHandler> logger)
+    {
+        _context = context;
+        _orderAssignment = orderAssignment;
+        _logger = logger;
+    }
+
+    public async Task<OrderResponse> Handle(ConfirmReceiptByTokenCommand cmd, CancellationToken ct)
+    {
+        var order = await _context.OrderHeaders.Include(o => o.OrderItems).FirstOrDefaultAsync(o => o.Id == cmd.OrderId, ct)
+            ?? throw new NotFoundException($"Order {cmd.OrderId} not found.");
+
+        if (!OrderCustomerNotificationHelper.IsOfflineDeliveryOrder(order))
+            throw new BadRequestException("This confirmation link is not valid for this order.");
+
+        if (order.Status == OrderStatusMachine.Completed)
+            return CreateOrderHandler.MapToResponse(order);
+
+        if (!string.Equals(order.Status, OrderStatusMachine.Delivered, StringComparison.OrdinalIgnoreCase))
+            throw new BadRequestException("Order must be in delivered status before confirming receipt.");
+
+        if (!OfflineDeliveryDeliveredMailHelper.TryReadConfirmToken(order, out var storedToken, out var expiresUtc)
+            || string.IsNullOrEmpty(storedToken))
+            throw new BadRequestException("Invalid or expired confirmation link.");
+
+        if (expiresUtc.HasValue && DateTimeOffset.UtcNow > expiresUtc.Value)
+            throw new BadRequestException("This confirmation link has expired.");
+
+        if (!OfflineDeliveryDeliveredMailHelper.TokensEqual(cmd.Token, storedToken))
+            throw new BadRequestException("Invalid confirmation token.");
+
+        var branchId = order.OrderItems?.FirstOrDefault()?.BranchId;
+        var wasAssigned = order.AssignedStaffId.HasValue;
+        var actor = order.UserId;
+
+        OrderStatusMachine.Apply(order, OrderStatusMachine.Completed, actor,
+            reason: "Customer confirmed receipt (offline delivery link)", source: "ConfirmReceiptByToken");
+
+        var notesDict = OfflineDeliveryDeliveredMailHelper.CloneNotesToDictionary(order);
+        OfflineDeliveryDeliveredMailHelper.RemoveConfirmTokenFromNotes(notesDict);
+        notesDict["completed_at"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+
+        await _context.SaveChangesAsync(ct);
+
+        if (wasAssigned && branchId.HasValue)
+        {
+            try { await _orderAssignment.TryFlushQueueAsync(branchId.Value, ct); }
+            catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after ConfirmReceiptByToken for Order {OrderId}.", cmd.OrderId); }
         }
 
         return CreateOrderHandler.MapToResponse(order);
@@ -1086,9 +1135,28 @@ public class GetOrdersHandler : IRequestHandler<GetOrdersQuery, PagedResult<Orde
     {
         var q = _context.OrderHeaders.Include(o => o.OrderItems).Include(o => o.AssignedStaff).AsQueryable();
         if (query.UserId.HasValue) q = q.Where(o => o.UserId == query.UserId);
-        // Chain Store: filter by branch at OrderItem level
-        if (query.BranchId.HasValue) q = q.Where(o => o.OrderItems.Any(oi => oi.BranchId == query.BranchId));
-        if (query.AssignedStaffId.HasValue) q = q.Where(o => o.AssignedStaffId == query.AssignedStaffId);
+
+        if (query.FulfillmentQueueStaffId.HasValue)
+        {
+            var sid = query.FulfillmentQueueStaffId.Value;
+            if (query.BranchId.HasValue)
+            {
+                var bid = query.BranchId.Value;
+                q = q.Where(o => o.OrderItems.Any(oi => oi.BranchId == bid)
+                                 && (!o.AssignedStaffId.HasValue || o.AssignedStaffId == sid));
+            }
+            else
+            {
+                q = q.Where(o => o.AssignedStaffId == sid);
+            }
+        }
+        else
+        {
+            // Chain Store: filter by branch at OrderItem level
+            if (query.BranchId.HasValue) q = q.Where(o => o.OrderItems.Any(oi => oi.BranchId == query.BranchId));
+            if (query.AssignedStaffId.HasValue) q = q.Where(o => o.AssignedStaffId == query.AssignedStaffId);
+        }
+
         if (!string.IsNullOrEmpty(query.Status)) q = q.Where(o => o.Status == query.Status);
 
         var total = await q.CountAsync(ct);
@@ -1130,9 +1198,19 @@ public class GetOrderByIdHandler : IRequestHandler<GetOrderByIdQuery, OrderRespo
                 throw new BadRequestException("You do not have permission to view this order.");
         }
 
-        // Fulfillment staff: order must be assigned to them
-        if (query.ActorStaffId.HasValue && order.AssignedStaffId != query.ActorStaffId)
-            throw new BadRequestException("You do not have permission to view this order.");
+        // Fulfillment staff: same-branch queue (unassigned) or assignee only
+        if (query.ActorStaffId.HasValue)
+        {
+            if (query.ActorBranchId.HasValue)
+            {
+                if (order.AssignedStaffId.HasValue && order.AssignedStaffId != query.ActorStaffId)
+                    throw new BadRequestException("You do not have permission to view this order.");
+            }
+            else if (order.AssignedStaffId != query.ActorStaffId)
+            {
+                throw new BadRequestException("You do not have permission to view this order.");
+            }
+        }
 
         return CreateOrderHandler.MapToResponse(order);
     }
@@ -1752,9 +1830,16 @@ public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmed
                 decimal total = cartSubtotal - totalDiscount;
                 if (total < 0) total = 0;
 
-                // 6. Create order
-                var orderCode = $"BOPIS-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
+                // 6. Create order (same handler: true BOPIS vs walk-in offline counter pickup)
+                var isOfflineCounter = req.IsOfflineCounterPickup;
+                var orderTypeValue = isOfflineCounter ? "offline_pickup" : "bopis_immediate";
+                var orderCodePrefix = isOfflineCounter ? "OFF-PICK" : "BOPIS";
+                var orderCode = $"{orderCodePrefix}-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString()[..8].ToUpper()}";
                 var now = DateTime.UtcNow;
+                var internalNote = isOfflineCounter
+                    ? $"Offline counter pickup order created by staff {cmd.StaffUserId}"
+                    : $"BOPIS immediate pickup order created by staff {cmd.StaffUserId}";
+                var historySource = isOfflineCounter ? "OfflineCounterPickupCreate" : "BopisImmediateCreate";
 
                 var order = new OrderHeader
                 {
@@ -1765,7 +1850,7 @@ public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmed
                     Status = req.PaymentMethod == "cash" ? OrderStatusMachine.Confirmed : OrderStatusMachine.Pending,
                     TypeInfo = JsonDocument.Parse(JsonSerializer.Serialize(new
                     {
-                        order_type = "bopis_immediate",
+                        order_type = orderTypeValue,
                         fulfillment_method = "pickup",
                         payment_method = req.PaymentMethod,
                         branch_id = req.PickupBranchId.ToString()
@@ -1783,7 +1868,7 @@ public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmed
                     Notes = JsonDocument.Parse(JsonSerializer.Serialize(new
                     {
                         customer_note = "",
-                        internal_note = $"BOPIS immediate pickup order created by staff {cmd.StaffUserId}",
+                        internal_note = internalNote,
                         status_history = new[]
                         {
                             new
@@ -1793,7 +1878,7 @@ public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmed
                                 at = now.ToString("o"),
                                 by = cmd.StaffUserId.ToString(),
                                 reason = req.PaymentMethod == "cash" ? "Cash payment received at counter" : "Awaiting payment",
-                                source = "BopisImmediateCreate"
+                                source = historySource
                             }
                         }
                     })),
@@ -1865,8 +1950,9 @@ public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmed
                 await _context.SaveChangesAsync(ct);
                 await transaction.CommitAsync(ct);
 
-                _logger.LogInformation("CreateBopisImmediateOrderHandler: Created BOPIS order {OrderCode} for branch {BranchId} with payment method {PaymentMethod}",
-                    orderCode, req.PickupBranchId, req.PaymentMethod);
+                _logger.LogInformation(
+                    "CreateBopisImmediateOrderHandler: Created {Kind} order {OrderCode} for branch {BranchId} with payment method {PaymentMethod}",
+                    isOfflineCounter ? "offline_pickup" : "bopis_immediate", orderCode, req.PickupBranchId, req.PaymentMethod);
 
                 // Send email notification to customer if email provided
                 if (!string.IsNullOrEmpty(req.CustomerEmail))
@@ -1875,12 +1961,16 @@ public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmed
                     {
                         var itemCount = enrichedItems.Sum(e => e.reqItem.Quantity);
                         var itemsList = string.Join(", ", enrichedItems.Select(e => $"{e.title} x{e.reqItem.Quantity}"));
+                        var emailHeading = isOfflineCounter ? "Offline pickup order" : "BOPIS Order Confirmation";
+                        var emailIntro = isOfflineCounter
+                            ? "Thank you for your order! Your <strong>offline (in-store) pickup</strong> order has been created successfully."
+                            : "Thank you for your order! Your BOPIS (Buy Online, Pick Up In Store) order has been created successfully.";
 
                         var bodyHtml = $@"
                             <div style='font-family:sans-serif;max-width:600px;margin:0 auto;color:#1f2937;'>
-                                <h2 style='color:#2d5f4d;'>BOPIS Order Confirmation</h2>
+                                <h2 style='color:#2d5f4d;'>{System.Net.WebUtility.HtmlEncode(emailHeading)}</h2>
                                 <p>Dear <strong>{System.Net.WebUtility.HtmlEncode(req.CustomerName ?? "Customer")}</strong>,</p>
-                                <p>Thank you for your order! Your BOPIS (Buy Online, Pick Up In Store) order has been created successfully.</p>
+                                <p>{emailIntro}</p>
 
                                 <table style='width:100%;border-collapse:collapse;margin:20px 0;border:1px solid #e5e7eb;'>
                                     <tr style='background:#f9fafb;'>
@@ -1929,11 +2019,11 @@ public class CreateBopisImmediateOrderHandler : IRequestHandler<CreateBopisImmed
                             </div>";
 
                         var plainText = $@"
-BOPIS Order Confirmation
+{emailHeading}
 
 Dear {req.CustomerName ?? "Customer"},
 
-Thank you for your order! Your BOPIS (Buy Online, Pick Up In Store) order has been created successfully.
+{(isOfflineCounter ? "Thank you for your order! Your offline (in-store) pickup order has been created successfully." : "Thank you for your order! Your BOPIS (Buy Online, Pick Up In Store) order has been created successfully.")}
 
 Order Details:
 - Order Code: {orderCode}
@@ -1960,7 +2050,9 @@ Decorative Plant Team";
                         {
                             To = req.CustomerEmail,
                             ToName = req.CustomerName,
-                            Subject = $"BOPIS Order Confirmation - {orderCode}",
+                            Subject = isOfflineCounter
+                                ? $"Offline pickup order - {orderCode}"
+                                : $"BOPIS Order Confirmation - {orderCode}",
                             BodyPlainText = plainText,
                             BodyHtml = bodyHtml,
                         }, ct);

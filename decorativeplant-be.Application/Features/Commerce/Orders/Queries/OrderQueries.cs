@@ -9,6 +9,11 @@ public class GetOrdersQuery : IRequest<PagedResult<OrderResponse>>
     public Guid? UserId { get; set; }
     public Guid? BranchId { get; set; }
     public Guid? AssignedStaffId { get; set; }
+    /// <summary>
+    /// When set with <see cref="BranchId"/>, list orders for that branch that are either unassigned
+    /// (fulfillment queue) or assigned to this staff. Omit <see cref="AssignedStaffId"/> when using this.
+    /// </summary>
+    public Guid? FulfillmentQueueStaffId { get; set; }
     public string? Status { get; set; }
     public int Page { get; set; } = 1;
     public int PageSize { get; set; } = 20;
@@ -25,8 +30,8 @@ public class GetOrderByIdQuery : IRequest<OrderResponse?>
     /// </summary>
     public Guid? ActorBranchId { get; set; }
     /// <summary>
-    /// If set, handler verifies the order is assigned to this staff member.
-    /// Used by fulfillment_staff.
+    /// If set with <see cref="ActorBranchId"/>, fulfillment may read unassigned orders at that branch or orders assigned to them.
+    /// If set without branch, the order must be assigned to this staff member.
     /// </summary>
     public Guid? ActorStaffId { get; set; }
 }
