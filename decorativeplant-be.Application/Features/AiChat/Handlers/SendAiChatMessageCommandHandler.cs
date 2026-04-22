@@ -15,6 +15,7 @@ using decorativeplant_be.Application.Features.AiChat.Commands;
 using decorativeplant_be.Application.Features.Garden.Queries;
 using decorativeplant_be.Application.Features.Garden;
 using decorativeplant_be.Application.Features.RoomScan.Services;
+using decorativeplant_be.Application.Features.Commerce.ProductListings.Queries;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
 using MediatR;
@@ -290,6 +291,23 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             profileCatalogRecs = await LoadProfileShopCatalogRecommendationsAsync(user, lastUserText, cancellationToken);
         }
 
+        // If the user asked about a specific shop item by name/title, prefer an explicit product-listing search.
+        // This keeps the assistant grounded in actual inventory rather than only profile-ranked picks.
+        // Example: "I see that you have Lan Y in your shop...".
+        List<RoomScanRecommendationDto>? directTitleMatches = null;
+        var requestedTitle = TryExtractShopListingName(lastUserText);
+        if (!string.IsNullOrWhiteSpace(requestedTitle))
+        {
+            directTitleMatches = await TryLoadListingMatchesBySearchAsync(
+                requestedTitle!,
+                cancellationToken);
+            if (directTitleMatches is { Count: > 0 })
+            {
+                // Treat this turn as shop-focused so clients can render the picks.
+                resolvedIntentApi = AiChatIntentResolver.ResolvedProfileShop;
+            }
+        }
+
         var systemPrompt = BuildSystemPrompt(
             user,
             plants,
@@ -299,9 +317,13 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             focusRecentLogs,
             focusDiagnoses,
             conversationIncludesRoomScanCatalog,
-            profileCatalogRecs is { Count: > 0 });
+            (directTitleMatches is { Count: > 0 }) || (profileCatalogRecs is { Count: > 0 }));
 
-        if (profileCatalogRecs is { Count: > 0 })
+        if (directTitleMatches is { Count: > 0 })
+        {
+            systemPrompt += BuildShopSearchPromptAppendix(requestedTitle!, directTitleMatches);
+        }
+        else if (profileCatalogRecs is { Count: > 0 })
         {
             systemPrompt += BuildProfileCatalogPromptAppendix(profileCatalogRecs);
         }
@@ -381,7 +403,10 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             {
                 Reply = reply,
                 SuggestedIntent = suggestedIntentForClient,
-                NewRecommendations = profileCatalogRecs is { Count: > 0 } ? profileCatalogRecs : null,
+                // Prefer explicit title matches when present; otherwise use profile-ranked picks.
+                NewRecommendations = directTitleMatches is { Count: > 0 }
+                    ? directTitleMatches
+                    : (profileCatalogRecs is { Count: > 0 } ? profileCatalogRecs : null),
                 ResolvedIntent = resolvedIntentApi
             };
             await TryAppendRoomScanNewRecommendationsAsync(
@@ -453,6 +478,139 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         }
 
         return null;
+    }
+
+    private async Task<List<RoomScanRecommendationDto>?> TryLoadListingMatchesBySearchAsync(
+        string requestedTitle,
+        CancellationToken cancellationToken)
+    {
+        var search = requestedTitle.Trim();
+        if (search.Length < 2)
+        {
+            return null;
+        }
+        if (search.Length > 80)
+        {
+            search = search[..80];
+        }
+
+        try
+        {
+            var paged = await _mediator.Send(
+                new GetProductListingsQuery
+                {
+                    Search = search,
+                    // IMPORTANT: Do NOT group by species here.
+                    // The shop may have multiple listings for the same plant (different branches/batches),
+                    // and grouping would collapse them into a single item, making the chat look like it
+                    // "can't find" products that are actually being sold.
+                    GroupBySpecies = false,
+                    Page = 1,
+                    PageSize = 20,
+                    SortBy = "inventory",
+                    SortOrder = "desc"
+                },
+                cancellationToken);
+
+            // Map product listings to the same lightweight recommendation DTO used by room-scan/profile shop.
+            // GetProductListingsHandler already filters to in-stock, active/published, and price>0 for non-staff.
+            var outList = paged.Items
+                .Where(p => p.StockQuantity > 0)
+                .Take(10)
+                .Select(p => new RoomScanRecommendationDto
+                {
+                    ListingId = p.Id,
+                    Title = p.Title,
+                    Price = p.Price,
+                    ImageUrl = p.Images?.FirstOrDefault(i => i.IsPrimary)?.Url ?? p.Images?.FirstOrDefault()?.Url,
+                    Reason = "Matched by name from current shop listings."
+                })
+                .ToList();
+
+            return outList.Count > 0 ? outList : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "AI chat: product listing search failed for title '{Title}'.", requestedTitle);
+            return null;
+        }
+    }
+
+    private static string? TryExtractShopListingName(string? lastUserText)
+    {
+        if (string.IsNullOrWhiteSpace(lastUserText))
+        {
+            return null;
+        }
+
+        var t = lastUserText.Trim();
+
+        // Prefer quoted phrases: "Lan Y"
+        var firstQuote = t.IndexOf('"');
+        if (firstQuote >= 0)
+        {
+            var secondQuote = t.IndexOf('"', firstQuote + 1);
+            if (secondQuote > firstQuote + 1)
+            {
+                var quoted = t.Substring(firstQuote + 1, secondQuote - firstQuote - 1).Trim();
+                return quoted.Length > 0 ? quoted : null;
+            }
+        }
+
+        // Heuristic for common phrasing: "do you have X" / "I see you have X" / "in your shop X"
+        // Keep it conservative; if we can't confidently extract, return null.
+        ReadOnlySpan<string> needles =
+        [
+            "i see that you have ",
+            "i see you have ",
+            "do you have ",
+            "in your shop ",
+            "from your shop ",
+            "in the shop ",
+        ];
+
+        var lower = t.ToLowerInvariant();
+        foreach (var n in needles)
+        {
+            var idx = lower.IndexOf(n, StringComparison.Ordinal);
+            if (idx < 0) continue;
+            var start = idx + n.Length;
+            if (start >= t.Length) continue;
+            var chunk = t[start..].Trim();
+
+            // Cut at common punctuation.
+            var cut = chunk.IndexOfAny(['.', '?', '!', '\n', '\r', ',']);
+            if (cut > 0)
+            {
+                chunk = chunk[..cut].Trim();
+            }
+
+            // Avoid extracting full sentences.
+            if (chunk.Length is >= 2 and <= 60)
+            {
+                return chunk;
+            }
+        }
+
+        return null;
+    }
+
+    private static string BuildShopSearchPromptAppendix(
+        string requestedTitle,
+        IReadOnlyList<RoomScanRecommendationDto> recs)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("--- Live catalog for this reply (name match) ---");
+        sb.AppendLine(
+            $"[User asked about \"{requestedTitle}\". These are the closest matching in-stock Decorative Plant listings right now. Discuss only these listings by title.]");
+        sb.AppendLine("Matching listings from our catalog:");
+        foreach (var r in recs)
+        {
+            sb.AppendLine($"- {r.Title} (listingId {r.ListingId}, price {r.Price}): {r.Reason}");
+        }
+
+        return sb.ToString();
     }
 
     private async Task TryAppendRoomScanNewRecommendationsAsync(
