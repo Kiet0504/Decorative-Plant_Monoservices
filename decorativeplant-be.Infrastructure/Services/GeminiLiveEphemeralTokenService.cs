@@ -180,14 +180,9 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
                     },
                     ["activityHandling"] = "START_OF_ACTIVITY_INTERRUPTS"
                 },
-                ["inputAudioTranscription"] = new Dictionary<string, object?>
-                {
-                    ["enabled"] = true
-                },
-                ["outputAudioTranscription"] = new Dictionary<string, object?>
-                {
-                    ["enabled"] = true
-                }
+                // Live API: AudioTranscriptionConfig has no fields (presence enables it).
+                ["inputAudioTranscription"] = new Dictionary<string, object?>(),
+                ["outputAudioTranscription"] = new Dictionary<string, object?>()
             },
         };
 
