@@ -10,6 +10,41 @@ public static class PlantChatIntentDetector
 {
     public const string DiseaseDiagnosisIntent = "disease_diagnosis";
 
+    /// <summary>
+    /// Some clients send a placeholder caption when the user attaches an image without typing.
+    /// Treat these as "no intent expressed" (not an implicit disease-check request).
+    /// </summary>
+    public static bool IsPlaceholderImageCaption(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return true;
+        }
+
+        var t = text.Trim().ToLowerInvariant();
+        var folded = FoldVietnamese(t);
+
+        // English
+        if (t is "photo attached" or "image attached" or "attached photo" or "attached image")
+        {
+            return true;
+        }
+
+        // Vietnamese (folded)
+        if (folded is "da dinh kem anh" or "da dinh kem hinh" or "co dinh kem anh" or "co dinh kem hinh")
+        {
+            return true;
+        }
+
+        // Very short captions like "." or "-"
+        if (t.Length <= 2 && t.All(c => !char.IsLetterOrDigit(c)))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     /// <summary>Returns true if the latest user text suggests disease, pests, mold, spots, or plant damage.</summary>
     public static bool IsDiseaseDiagnosisIntent(string? lastUserMessage)
     {
@@ -131,6 +166,12 @@ public static class PlantChatIntentDetector
             return false;
         }
 
+        // Placeholder-only captions are not an implicit request for a disease check.
+        if (IsPlaceholderImageCaption(lastUserText))
+        {
+            return false;
+        }
+
         // Disease / damage wording wins over general-care phrases in the same message (order matters).
         if (IsDiseaseDiagnosisIntent(lastUserText))
         {
@@ -142,6 +183,8 @@ public static class PlantChatIntentDetector
             return false;
         }
 
+        // Only route photo-only messages to the formal pipeline when the user truly sent no caption,
+        // not when the UI injected a placeholder caption.
         return string.IsNullOrWhiteSpace(lastUserText);
     }
 
