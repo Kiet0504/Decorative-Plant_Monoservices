@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using decorativeplant_be.Application.Common.DTOs.Email;
@@ -9,9 +10,11 @@ using decorativeplant_be.Domain.Entities;
 namespace decorativeplant_be.Application.Common;
 
 /// <summary>
-/// Assigns a fulfillment_staff to the order (workload-based), then emails only
-/// that staff. Falls back to broadcasting to all branch staff when no one has
-/// capacity (queue scenario). Fires for:
+/// Assigns a fulfillment_staff to the order (workload-based) for online home-delivery and for
+/// offline counter ship-to-customer orders (separate assignment entry in the service, same algorithm).
+/// In-store pickup and non-delivery offline flows do not notify fulfillment here.
+/// Falls back to broadcast when no one has capacity
+/// (queue scenario). Fires for:
 ///   - COD orders (CreateOrderHandler, auto-confirmed)
 ///   - Bank transfer orders (PayOS webhook, paid)
 ///
@@ -33,6 +36,24 @@ public static class NewOrderForStaffNotifier
         if (branchId == null)
         {
             logger.LogWarning("NewOrderForStaffNotifier: Order {OrderCode} has no branch, skipping.", order.OrderCode);
+            return;
+        }
+
+        // Pickup at branch / web BOPIS: no fulfillment assignment or fulfillment emails.
+        if (OrderTypeInfoHelper.IsPickupAtBranchOrder(order))
+        {
+            logger.LogInformation(
+                "NewOrderForStaffNotifier: Skipping fulfillment staff notify (in-store pickup) for {OrderCode}.",
+                order.OrderCode);
+            return;
+        }
+
+        // Offline deposit BOPIS / transfer flows — not warehouse ship-to-customer.
+        if (OrderTypeInfoHelper.IsOfflineChannelOrder(order) && !OrderTypeInfoHelper.IsDeliveryFulfillment(order))
+        {
+            logger.LogInformation(
+                "NewOrderForStaffNotifier: Skipping fulfillment staff notify (non-delivery offline workflow) for {OrderCode}.",
+                order.OrderCode);
             return;
         }
 
@@ -123,7 +144,7 @@ public static class NewOrderForStaffNotifier
                 : "<p style='color:#b45309;font-weight:bold;'>⏳ All staff are currently at capacity — this order is in the queue. Please pick it up when you have a free slot.</p>";
 
             // Extract delivery address
-            string? recipientName = null, phone = null, addressLine = null, city = null;
+            string? recipientName = null, phone = null, addressLine = null, city = null, recipientEmail = null;
             if (order.DeliveryAddress != null)
             {
                 var addr = order.DeliveryAddress.RootElement;
@@ -131,6 +152,11 @@ public static class NewOrderForStaffNotifier
                 phone        = addr.TryGetProperty("phone", out var ph) ? ph.GetString() : null;
                 addressLine  = addr.TryGetProperty("address_line_1", out var a1) ? a1.GetString() : null;
                 city         = addr.TryGetProperty("city", out var c) ? c.GetString() : null;
+                recipientEmail = addr.TryGetProperty("email", out var em) ? em.GetString() : null;
+                if (string.IsNullOrWhiteSpace(recipientEmail) && order.Notes != null
+                    && order.Notes.RootElement.TryGetProperty(OrderCustomerNotificationHelper.NotesRecipientEmailKey, out var nre)
+                    && nre.ValueKind == JsonValueKind.String)
+                    recipientEmail = nre.GetString();
             }
 
             // Extract fulfillment method & payment method
@@ -167,6 +193,10 @@ public static class NewOrderForStaffNotifier
                 ? $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Recipient</th>" +
                   $"<td style='padding:4px 8px;'>{WebUtility.HtmlEncode(recipientName)}" +
                   (phone != null ? $" · {WebUtility.HtmlEncode(phone)}" : "") + "</td></tr>" +
+                  (!string.IsNullOrEmpty(recipientEmail)
+                      ? $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Recipient email</th>" +
+                        $"<td style='padding:4px 8px;'>{WebUtility.HtmlEncode(recipientEmail)}</td></tr>"
+                      : "") +
                   $"<tr><th style='text-align:left;padding:4px 8px;color:#6b7280;font-weight:normal;'>Address</th>" +
                   $"<td style='padding:4px 8px;'>{WebUtility.HtmlEncode(addressLine ?? "—")}" +
                   (city != null ? $", {WebUtility.HtmlEncode(city)}" : "") + "</td></tr>"
@@ -211,7 +241,11 @@ public static class NewOrderForStaffNotifier
                 $"Hi {displayName ?? "staff"},\n\n" +
                 $"New order {order.OrderCode} at {branchName}.\n" +
                 (assigned ? "This order is assigned to you.\n" : "This order is in the queue.\n") +
-                (recipientName != null ? $"Recipient: {recipientName} {phone}\nAddress: {addressLine}, {city}\n" : "") +
+                (recipientName != null
+                    ? $"Recipient: {recipientName} {phone}\n" +
+                      (!string.IsNullOrEmpty(recipientEmail) ? $"Recipient email: {recipientEmail}\n" : "") +
+                      $"Address: {addressLine}, {city}\n"
+                    : "") +
                 $"Items: {itemCount} | Total: {total} VND | Payment: {paymentMethod ?? "—"}\n\n" +
                 "Please log in to the staff dashboard to begin packing.";
 

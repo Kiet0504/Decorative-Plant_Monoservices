@@ -42,7 +42,8 @@ public class CreateShippingHandler : IRequestHandler<CreateShippingCommand, Ship
             || shipmentsEl.GetArrayLength() == 0)
         {
             // Auto-heal: if order is confirmed/processing but shipments missing, try to create them now
-            if (order.Status == "confirmed" || order.Status == "processing" || order.Status == "shipped")
+            if (order.Status == "confirmed" || order.Status == "processing" || order.Status == "shipped"
+                || string.Equals(order.Status, "shipping", StringComparison.OrdinalIgnoreCase))
             {
                 await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                 await _context.SaveChangesAsync(ct);
@@ -54,7 +55,15 @@ public class CreateShippingHandler : IRequestHandler<CreateShippingCommand, Ship
                 }
                 else
                 {
-                    throw new BadRequestException("Failed to initialize GHN shipments. Please contact support or check delivery address.");
+                    var ghnErr = "";
+                    if (order.Notes != null
+                        && order.Notes.RootElement.TryGetProperty("ghn_handoff_error", out var ghnErrEl)
+                        && ghnErrEl.ValueKind == JsonValueKind.String)
+                        ghnErr = ghnErrEl.GetString() ?? "";
+                    throw new BadRequestException(
+                        string.IsNullOrWhiteSpace(ghnErr)
+                            ? "Failed to initialize GHN shipments. Please contact support or check delivery address."
+                            : $"Failed to initialize GHN shipments: {ghnErr}");
                 }
             }
             else

@@ -127,6 +127,8 @@ try
         builder.Configuration.GetSection(ContentSafetySettings.SectionName));
     builder.Services.Configure<PlantAssistantScopeSettings>(
         builder.Configuration.GetSection(PlantAssistantScopeSettings.SectionName));
+    builder.Services.Configure<decorativeplant_be.Application.Common.Options.CustomerPortalLinksOptions>(
+        builder.Configuration.GetSection(decorativeplant_be.Application.Common.Options.CustomerPortalLinksOptions.SectionName));
 
     // Add Infrastructure services (DbContext, Identity, JWT, Repositories, etc.)
     builder.Services.AddInfrastructureServices(builder.Configuration);
