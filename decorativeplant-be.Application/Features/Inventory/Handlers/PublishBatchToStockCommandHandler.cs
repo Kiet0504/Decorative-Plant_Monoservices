@@ -54,88 +54,97 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
         if (batch.CurrentTotalQuantity < request.Quantity)
             throw new BadRequestException($"Insufficient quantity in batch. Available: {batch.CurrentTotalQuantity}");
 
-        // 1. Find or create a 'Sales' location for this branch
-        var location = await _context.InventoryLocations
-            .FirstOrDefaultAsync(x => x.BranchId == batch.BranchId && (x.Type == "Sales" || x.Type == "Storefront"), ct);
-
-        if (location == null)
-        {
-            location = new InventoryLocation
-            {
-                Id = Guid.NewGuid(),
-                BranchId = batch.BranchId,
-                Name = "Main Sales Floor",
-                Type = "Sales",
-                Code = $"SALES-{batch.BranchId.Value.ToString().Substring(0, 4).ToUpper()}",
-                Details = JsonDocument.Parse(JsonSerializer.Serialize(new { description = "Automatically created sales area" }))
-            };
-            _context.InventoryLocations.Add(location);
-            _logger.LogInformation("Created default sales location for branch {BranchId}", batch.BranchId);
-        }
-
-        // 2. Decrement Batch Quantity (Moving plants out of cultivation)
+        // 1. Decrement Master Batch Quantity (Moving plants out of cultivation)
         batch.CurrentTotalQuantity -= request.Quantity;
 
-        // 3. CONSOLIDATION LOGIC: Find all stock records for this batch at this branch
+        // 2. Find all stock records for this batch at this branch
         var allStocks = await _context.BatchStocks
             .Include(s => s.Location)
             .Where(x => x.BatchId == batch.Id && x.Location!.BranchId == batch.BranchId)
             .ToListAsync(ct);
 
-        int totalAvailable = 0;
-        int totalReserved = 0;
-        int totalReceived = 0;
-
-        foreach (var s in allStocks)
-        {
-            if (s.Quantities != null)
-            {
-                var root = s.Quantities.RootElement;
-                if (root.TryGetProperty("available_quantity", out var aq)) totalAvailable += aq.GetInt32();
-                if (root.TryGetProperty("reserved_quantity", out var rq)) totalReserved += rq.GetInt32();
-                if (root.TryGetProperty("total_received", out var tr)) totalReceived += tr.GetInt32();
-            }
-        }
-
-        totalAvailable += request.Quantity;
-        totalReserved = Math.Max(0, totalReserved - request.Quantity);
-        totalReceived += request.Quantity;
-
-        var quantitiesJson = JsonDocument.Parse(JsonSerializer.Serialize(new
-        {
-            quantity = totalAvailable + totalReserved, 
-            available_quantity = totalAvailable,
-            reserved_quantity = totalReserved,
-            total_received = totalReceived
-        }));
-
-        var targetStock = allStocks.FirstOrDefault(s => s.LocationId == location.Id) 
-                          ?? allStocks.FirstOrDefault(); 
+        // 3. Update stock records WITHOUT consolidation
+        // We will take 'request.Quantity' from 'reserved' and move to 'available' 
+        // in the best matching stock record (preferring those with enough reserved quantity).
+        var targetStock = allStocks.OrderByDescending(s => {
+            if (s.Quantities == null) return 0;
+            if (s.Quantities.RootElement.TryGetProperty("reserved_quantity", out var rq)) return rq.GetInt32();
+            return 0;
+        }).FirstOrDefault();
 
         if (targetStock == null)
         {
+             // Fallback: If no stocks exist, find or create a 'Sales' location
+            var location = await _context.InventoryLocations
+                .FirstOrDefaultAsync(x => x.BranchId == batch.BranchId && (x.Type == "Sales" || x.Type == "Storefront"), ct);
+
+            if (location == null)
+            {
+                location = new InventoryLocation
+                {
+                    Id = Guid.NewGuid(),
+                    BranchId = batch.BranchId,
+                    Name = "Main Sales Floor",
+                    Type = "Sales",
+                    Code = $"SALES-{batch.BranchId.Value.ToString().Substring(0, 4).ToUpper()}",
+                    Details = JsonDocument.Parse(JsonSerializer.Serialize(new { description = "Automatically created sales area" }))
+                };
+                _context.InventoryLocations.Add(location);
+            }
+
             targetStock = new BatchStock
             {
                 Id = Guid.NewGuid(),
                 BatchId = batch.Id,
                 LocationId = location.Id,
-                Quantities = quantitiesJson,
+                Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                {
+                    quantity = request.Quantity,
+                    available_quantity = request.Quantity,
+                    reserved_quantity = 0,
+                    total_received = request.Quantity
+                })),
                 HealthStatus = "Healthy",
                 UpdatedAt = DateTime.UtcNow
             };
             _context.BatchStocks.Add(targetStock);
+            allStocks.Add(targetStock);
         }
         else
         {
-            targetStock.LocationId = location.Id; 
-            targetStock.Quantities = quantitiesJson;
+            // Update the target stock's quantities
+            int sAvailable = 0;
+            int sReserved = 0;
+            int sReceived = 0;
+            
+            if (targetStock.Quantities != null)
+            {
+                var root = targetStock.Quantities.RootElement;
+                if (root.TryGetProperty("available_quantity", out var aq)) sAvailable = aq.GetInt32();
+                if (root.TryGetProperty("reserved_quantity", out var rq)) sReserved = rq.GetInt32();
+                if (root.TryGetProperty("total_received", out var tr)) sReceived = tr.GetInt32();
+            }
+
+            sAvailable += request.Quantity;
+            sReserved = Math.Max(0, sReserved - request.Quantity);
+            sReceived += request.Quantity;
+
+            targetStock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                quantity = sAvailable + sReserved,
+                available_quantity = sAvailable,
+                reserved_quantity = sReserved,
+                total_received = sReceived
+            }));
             targetStock.UpdatedAt = DateTime.UtcNow;
         }
 
-        var extraStocks = allStocks.Where(s => s.Id != targetStock.Id).ToList();
-        if (extraStocks.Any())
+        // Calculate total available for ProductListing update
+        int totalAvailable = 0;
+        foreach (var s in allStocks)
         {
-            _context.BatchStocks.RemoveRange(extraStocks);
+            if (s.Quantities != null && s.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+                totalAvailable += aq.GetInt32();
         }
 
         // 4. Ensure a ProductListing exists for this species at this branch
