@@ -57,13 +57,14 @@ public sealed class OllamaChatImageIntentClassifier : IChatImageIntentClassifier
 
     private async Task<bool> ClassifyWithLlmAsync(string? lastUserText, CancellationToken cancellationToken)
     {
-        // Photo-only: always route to formal pipeline (deterministic; avoids LLM flip-flop on empty text).
-        if (string.IsNullOrWhiteSpace(lastUserText))
+        // Photo-only / placeholder-only: do NOT force formal diagnosis.
+        // Users frequently attach room/balcony photos for decor context; forcing diagnosis yields nonsense.
+        if (PlantChatIntentDetector.IsPlaceholderImageCaption(lastUserText))
         {
-            return true;
+            return false;
         }
 
-        var text = lastUserText.Trim();
+        var text = lastUserText!.Trim();
         if (text.Length > 1500)
         {
             text = text[..1500] + "…";

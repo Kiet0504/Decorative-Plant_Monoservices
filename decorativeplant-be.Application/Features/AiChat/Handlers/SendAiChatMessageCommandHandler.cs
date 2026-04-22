@@ -607,7 +607,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         sb.AppendLine("Matching listings from our catalog:");
         foreach (var r in recs)
         {
-            sb.AppendLine($"- {r.Title} (listingId {r.ListingId}, price {r.Price}): {r.Reason}");
+            sb.AppendLine($"- {r.Title} (price {r.Price}): {r.Reason}");
         }
 
         return sb.ToString();
@@ -697,7 +697,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         foreach (var r in recs)
         {
             sb.AppendLine(
-                $"- {r.Title} (listingId {r.ListingId}, price {r.Price}): {r.Reason}");
+                $"- {r.Title} (price {r.Price}): {r.Reason}");
         }
 
         return sb.ToString();
@@ -736,14 +736,15 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         {
             sb.AppendLine(
                 "The system appended a fresh \"[Profile catalog picks\" block in THIS system message with live listings from our database. " +
-                "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — these are real listings with listingIds. " +
+                "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — these are real listings. " +
                 "Do not substitute a plant from My Garden or a generic species name as a store product unless it matches a catalog title. " +
                 "Lead with those picks; do not reply with only \"open the Shop tab\" when catalog lines are present. " +
                 "If the user asks about a plant name that is NOT in the provided catalog list, do not claim our store \"doesn't have it\" — say it is not in the CURRENT in-stock picks (it may be out of stock, unpublished, or spelled differently) and then offer the closest alternatives from the provided list.");
 
             sb.AppendLine(
-                "When referring to a product, mention AT MOST one listingId per plant. " +
-                "Do not write multiple ids like \"(listingId A or B)\" — pick the best match and present a single id.");
+                "Do NOT include listingIds (UUIDs) in your natural-language reply. " +
+                "The app UI already knows the listingId from the attached catalog picks. " +
+                "Never write text like \"(listingId ...)\" or include any UUIDs in the reply.");
         }
         else
         {
