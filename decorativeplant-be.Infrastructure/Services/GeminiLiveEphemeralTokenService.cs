@@ -131,12 +131,63 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         if (uses < 2) uses = 2;
         if (uses > 4096) uses = 4096;
 
+        // IMPORTANT: When the client authenticates with an ephemeral token, it must use
+        // the Constrained WS method. That method enforces the token's "bidiGenerateContentSetup"
+        // as a strict allowlist: any setup fields the client sends must be declared here.
+        //
+        // Our Flutter client always sends: generationConfig (audio-only + voice + temp),
+        // systemInstruction, realtimeInputConfig (VAD), and both transcription configs.
+        // If this token only locks { model }, Google closes the WS immediately after TLS.
+        var voiceForSetup = string.IsNullOrWhiteSpace(_live.VoiceName)
+            ? "Puck"
+            : _live.VoiceName.Trim();
+
         var bodyCamel = new Dictionary<string, object?>
         {
             ["uses"] = uses,
             ["bidiGenerateContentSetup"] = new Dictionary<string, object?>
             {
                 ["model"] = modelResource,
+                ["generationConfig"] = new Dictionary<string, object?>
+                {
+                    ["responseModalities"] = new[] { "AUDIO" },
+                    ["speechConfig"] = new Dictionary<string, object?>
+                    {
+                        ["voiceConfig"] = new Dictionary<string, object?>
+                        {
+                            ["prebuiltVoiceConfig"] = new Dictionary<string, object?>
+                            {
+                                ["voiceName"] = voiceForSetup
+                            }
+                        }
+                    },
+                    ["temperature"] = 0.7
+                },
+                ["systemInstruction"] = new Dictionary<string, object?>
+                {
+                    ["role"] = "user",
+                    ["parts"] = new object[]
+                    {
+                        new Dictionary<string, object?> { ["text"] = systemInstruction }
+                    }
+                },
+                ["realtimeInputConfig"] = new Dictionary<string, object?>
+                {
+                    ["automaticActivityDetection"] = new Dictionary<string, object?>
+                    {
+                        ["disabled"] = false,
+                        ["silenceDurationMs"] = 500
+                    },
+                    ["activityHandling"] = "START_OF_ACTIVITY_INTERRUPTS"
+                },
+                ["inputAudioTranscription"] = new Dictionary<string, object?>
+                {
+                    ["enabled"] = true
+                },
+                ["outputAudioTranscription"] = new Dictionary<string, object?>
+                {
+                    ["enabled"] = true
+                }
             },
         };
 
@@ -205,7 +256,7 @@ public sealed class GeminiLiveEphemeralTokenService : IGeminiLiveEphemeralTokenS
         }
 
         var voice = string.IsNullOrWhiteSpace(_live.VoiceName)
-            ? null
+            ? "Puck"
             : _live.VoiceName.Trim();
 
         return new GeminiLiveTokenResponseDto
