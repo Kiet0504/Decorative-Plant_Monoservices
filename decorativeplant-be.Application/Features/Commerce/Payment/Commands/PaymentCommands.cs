@@ -7,3 +7,4 @@ public class CreatePaymentCommand : IRequest<PaymentResponse> { public Guid User
 public class HandlePayOSWebhookCommand : IRequest<bool> { public PayOSWebhookRequest Webhook { get; set; } = null!; public string RawJsonBody { get; set; } = null!; }
 public class SyncPaymentCommand : IRequest<bool> { public Guid OrderId { get; set; } }
 public class ConfirmCodReceivedCommand : IRequest<PaymentResponse> { public Guid PaymentId { get; set; } public Guid StaffId { get; set; } }
+public class MarkRefundedCommand : IRequest<PaymentResponse> { public Guid PaymentId { get; set; } public Guid StaffId { get; set; } public string? Note { get; set; } public List<string>? EvidenceImageUrls { get; set; } }
