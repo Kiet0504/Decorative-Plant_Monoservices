@@ -147,7 +147,7 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
                 if (root.TryGetProperty("en", out var enProp)) taxEn = enProp.GetString() ?? "";
             }
             
-            var targetTitle = !string.IsNullOrEmpty(taxVi) ? taxVi : (!string.IsNullOrEmpty(taxEn) ? taxEn : e.Batch.Taxonomy.ScientificName);
+            var targetTitle = !string.IsNullOrEmpty(taxEn) ? taxEn : (!string.IsNullOrEmpty(taxVi) ? taxVi : e.Batch.Taxonomy.ScientificName);
             // Keep the listing's own title if present; only fill from taxonomy when missing.
             if (string.IsNullOrWhiteSpace(response.Title) && !string.IsNullOrEmpty(targetTitle))
             {
@@ -155,6 +155,8 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             }
             
             response.ScientificName = e.Batch.Taxonomy.ScientificName;
+            response.CommonNameEn = taxEn;
+            response.CommonNameVi = taxVi;
             response.TaxonomyId = e.Batch.TaxonomyId;
         }
 
