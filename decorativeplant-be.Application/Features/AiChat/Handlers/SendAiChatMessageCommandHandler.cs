@@ -580,7 +580,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 "The system appended a fresh \"[Profile catalog picks\" block in THIS system message with live listings from our database. " +
                 "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — these are real listings with listingIds. " +
                 "Do not substitute a plant from My Garden or a generic species name as a store product unless it matches a catalog title. " +
-                "Lead with those picks; do not reply with only \"open the Shop tab\" when catalog lines are present.");
+                "Lead with those picks; do not reply with only \"open the Shop tab\" when catalog lines are present. " +
+                "If the user asks about a plant name that is NOT in the provided catalog list, do not claim our store \"doesn't have it\" — say it is not in the CURRENT in-stock picks (it may be out of stock, unpublished, or spelled differently) and then offer the closest alternatives from the provided list.");
         }
         else
         {
