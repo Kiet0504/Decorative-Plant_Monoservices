@@ -162,10 +162,32 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
 
         var dtos = pagedItems.Select(PlantBatchMapper.ToSummaryDto).ToList();
 
+        if (request.LocationId.HasValue)
+        {
+            var lid = request.LocationId.Value;
+            foreach (var dto in dtos)
+            {
+                var item = pagedItems.First(x => x.Id == dto.Id);
+                var localStock = item.BatchStocks?.FirstOrDefault(s => s.LocationId == lid);
+                if (localStock?.Quantities != null)
+                {
+                    var root = localStock.Quantities.RootElement;
+                    int localQty = (int)((root.TryGetProperty("reserved_quantity", out var rq) && rq.ValueKind == JsonValueKind.Number) ? rq.GetDouble() : 0);
+                    
+                    // Override fields for local context display
+                    dto.Quantity = localQty;
+                    dto.CurrentTotalQuantity = localQty;
+                    dto.ReservedQuantity = localQty;
+                }
+            }
+            // Final safety filter: remove items that ended up having 0 local quantity
+            dtos = dtos.Where(x => x.CurrentTotalQuantity > 0).ToList();
+        }
+
         return new PagedResultDto<PlantBatchSummaryDto>
         {
             Items = dtos,
-            TotalCount = totalCount,
+            TotalCount = dtos.Count, // Update count if we filtered
             Page = request.Page,
             PageSize = request.PageSize
         };

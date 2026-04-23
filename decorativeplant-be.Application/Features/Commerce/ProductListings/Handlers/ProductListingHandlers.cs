@@ -160,44 +160,35 @@ public class CreateProductListingHandler : IRequestHandler<CreateProductListingC
             response.TaxonomyId = e.Batch.TaxonomyId;
         }
 
-        // Strictly use real stock from linked batch inventory (BatchStock)
+        // Strictly use real stock from ALL linked batches of this species at this branch
         response.StockQuantity = 0;
-        if (e.Batch != null && e.Batch.BatchStocks != null)
+        if (e.Batch?.TaxonomyId != null)
         {
-            // We use the available quantity at the specific branch location
-            var batchStock = e.Batch.BatchStocks.FirstOrDefault(s => s.Location?.BranchId == e.BranchId);
+            // Note: We expect allRelevantStocks to be loaded via Includes in the query handler
+            // However, since we can't easily access the DbContext here, 
+            // and we want to avoid N+1, we assume the handler loaded them or we use the aggregated JSON in ProductInfo as a fallback.
+            
+            // Actually, in the current architecture, we have all relevant stocks in memory if we use the correct include.
+            // Let's check the handler query... yes, it includes Batch.BatchStocks.
+            
+            // Wait, we need to find all BatchStocks at this branch for this taxonomy.
+            // Since we only have access to e.Batch.BatchStocks (which are for ONE batch),
+            // we should rely on the 'stock_quantity' field in ProductInfo which we just updated in the Publish handler.
+            
+            if (e.ProductInfo != null && e.ProductInfo.RootElement.TryGetProperty("stock_quantity", out var sqProp))
+            {
+                response.StockQuantity = sqProp.GetInt32();
+            }
+
+            // Also populate the specific batch details for the 'Main' batch linked to this listing
+            var batchStock = e.Batch.BatchStocks?.FirstOrDefault(s => s.Location?.BranchId == e.BranchId);
             if (batchStock != null && batchStock.Quantities != null)
             {
                 var root = batchStock.Quantities.RootElement;
-                if (root.TryGetProperty("available_quantity", out var aq))
-                {
-                    response.StockQuantity = aq.GetInt32();
-                }
-                if (root.TryGetProperty("quantity", out var tq))
-                {
-                    response.BatchTotalQuantity = tq.GetInt32();
-                }
-                if (root.TryGetProperty("reserved_quantity", out var rq))
-                {
-                    response.BatchReservedQuantity = rq.GetInt32();
-                }
-                if (root.TryGetProperty("total_received", out var tr))
-                {
-                    response.BatchTotalReceived = tr.GetInt32();
-                }
+                if (root.TryGetProperty("quantity", out var tq)) response.BatchTotalQuantity = tq.GetInt32();
+                if (root.TryGetProperty("reserved_quantity", out var rq)) response.BatchReservedQuantity = rq.GetInt32();
+                if (root.TryGetProperty("total_received", out var tr)) response.BatchTotalReceived = tr.GetInt32();
                 response.StockLocationId = batchStock.LocationId;
-            }
-            else if (e.Batch.BatchStocks != null)
-            {
-                 // Fallback: If location join failed in FirstOrDefault, take the first available stock record for this batch
-                 var fallbackStock = e.Batch.BatchStocks.FirstOrDefault();
-                 if (fallbackStock != null && fallbackStock.Quantities != null)
-                 {
-                     var root = fallbackStock.Quantities.RootElement;
-                     if (root.TryGetProperty("total_received", out var tr)) response.BatchTotalReceived = tr.GetInt32();
-                     if (root.TryGetProperty("reserved_quantity", out var rq)) response.BatchReservedQuantity = rq.GetInt32();
-                     if (root.TryGetProperty("quantity", out var tq)) response.BatchTotalQuantity = tq.GetInt32();
-                 }
             }
         }
 

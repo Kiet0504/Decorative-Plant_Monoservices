@@ -52,14 +52,31 @@ public class GetInventoryLocationsQueryHandler : IRequestHandler<GetInventoryLoc
                         Capacity = isObject && details!.Value.TryGetProperty("capacity", out var cap) && cap.TryGetInt32(out var capVal) ? capVal : null,
                         CurrentOccupancy = l.BatchStocks
                             .Where(bs => bs.Batch != null && bs.Batch.BranchId == l.BranchId)
-                            .GroupBy(bs => bs.BatchId)
-                            .Select(g => g.First())
-                            .Sum(bs => bs.Batch!.CurrentTotalQuantity ?? 0),
+                            .Sum(bs => {
+                                if (bs.Quantities == null) return 0;
+                                var root = bs.Quantities.RootElement;
+                                
+                                // In the new model, 'reserved_quantity' represents plants currently 
+                                // occupying space in the cultivation/nursery location.
+                                if (root.TryGetProperty("reserved_quantity", out var rqProp) && rqProp.ValueKind == JsonValueKind.Number)
+                                    return (int)rqProp.GetDouble();
+                                
+                                // Fallback to 'quantity' if 'reserved_quantity' is missing (legacy)
+                                if (root.TryGetProperty("quantity", out var qProp) && qProp.ValueKind == JsonValueKind.Number)
+                                    return (int)qProp.GetDouble();
+                                    
+                                return 0;
+                            }),
                         EnvironmentType = isObject && details!.Value.TryGetProperty("environment_type", out var env) ? (env.ValueKind == JsonValueKind.String ? env.GetString() : env.GetRawText().Trim('"')) : null,
                         PositionX = isObject && details!.Value.TryGetProperty("position_x", out var posX) && posX.TryGetDouble(out var posXVal) ? posXVal : null,
                         PositionY = isObject && details!.Value.TryGetProperty("position_y", out var posY) && posY.TryGetDouble(out var posYVal) ? posYVal : null,
                         HostedBatches = l.BatchStocks
                             .Where(bs => bs.Batch != null && bs.Batch.BranchId == l.BranchId)
+                            .Where(bs => {
+                                if (bs.Quantities == null) return false;
+                                var rqProp = bs.Quantities.RootElement.TryGetProperty("reserved_quantity", out var rq) ? rq : (JsonElement?)null;
+                                return rqProp?.ValueKind == JsonValueKind.Number && rqProp.Value.GetDouble() > 0;
+                            })
                             .GroupBy(bs => bs.BatchId)
                             .Select(g => g.First())
                             .Select(bs => {
@@ -77,7 +94,10 @@ public class GetInventoryLocationsQueryHandler : IRequestHandler<GetInventoryLoc
                                     Id = bs.Batch!.Id,
                                     BatchCode = bs.Batch.BatchCode,
                                     SpeciesName = speciesName,
-                                    ImageUrl = taxonomy?.ImageUrl
+                                    ImageUrl = taxonomy?.ImageUrl,
+                                    Quantity = (int)((bs.Quantities?.RootElement.TryGetProperty("reserved_quantity", out var rq) == true && rq.ValueKind == JsonValueKind.Number) 
+                                        ? rq.GetDouble() 
+                                        : 0)
                                 };
                             })
                             .ToList()

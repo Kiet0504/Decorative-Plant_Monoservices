@@ -72,7 +72,7 @@ public class BranchAllocationService : IBranchAllocationService
     }
 
     // ── Helper: get available stock — prioritize ProductListing.stock_quantity (source of truth for orders) ──
-    private static int GetAvailableStockFromMap(ProductListing listing, Dictionary<Guid, BatchStock> stockMap)
+    private static int GetAvailableStockFromMap(ProductListing listing, Dictionary<Guid, int> stockMap)
     {
         // Primary: use stock_quantity from ProductInfo (system-wide source of truth)
         if (listing.ProductInfo != null)
@@ -81,14 +81,10 @@ public class BranchAllocationService : IBranchAllocationService
                 return sq.GetInt32();
         }
 
-        // Fallback: check BatchStock available_quantity
-        if (listing.BatchId.HasValue && stockMap.TryGetValue(listing.BatchId.Value, out var stock))
+        // Fallback: use pre-aggregated available stock from map
+        if (listing.BatchId.HasValue && stockMap.TryGetValue(listing.BatchId.Value, out var availableQty))
         {
-            if (stock.Quantities != null)
-            {
-                return stock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq)
-                    ? aq.GetInt32() : 0;
-            }
+            return availableQty;
         }
         return 0;
     }
@@ -152,9 +148,19 @@ public class BranchAllocationService : IBranchAllocationService
             .Select(l => l.BatchId!.Value)
             .Distinct()
             .ToList();
-        var stockMap = await _context.BatchStocks
+        // Batch-load all stock data and aggregate by BatchId in-memory to handle JSON parsing
+        var allStocksData = await _context.BatchStocks
             .Where(s => s.BatchId.HasValue && allBatchIds.Contains(s.BatchId.Value))
-            .ToDictionaryAsync(s => s.BatchId!.Value, ct);
+            .ToListAsync(ct);
+
+        var stockMap = allStocksData
+            .GroupBy(s => s.BatchId!.Value)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Sum(s => 
+                    s.Quantities != null && s.Quantities.RootElement.TryGetProperty("available_quantity", out var aq) 
+                    ? aq.GetInt32() : 0)
+            );
 
         // For each requested item, collect: title, price, image, quantity needed
         var cartProducts = new List<CartProduct>();
