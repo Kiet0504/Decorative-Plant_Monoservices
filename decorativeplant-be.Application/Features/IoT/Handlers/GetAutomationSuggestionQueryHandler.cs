@@ -44,7 +44,7 @@ public class GetAutomationSuggestionQueryHandler : IRequestHandler<GetAutomation
 
         foreach (var taxonomy in taxonomies)
         {
-            var suggestions = ExtractSuggestions(taxonomy, currentSeason);
+            var suggestions = ExtractSuggestions(taxonomy, currentSeason, request.GrowthStage);
             if (suggestions.Any())
             {
                 var commonName = GetCommonName(taxonomy.CommonNames);
@@ -72,7 +72,7 @@ public class GetAutomationSuggestionQueryHandler : IRequestHandler<GetAutomation
         };
     }
 
-    private List<SuggestedConditionDto> ExtractSuggestions(PlantTaxonomy taxonomy, string season)
+    private List<SuggestedConditionDto> ExtractSuggestions(PlantTaxonomy taxonomy, string season, string? requestedStage)
     {
         var suggestions = new List<SuggestedConditionDto>();
         if (taxonomy.AutomationMasterData == null) return suggestions;
@@ -80,10 +80,54 @@ public class GetAutomationSuggestionQueryHandler : IRequestHandler<GetAutomation
         try
         {
             var root = taxonomy.AutomationMasterData.RootElement;
-            if (root.TryGetProperty(season, out var seasonData))
+            JsonElement targetSeasonData = default;
+            bool found = false;
+
+            string[] growthStages = { "seedling", "growing", "mature" };
+            
+            bool isNewFormat = false;
+            foreach(var stage in growthStages) {
+                if (root.TryGetProperty(stage, out _)) {
+                    isNewFormat = true;
+                    break;
+                }
+            }
+
+            if (isNewFormat)
+            {
+                JsonElement stageData = default;
+                
+                // 1. Try requested stage first
+                if (!string.IsNullOrEmpty(requestedStage) && root.TryGetProperty(requestedStage, out stageData))
+                {
+                    if (stageData.TryGetProperty(season, out targetSeasonData)) found = true;
+                }
+                
+                // 2. Fallback to mature if requested not found or not provided
+                if (!found && root.TryGetProperty("mature", out stageData))
+                {
+                    if (stageData.TryGetProperty(season, out targetSeasonData)) found = true;
+                }
+                
+                // 3. Fallback to any stage that has the season
+                if (!found) {
+                    foreach(var stage in growthStages) {
+                        if (root.TryGetProperty(stage, out stageData) && stageData.TryGetProperty(season, out targetSeasonData)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            else if (root.TryGetProperty(season, out targetSeasonData))
+            {
+                found = true;
+            }
+
+            if (found)
             {
                 // Iterate over metrics in the season data
-                foreach (var metric in seasonData.EnumerateObject())
+                foreach (var metric in targetSeasonData.EnumerateObject())
                 {
                     var metricKey = metric.Name; // e.g., "temp", "humidity"
                     var componentKey = MapToComponentKey(metricKey);
