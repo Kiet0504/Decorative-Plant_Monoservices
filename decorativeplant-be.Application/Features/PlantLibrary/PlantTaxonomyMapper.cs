@@ -45,6 +45,12 @@ public static class PlantTaxonomyMapper
             try { growthInfo = JsonSerializer.Deserialize<object>(entity.GrowthInfo.RootElement.GetRawText(), JsonOptions); } catch {}
         }
 
+        object? automationMasterData = null;
+        if (entity.AutomationMasterData != null)
+        {
+            try { automationMasterData = JsonSerializer.Deserialize<object>(entity.AutomationMasterData.RootElement.GetRawText(), JsonOptions); } catch {}
+        }
+
         return new PlantTaxonomyDto
         {
             Id = entity.Id,
@@ -56,7 +62,8 @@ public static class PlantTaxonomyMapper
             GrowthInfo = growthInfo,
             ImageUrl = entity.ImageUrl,
             CategoryId = entity.CategoryId,
-            CategoryName = entity.Category?.Slug ?? entity.Category?.Name
+            CategoryName = entity.Category?.Slug ?? entity.Category?.Name,
+            AutomationMasterData = automationMasterData
         };
     }
 

@@ -10,14 +10,14 @@ namespace decorativeplant_be.API.Controllers;
 
 [ApiController]
 [Route("api/plant-library/taxonomies")]
-// [Authorize]
+[Authorize]
 public class PlantTaxonomyController : BaseController
 {
     /// <summary>
     /// Create a new plant taxonomy (species).
     /// </summary>
     [HttpPost]
-    // [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
+    [Authorize(Roles = "admin,branch_manager,cultivation_staff")]
     public async Task<ActionResult<ApiResponse<PlantTaxonomyDto>>> Create([FromBody] CreatePlantTaxonomyCommand command)
     {
         var result = await Mediator.Send(command);
