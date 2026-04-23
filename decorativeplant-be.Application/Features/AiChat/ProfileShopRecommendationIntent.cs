@@ -40,6 +40,9 @@ public static class ProfileShopRecommendationIntent
         var shopping =
             lower.Contains("recommend", StringComparison.Ordinal) ||
             lower.Contains("suggestion", StringComparison.Ordinal) ||
+            lower.Contains("show plants", StringComparison.Ordinal) ||
+            lower.Contains("show me plants", StringComparison.Ordinal) ||
+            lower.Contains("what plants", StringComparison.Ordinal) ||
             lower.Contains("what to buy", StringComparison.Ordinal) ||
             lower.Contains("what should i get", StringComparison.Ordinal) ||
             lower.Contains("plants for me", StringComparison.Ordinal) ||
@@ -47,6 +50,11 @@ public static class ProfileShopRecommendationIntent
             lower.Contains("from the catalog", StringComparison.Ordinal) ||
             lower.Contains("your catalog", StringComparison.Ordinal) ||
             lower.Contains("in stock", StringComparison.Ordinal) ||
+            lower.Contains("make my room greener", StringComparison.Ordinal) ||
+            lower.Contains("make my space greener", StringComparison.Ordinal) ||
+            lower.Contains("make my room green", StringComparison.Ordinal) ||
+            lower.Contains("brighten up my room", StringComparison.Ordinal) ||
+            lower.Contains("green up my room", StringComparison.Ordinal) ||
             (lower.Contains("plant") &&
                 (lower.Contains("sell") || lower.Contains("carry") || lower.Contains("buy") || lower.Contains("shop")));
 
@@ -71,6 +79,17 @@ public static class ProfileShopRecommendationIntent
         if ((lower.Contains("recommend", StringComparison.Ordinal) ||
              lower.Contains("suggest", StringComparison.Ordinal)) &&
             (lower.Contains("plant", StringComparison.Ordinal) || lower.Contains("pick", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        // "I need a plant for my room/desk/space" — common shopping ask that omits "recommend".
+        if ((lower.Contains("need a plant", StringComparison.Ordinal) ||
+             lower.Contains("want a plant", StringComparison.Ordinal) ||
+             lower.Contains("looking for a plant", StringComparison.Ordinal) ||
+             lower.Contains("can you help me pick", StringComparison.Ordinal)) &&
+            (profileCue || lower.Contains("room", StringComparison.Ordinal) || lower.Contains("desk", StringComparison.Ordinal) ||
+             lower.Contains("office", StringComparison.Ordinal) || lower.Contains("space", StringComparison.Ordinal)))
         {
             return true;
         }

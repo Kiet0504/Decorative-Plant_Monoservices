@@ -70,8 +70,23 @@ public class BranchAllocationService : IBranchAllocationService
         return (title, unitPrice, image);
     }
 
+    private static int ExtractAvailableQuantity(BatchStock stock)
+    {
+        if (stock.Quantities == null) return 0;
+
+        if (!stock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+            return 0;
+
+        return aq.ValueKind switch
+        {
+            JsonValueKind.Number => aq.GetInt32(),
+            JsonValueKind.String when int.TryParse(aq.GetString(), out var v) => v,
+            _ => 0
+        };
+    }
+
     // ── Helper: get available stock — prioritize ProductListing.stock_quantity (source of truth for orders) ──
-    private static int GetAvailableStockFromMap(ProductListing listing, Dictionary<Guid, BatchStock> stockMap)
+    private static int GetAvailableStockFromMap(ProductListing listing, Dictionary<Guid, int> stockMap)
     {
         // Primary: use stock_quantity from ProductInfo (system-wide source of truth)
         if (listing.ProductInfo != null)
@@ -81,13 +96,9 @@ public class BranchAllocationService : IBranchAllocationService
         }
 
         // Fallback: check BatchStock available_quantity
-        if (listing.BatchId.HasValue && stockMap.TryGetValue(listing.BatchId.Value, out var stock))
+        if (listing.BatchId.HasValue && stockMap.TryGetValue(listing.BatchId.Value, out var availableQty))
         {
-            if (stock.Quantities != null)
-            {
-                return stock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq)
-                    ? aq.GetInt32() : 0;
-            }
+            return availableQty;
         }
         return 0;
     }
@@ -150,9 +161,15 @@ public class BranchAllocationService : IBranchAllocationService
             .Select(l => l.BatchId!.Value)
             .Distinct()
             .ToList();
-        var stockMap = await _context.BatchStocks
+        // Note: BatchStock is per-location, so a BatchId can appear multiple times.
+        // Build a BatchId -> total available_quantity map to avoid duplicate-key errors.
+        var stockRows = await _context.BatchStocks
             .Where(s => s.BatchId.HasValue && allBatchIds.Contains(s.BatchId.Value))
-            .ToDictionaryAsync(s => s.BatchId!.Value, ct);
+            .ToListAsync(ct);
+        var stockMap = stockRows
+            .Where(s => s.BatchId.HasValue)
+            .GroupBy(s => s.BatchId!.Value)
+            .ToDictionary(g => g.Key, g => g.Sum(ExtractAvailableQuantity));
 
         // For each requested item, collect: title, price, image, quantity needed
         var cartProducts = new List<CartProduct>();
