@@ -67,6 +67,27 @@ public static class PlantBatchMapper
             dto.LocationName = fallback.Location?.Name;
         }
 
+        // Populate all non-sales locations for multi-location display
+        if (entity.BatchStocks != null)
+        {
+            var cultivationStocks = entity.BatchStocks
+                .Where(bs => bs.Location?.Type != "Sales" && bs.Location?.Type != "Storefront")
+                .ToList();
+            
+            if (cultivationStocks.Count > 0)
+            {
+                dto.Locations = cultivationStocks
+                    .Select(bs => new BatchLocationDto
+                    {
+                        LocationId = bs.LocationId,
+                        LocationName = bs.Location?.Name,
+                        Quantity = ExtractStockQuantity(bs)
+                    })
+                    .Where(x => x.Quantity > 0) // Only show locations that actually host plants
+                    .ToList();
+            }
+        }
+
         // Populate Aggregate Stock Fields
         if (entity.BatchStocks != null && entity.BatchStocks.Any())
         {
@@ -199,13 +220,28 @@ public static class PlantBatchMapper
             try
             {
                 var json = stock.Quantities.RootElement;
-                if (json.TryGetProperty("quantity", out var qProp)) q += qProp.GetInt32();
-                if (json.TryGetProperty("reserved_quantity", out var rProp)) r += rProp.GetInt32();
-                if (json.TryGetProperty("available_quantity", out var aProp)) a += aProp.GetInt32();
-                if (json.TryGetProperty("total_received", out var trProp)) tr += trProp.GetInt32();
+                if (json.TryGetProperty("quantity", out var qProp) && qProp.ValueKind == JsonValueKind.Number) q += (int)qProp.GetDouble();
+                if (json.TryGetProperty("reserved_quantity", out var rProp) && rProp.ValueKind == JsonValueKind.Number) r += (int)rProp.GetDouble();
+                if (json.TryGetProperty("available_quantity", out var aProp) && aProp.ValueKind == JsonValueKind.Number) a += (int)aProp.GetDouble();
+                if (json.TryGetProperty("total_received", out var trProp) && trProp.ValueKind == JsonValueKind.Number) tr += (int)trProp.GetDouble();
             }
             catch { }
         }
         return (q, r, a, tr);
+    }
+
+    private static int ExtractStockQuantity(BatchStock stock)
+    {
+        if (stock.Quantities == null) return 0;
+        try
+        {
+            // The UI expects 'current cultivation stock' for the location labels.
+            // According to the new model, this is 'reserved_quantity'.
+            if (stock.Quantities.RootElement.TryGetProperty("reserved_quantity", out var qProp) 
+                && qProp.ValueKind == JsonValueKind.Number)
+                return (int)qProp.GetDouble();
+        }
+        catch { }
+        return 0;
     }
 }
