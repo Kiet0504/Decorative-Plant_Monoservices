@@ -17,6 +17,7 @@ public class PlantTaxonomyDto
     public string? ImageUrl { get; set; }
     public Guid? CategoryId { get; set; }
     public string? CategoryName { get; set; }
+    public object? AutomationMasterData { get; set; }
 }
 
 public class PlantTaxonomySummaryDto
@@ -45,6 +46,7 @@ public class CreatePlantTaxonomyDto
     public string? ImageUrl { get; set; }
     public Guid? CategoryId { get; set; }
     public string? CategoryName { get; set; }
+    public Dictionary<string, object>? AutomationMasterData { get; set; }
 }
 
 public class UpdatePlantTaxonomyDto : CreatePlantTaxonomyDto

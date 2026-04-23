@@ -43,6 +43,7 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
         var taxonomyInfoJson = PlantTaxonomyMapper.BuildJson(request.TaxonomyInfo);
         var careInfoJson = PlantTaxonomyMapper.BuildJson(request.CareInfo);
         var growthInfoJson = PlantTaxonomyMapper.BuildJson(request.GrowthInfo);
+        var automationMasterDataJson = PlantTaxonomyMapper.BuildJson(request.AutomationMasterData);
 
         var repo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
         var existingName = request.ScientificName.Trim().ToLower();
@@ -61,7 +62,8 @@ public class CreatePlantTaxonomyCommandHandler : IRequestHandler<CreatePlantTaxo
             CareInfo = careInfoJson,
             GrowthInfo = growthInfoJson,
             ImageUrl = request.ImageUrl,
-            CategoryId = finalCategoryId
+            CategoryId = finalCategoryId,
+            AutomationMasterData = automationMasterDataJson
         };
 
         await repo.AddAsync(entity, cancellationToken);

@@ -17,4 +17,5 @@ public class UpdatePlantTaxonomyCommand : IRequest<PlantTaxonomyDto>
     public string? ImageUrl { get; set; }
     public Guid? CategoryId { get; set; }
     public string? CategoryName { get; set; }
+    public Dictionary<string, object>? AutomationMasterData { get; set; }
 }
