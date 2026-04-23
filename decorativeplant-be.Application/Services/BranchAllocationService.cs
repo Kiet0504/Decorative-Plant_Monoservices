@@ -196,7 +196,31 @@ public class BranchAllocationService : IBranchAllocationService
                 continue;
             }
 
-            // Find siblings by TaxonomyId (preferred) or title fallback
+            if (!fulfillFromBranchId.HasValue)
+            {
+                // Strict assignment: respect the exact listing the user added to cart
+                var primaryStock = GetAvailableStockFromMap(primaryListing, stockMap);
+                if (primaryStock < qty)
+                {
+                    throw new BadRequestException(
+                        $"Insufficient stock at branch for listing {listingId}. Available: {primaryStock}, requested: {qty}.");
+                }
+
+                cartProducts.Add(new CartProduct
+                {
+                    Title = title,
+                    UnitPrice = price,
+                    Image = image,
+                    QuantityNeeded = qty,
+                    SiblingListings = new List<(ProductListing listing, int stock)>
+                    {
+                        (primaryListing, primaryStock)
+                    }
+                });
+                continue;
+            }
+
+            // Find siblings by TaxonomyId (preferred) or title fallback (for BOPIS overrides)
             var siblings = allRelevantListings
                 .Where(l =>
                 {
@@ -221,19 +245,17 @@ public class BranchAllocationService : IBranchAllocationService
                     siblingsWithStock.Add((s, stock));
             }
 
-            if (fulfillFromBranchId.HasValue)
-            {
-                siblingsWithStock = siblingsWithStock
-                    .Where(s => s.listing.BranchId == fulfillFromBranchId.Value)
-                    .ToList();
-            }
+            // Restrict to the chosen branch
+            siblingsWithStock = siblingsWithStock
+                .Where(s => s.listing.BranchId == fulfillFromBranchId.Value)
+                .ToList();
 
             // Validate total stock
             int totalAvailable = siblingsWithStock.Sum(x => x.stock);
             if (totalAvailable < qty)
             {
                 throw new BadRequestException(
-                    $"Insufficient stock for '{title}'. Available: {totalAvailable}, requested: {qty}.");
+                    $"Insufficient stock for '{title}' at selected branch. Available: {totalAvailable}, requested: {qty}.");
             }
 
             cartProducts.Add(new CartProduct

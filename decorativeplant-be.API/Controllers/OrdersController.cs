@@ -426,6 +426,81 @@ public class OrdersController : BaseController
             $"Switched {switched.Count} shipment(s) to '{request.TargetStatus}'"));
     }
 
+    [HttpGet("{id:guid}/tracking/ghn-print")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> PrintGhnOrder(
+        Guid id,
+        [FromServices] IApplicationDbContext context,
+        [FromServices] IShippingService shippingService)
+    {
+        var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
+        if (shipping?.TrackingCode == null) return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
+        var url = await shippingService.PrintOrderAsync(shipping.TrackingCode);
+        if (string.IsNullOrEmpty(url)) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to generate GHN print URL."));
+        return Ok(ApiResponse<object>.SuccessResponse(new { url }));
+    }
+
+    [HttpGet("{id:guid}/tracking/ghn-info")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> GetGhnOrderInfo(
+        Guid id,
+        [FromServices] IApplicationDbContext context,
+        [FromServices] IShippingService shippingService)
+    {
+        var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
+        if (shipping?.TrackingCode == null) return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
+        var info = await shippingService.GetOrderInfoAsync(shipping.TrackingCode);
+        if (string.IsNullOrEmpty(info)) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to get GHN order info."));
+        var data = JsonSerializer.Deserialize<object>(info) ?? new object();
+        return Ok(ApiResponse<object>.SuccessResponse(data));
+    }
+
+    public class UpdateCodRequest { public int CodAmount { get; set; } }
+
+    [HttpPost("{id:guid}/tracking/ghn-update-cod")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> UpdateGhnCod(
+        Guid id,
+        [FromBody] UpdateCodRequest request,
+        [FromServices] IApplicationDbContext context,
+        [FromServices] IShippingService shippingService)
+    {
+        var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
+        if (shipping?.TrackingCode == null) return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
+        var ok = await shippingService.UpdateCodAsync(shipping.TrackingCode, request.CodAmount);
+        if (!ok) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to update COD amount on GHN."));
+        return Ok(ApiResponse<object>.SuccessResponse(new { codAmount = request.CodAmount }, "COD amount updated successfully."));
+    }
+
+    [HttpGet("ghn/services")]
+    [Authorize]
+    public async Task<IActionResult> GetGhnServices([FromQuery] int toDistrictId, [FromServices] IShippingService shippingService)
+    {
+        var res = await shippingService.GetAvailableServicesAsync(shippingService.DefaultFromDistrictId, toDistrictId);
+        if (string.IsNullOrEmpty(res)) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to get GHN services"));
+        return Ok(ApiResponse<object>.SuccessResponse(JsonSerializer.Deserialize<object>(res) ?? new object()));
+    }
+
+    [HttpGet("ghn/leadtime")]
+    [Authorize]
+    public async Task<IActionResult> GetGhnLeadTime([FromQuery] int toDistrictId, [FromQuery] string toWardCode, [FromQuery] int serviceId, [FromServices] IShippingService shippingService)
+    {
+        var res = await shippingService.CalculateExpectedDeliveryTimeAsync(shippingService.DefaultFromDistrictId, shippingService.DefaultFromWardCode, toDistrictId, toWardCode, serviceId);
+        if (string.IsNullOrEmpty(res)) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to get GHN leadtime"));
+        return Ok(ApiResponse<object>.SuccessResponse(JsonSerializer.Deserialize<object>(res) ?? new object()));
+    }
+
+    [HttpGet("{id:guid}/tracking/ghn-fee")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> GetGhnOrderFee(Guid id, [FromServices] IApplicationDbContext context, [FromServices] IShippingService shippingService)
+    {
+        var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
+        if (shipping?.TrackingCode == null) return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
+        var info = await shippingService.GetOrderFeeAsync(shipping.TrackingCode);
+        if (string.IsNullOrEmpty(info)) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to get GHN order fee."));
+        return Ok(ApiResponse<object>.SuccessResponse(JsonSerializer.Deserialize<object>(info) ?? new object()));
+    }
+
     // GHN real flow: ready_to_pick → picking → picked → storing → sorting → transporting → delivering → delivered
     // Business mapping (customer-visible labels in parentheses):
     //   - ready_to_pick, picking: GHN order created, shipper not yet handed the package → `processing` (Đang chờ lấy hàng)
@@ -573,6 +648,13 @@ public class OrdersController : BaseController
 
         if (string.IsNullOrWhiteSpace(payload.OrderCode) || string.IsNullOrWhiteSpace(payload.Status))
             return BadRequest(ApiResponse<object>.ErrorResponse("Missing OrderCode or Status"));
+
+        // Only process "switch_status" events. GHN might send "Update_weight", "Update_fee", etc.
+        if (!string.IsNullOrWhiteSpace(payload.Type) && !string.Equals(payload.Type, "switch_status", StringComparison.OrdinalIgnoreCase) && !string.Equals(payload.Type, "create", StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogInformation("GHN webhook: ignoring event type '{Type}' for order {Code}.", payload.Type, payload.OrderCode);
+            return Ok(ApiResponse<object>.SuccessResponse(new { ignoredType = payload.Type }));
+        }
 
         // 2) Find the OrderHeader. Primary lookup: Shipping.TrackingCode row.
         var shipping = await context.Shippings
@@ -729,6 +811,7 @@ public class OrdersController : BaseController
         public string OrderCode { get; set; } = string.Empty; // GHN tracking code
         public string Status { get; set; } = string.Empty;    // GHN status name
         public string? Description { get; set; }
+        public string? Type { get; set; }                     // e.g., "switch_status", "Update_weight"
     }
 
     /// <summary>
