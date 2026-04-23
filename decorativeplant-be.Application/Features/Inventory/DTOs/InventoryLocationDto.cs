@@ -13,6 +13,12 @@ public class InventoryLocationDto
     public string? Description { get; set; }
     public int? Capacity { get; set; }
     public int? CurrentOccupancy { get; set; }
+    /// <summary>
+    /// Computed: Capacity - CurrentOccupancy. Used by frontend to show remaining space.
+    /// </summary>
+    public int? RemainingCapacity => (Capacity.HasValue && CurrentOccupancy.HasValue)
+        ? Math.Max(0, Capacity.Value - CurrentOccupancy.Value)
+        : Capacity;
     public string? EnvironmentType { get; set; }
     public double? PositionX { get; set; }
     public double? PositionY { get; set; }
@@ -25,4 +31,5 @@ public class HostedBatchPreviewDto
     public string? BatchCode { get; set; }
     public string? SpeciesName { get; set; }
     public string? ImageUrl { get; set; }
+    public int Quantity { get; set; }
 }

@@ -134,9 +134,24 @@ public class CreatePlantBatchCommandHandler : IRequestHandler<CreatePlantBatchCo
 
         _context.PlantBatches.Add(entity);
 
-        // 5. Create BatchStock if location and quantity exist
+        // 5. Create BatchStock(s) - supports overflow allocation for multi-location
         if (locationId.HasValue && request.InitialQuantity > 0)
         {
+            int primaryQty = request.InitialQuantity;
+            int overflowQty = 0;
+
+            // Calculate split if overflow is specified
+            if (request.OverflowLocationId.HasValue && request.OverflowQuantity.HasValue 
+                && request.OverflowQuantity.Value > 0)
+            {
+                overflowQty = request.OverflowQuantity.Value;
+                primaryQty = request.InitialQuantity - overflowQty;
+
+                if (primaryQty <= 0)
+                    throw new BadRequestException("Primary location quantity must be greater than zero after overflow allocation.");
+            }
+
+            // Primary BatchStock
             var stock = new BatchStock
             {
                 Id = Guid.NewGuid(),
@@ -144,25 +159,48 @@ public class CreatePlantBatchCommandHandler : IRequestHandler<CreatePlantBatchCo
                 LocationId = locationId.Value,
                 Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
                 {
-                    quantity = request.InitialQuantity,
+                    quantity = primaryQty,
                     available_quantity = 0,
-                    reserved_quantity = request.InitialQuantity,
+                    reserved_quantity = primaryQty,
                     total_received = 0
                 })),
                 HealthStatus = ExtractHealthStatus(request.Specs) ?? "Healthy",
                 UpdatedAt = DateTime.UtcNow
             };
             _context.BatchStocks.Add(stock);
+
+            // Overflow BatchStock (second location)
+            if (overflowQty > 0 && request.OverflowLocationId.HasValue)
+            {
+                var overflowStock = new BatchStock
+                {
+                    Id = Guid.NewGuid(),
+                    BatchId = entity.Id,
+                    LocationId = request.OverflowLocationId.Value,
+                    Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+                    {
+                        quantity = overflowQty,
+                        available_quantity = 0,
+                        reserved_quantity = overflowQty,
+                        total_received = 0
+                    })),
+                    HealthStatus = ExtractHealthStatus(request.Specs) ?? "Healthy",
+                    UpdatedAt = DateTime.UtcNow
+                };
+                _context.BatchStocks.Add(overflowStock);
+            }
         }
 
         await _context.SaveChangesAsync(cancellationToken);
 
-        // Fetch relationships for full DTO
+        // Fetch relationships for full DTO (include BatchStocks for Locations mapping)
         var result = await _context.PlantBatches
             .Include(x => x.Taxonomy)
             .Include(x => x.Supplier)
             .Include(x => x.Branch)
             .Include(x => x.ParentBatch)
+            .Include(x => x.BatchStocks)
+                .ThenInclude(bs => bs.Location)
             .FirstOrDefaultAsync(x => x.Id == entity.Id, cancellationToken);
 
         return PlantBatchMapper.ToDto(result!);

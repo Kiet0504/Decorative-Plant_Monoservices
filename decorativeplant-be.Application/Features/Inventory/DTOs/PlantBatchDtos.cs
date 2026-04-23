@@ -47,6 +47,21 @@ public class PlantBatchDto
     public Guid? LocationId { get; set; }
     public string? LocationName { get; set; }
     public string? CategoryName { get; set; }
+    
+    /// <summary>
+    /// All non-sales locations for this batch. Used for multi-location display.
+    /// </summary>
+    public List<BatchLocationDto>? Locations { get; set; }
+}
+
+/// <summary>
+/// Represents a batch's stock at a specific location.
+/// </summary>
+public class BatchLocationDto
+{
+    public Guid? LocationId { get; set; }
+    public string? LocationName { get; set; }
+    public int Quantity { get; set; }
 }
 
 public class PlantBatchSummaryDto

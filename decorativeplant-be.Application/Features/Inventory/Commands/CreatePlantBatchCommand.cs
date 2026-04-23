@@ -16,6 +16,10 @@ public class CreatePlantBatchCommand : IRequest<PlantBatchDto>
     public string? NewLocationType { get; set; }
     public Dictionary<string, object>? NewLocationDetails { get; set; }
     
+    // Overflow: when batch quantity exceeds primary location remaining capacity
+    public Guid? OverflowLocationId { get; set; }
+    public int? OverflowQuantity { get; set; }
+    
     public Dictionary<string, object>? SourceInfo { get; set; }
     public Dictionary<string, object>? Specs { get; set; }
     

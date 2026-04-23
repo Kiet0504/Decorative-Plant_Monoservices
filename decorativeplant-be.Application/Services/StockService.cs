@@ -20,11 +20,10 @@ public class StockService : IStockService
 
     public async Task ReserveStockAsync(Guid listingId, Guid? branchId, int quantity, string productName, CancellationToken ct = default)
     {
-        // 1. Pessimistic lock on the ProductListing row
         await _context.AcquireStockLockAsync(listingId, ct);
 
-        // 2. Load ProductListing and deduct system-wide stock_quantity
         var listing = await _context.ProductListings
+            .Include(l => l.Batch)
             .FirstOrDefaultAsync(l => l.Id == listingId, ct);
         if (listing?.ProductInfo == null)
             throw new NotFoundException($"Listing {listingId} not found.");
@@ -35,21 +34,35 @@ public class StockService : IStockService
 
         SetListingStockQuantity(listing, listingStock - quantity);
 
-        // 3. Deduct branch-level available_quantity in BatchStock
-        //    reserved_quantity is NOT touched — it represents plants not for sale (staff-managed)
-        if (listing.BatchId.HasValue && branchId.HasValue)
+        // 3. Deduct branch-level available_quantity across ALL batches of this species
+        if (branchId.HasValue && listing.Batch?.TaxonomyId != null)
         {
-            var batchStock = await FindBatchStockAsync(listing.BatchId.Value, branchId.Value, ct);
-            if (batchStock?.Quantities != null)
+            var taxonomyId = listing.Batch.TaxonomyId.Value;
+            var batches = await _context.BatchStocks
+                .Include(bs => bs.Location)
+                .Where(bs => bs.Batch!.TaxonomyId == taxonomyId && bs.Location != null && bs.Location.BranchId == branchId)
+                .ToListAsync(ct);
+
+            int remainingToReserve = quantity;
+            foreach (var batchStock in batches.OrderByDescending(bs => {
+                var q = ReadQuantities(bs.Quantities!);
+                return q.Available;
+            }))
             {
-                var quantities = ReadQuantities(batchStock.Quantities);
+                if (remainingToReserve <= 0) break;
 
-                if (quantities.Available < quantity)
-                    throw new BadRequestException($"Insufficient stock for '{productName}' at branch. Available: {quantities.Available}, requested: {quantity}.");
-
-                quantities.Available -= quantity;
-                WriteQuantities(batchStock, quantities);
+                var quantities = ReadQuantities(batchStock.Quantities!);
+                if (quantities.Available > 0)
+                {
+                    int take = Math.Min(remainingToReserve, quantities.Available);
+                    quantities.Available -= take;
+                    remainingToReserve -= take;
+                    WriteQuantities(batchStock, quantities);
+                }
             }
+
+            if (remainingToReserve > 0)
+                throw new BadRequestException($"Insufficient physical stock for '{productName}' at branch. Missing: {remainingToReserve}.");
         }
 
         _logger.LogInformation("Reserved {Qty} units for Listing {ListingId} at Branch {BranchId}", quantity, listingId, branchId);
@@ -99,8 +112,9 @@ public class StockService : IStockService
             if (batchStock?.Quantities != null)
             {
                 var quantities = ReadQuantities(batchStock.Quantities);
-                quantities.Total -= quantity;
-                if (quantities.Total < 0) quantities.Total = 0;
+                // The user requested 'quantity' to be fixed as initial count.
+                // Deductions from sales happen against 'available_quantity' during reservation.
+                // So we do NOT subtract from quantities.Total here.
                 WriteQuantities(batchStock, quantities);
             }
         }
@@ -150,10 +164,10 @@ public class StockService : IStockService
         var root = doc.RootElement;
         return new StockQuantities
         {
-            Total = root.TryGetProperty("quantity", out var tq) ? tq.GetInt32() : 0,
-            Reserved = root.TryGetProperty("reserved_quantity", out var rq) ? rq.GetInt32() : 0,
-            Available = root.TryGetProperty("available_quantity", out var aq) ? aq.GetInt32() : 0,
-            TotalReceived = root.TryGetProperty("total_received", out var tr) ? tr.GetInt32() : null
+            Total = root.TryGetProperty("quantity", out var tq) && tq.ValueKind == JsonValueKind.Number ? (int)tq.GetDouble() : 0,
+            Reserved = root.TryGetProperty("reserved_quantity", out var rq) && rq.ValueKind == JsonValueKind.Number ? (int)rq.GetDouble() : 0,
+            Available = root.TryGetProperty("available_quantity", out var aq) && aq.ValueKind == JsonValueKind.Number ? (int)aq.GetDouble() : 0,
+            TotalReceived = root.TryGetProperty("total_received", out var tr) && tr.ValueKind == JsonValueKind.Number ? (int)tr.GetDouble() : null
         };
     }
 
