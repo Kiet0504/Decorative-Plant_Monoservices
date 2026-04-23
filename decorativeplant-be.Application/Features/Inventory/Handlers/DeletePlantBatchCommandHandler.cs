@@ -37,12 +37,9 @@ public class DeletePlantBatchCommandHandler : IRequestHandler<DeletePlantBatchCo
             throw new BadRequestException("Cannot delete batch because it has sales history (Orders). Consider marking it as inactive instead.");
         }
 
-        // Block if it has child batches (Hierarchy)
-        var hasChildren = await batchRepo.ExistsAsync(x => x.ParentBatchId == request.Id, cancellationToken);
-        if (hasChildren)
-        {
-            throw new BadRequestException("Cannot delete batch because it has child batches (Propagation). Please delete child batches first.");
-        }
+        // Note: Hierarchy check (ParentBatchId) is handled by the database schema (SetNull).
+        // Deleting a parent will orphan its children rather than blocking the deletion.
+        // This allows for more flexible inventory cleanup.
 
         // 2. CASCADE DELETE (Operational Data)
 

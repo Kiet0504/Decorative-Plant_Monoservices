@@ -20,7 +20,9 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
 
     public async Task<PlantBatchDto> Handle(UpdatePlantBatchCommand request, CancellationToken cancellationToken)
     {
-        var entity = await _context.PlantBatches
+        try
+        {
+            var entity = await _context.PlantBatches
             .Include(b => b.BatchStocks)
                 .ThenInclude(bs => bs.Location)
             .Include(b => b.ProductListings)
@@ -90,54 +92,115 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
             entity.ParentBatchId = request.ParentBatchId;
             
         // 1. Sync Quantities to BatchStock with Validation
-        if (request.CurrentTotalQuantity.HasValue && entity.BatchStocks != null)
+        if ((request.CurrentTotalQuantity.HasValue || request.ReservedQuantity.HasValue) && entity.BatchStocks != null)
         {
-            // Filter stocks to update: if BranchId is provided, only update that branch's sales stock
-            var stocksToUpdate = request.BranchId.HasValue 
-                ? entity.BatchStocks.Where(bs => bs.Location?.BranchId == request.BranchId && 
-                                               (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront"))
-                : entity.BatchStocks;
+            // Filter stocks to update: 
+            // 1. If BranchId is provided, target sales stocks in that branch.
+            // 2. If LocationId is provided, target that specific location.
+            // 3. Otherwise, target all.
+            // Ensure BatchStocks is not null before access
+            if (entity.BatchStocks == null) entity.BatchStocks = new List<BatchStock>();
+            
+            var stocksToUpdate = entity.BatchStocks.AsEnumerable();
+            
+            if (request.BranchId.HasValue)
+            {
+                stocksToUpdate = stocksToUpdate.Where(bs => bs.Location?.BranchId == request.BranchId && 
+                                                           (bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront"));
+            }
+            else if (request.LocationId.HasValue)
+            {
+                stocksToUpdate = stocksToUpdate.Where(bs => bs.LocationId == request.LocationId.Value);
+            }
 
-            foreach (var bs in stocksToUpdate)
+            var stockList = stocksToUpdate.ToList();
+
+            // If we are targeting a specific location but it doesn't exist in the batch stocks, 
+            // we should create it (important for merging into new locations)
+            if (request.LocationId.HasValue && !stockList.Any())
+            {
+                // Validation: Ensure the location actually exists to avoid FK error
+                var locationExists = await _context.InventoryLocations.AnyAsync(l => l.Id == request.LocationId.Value, cancellationToken);
+                if (!locationExists)
+                {
+                    throw new BadRequestException($"Target location ID {request.LocationId} does not exist.");
+                }
+
+                var newStock = new BatchStock
+                {
+                    BatchId = entity.Id,
+                    LocationId = request.LocationId.Value,
+                    Quantities = JsonDocument.Parse("{\"quantity\": 0, \"reserved_quantity\": 0, \"available_quantity\": 0, \"total_received\": 0}"),
+                    UpdatedAt = DateTime.UtcNow
+                };
+                
+                await _context.BatchStocks.AddAsync(newStock, cancellationToken);
+                stockList.Add(newStock);
+            }
+
+            bool isMultiLocationUpdate = stockList.Count > 1;
+
+            foreach (var bs in stockList)
             {
                 if (bs.Quantities == null) continue;
 
-                var jsonStr = bs.Quantities.RootElement.GetRawText();
-                var quantities = JsonSerializer.Deserialize<Dictionary<string, int>>(jsonStr) ?? new();
+                var root = bs.Quantities.RootElement;
+                var quantities = new Dictionary<string, int>();
+                
+                // Robustly extract existing quantities
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetDouble(out var val))
+                        quantities[prop.Name] = (int)val;
+                    else if (prop.Value.ValueKind == JsonValueKind.Null)
+                        quantities[prop.Name] = 0;
+                }
                 
                 // Determine the limit (Total Received) - Only apply strict validation for Sales/Storefront
                 bool isSalesLocation = bs.Location?.Type == "Sales" || bs.Location?.Type == "Storefront";
                 
-                // 1. Universal field updates (Always sync if provided)
-                if (request.ReservedQuantity.HasValue) quantities["reserved_quantity"] = request.ReservedQuantity.Value;
+                if (request.ReservedQuantity.HasValue)
+                {
+                    if (!isMultiLocationUpdate || request.LocationId.HasValue)
+                    {
+                        quantities["reserved_quantity"] = request.ReservedQuantity.Value;
+                        
+                        // Sync 'quantity' field for cultivation locations if not explicitly provided
+                        if (!isSalesLocation && !request.Quantity.HasValue)
+                        {
+                            quantities["quantity"] = request.ReservedQuantity.Value;
+                        }
+                    }
+                }
+
                 if (request.Quantity.HasValue) quantities["quantity"] = request.Quantity.Value;
                 if (!isSalesLocation && request.AvailableQuantity.HasValue) quantities["available_quantity"] = request.AvailableQuantity.Value;
 
                 if (isSalesLocation)
                 {
-                        // Only validate/update available_quantity if specifically requested or if targeting a branch
-                        if (request.AvailableQuantity.HasValue || (request.BranchId.HasValue && request.CurrentTotalQuantity.HasValue))
+                    // Only validate/update available_quantity if specifically requested or if targeting a branch
+                    if (request.AvailableQuantity.HasValue || (request.BranchId.HasValue && request.CurrentTotalQuantity.HasValue))
+                    {
+                        int limit = 0;
+                        if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
+                        else if (quantities.TryGetValue("quantity", out var q)) limit = q; 
+                        else limit = int.MaxValue; 
+
+                        int targetAvailable = request.AvailableQuantity ?? request.CurrentTotalQuantity ?? 0;
+
+                        if (targetAvailable > limit)
                         {
-                            int limit = 0;
-                            if (quantities.TryGetValue("total_received", out var tr)) limit = tr;
-                            else if (quantities.TryGetValue("quantity", out var q)) limit = q; 
-                            else limit = int.MaxValue; 
-
-                            int targetAvailable = request.AvailableQuantity ?? request.CurrentTotalQuantity ?? 0;
-
-                            if (targetAvailable > limit)
-                            {
-                                throw new BadRequestException($"Cannot update sales stock to {targetAvailable}. Maximum available from cultivation is {limit}.");
-                            }
-                            
-                            quantities["available_quantity"] = targetAvailable;
-
-                            // Sync the 'quantity' field for sales site to match available if reserved is 0
-                            if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
-                            {
-                                quantities["quantity"] = targetAvailable;
-                            }
+                            throw new BadRequestException($"Cannot update sales stock to {targetAvailable}. Maximum available from cultivation is {limit}.");
                         }
+                        
+                        quantities["available_quantity"] = targetAvailable;
+
+                        // Sync the 'quantity' field for sales site to match available if reserved is 0
+                        if (quantities.TryGetValue("reserved_quantity", out var res) && res == 0)
+                        {
+                            quantities["quantity"] = targetAvailable;
+                        }
+                    }
                 }
                 
                 bs.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(quantities));
@@ -184,31 +247,34 @@ public class UpdatePlantBatchCommandHandler : IRequestHandler<UpdatePlantBatchCo
         if (request.Specs != null)
             entity.Specs = PlantBatchMapper.BuildJson(request.Specs);
 
-        // 3. Update primary location if provided
-        if (request.LocationId.HasValue && entity.BatchStocks != null)
+        // 3. Update primary location link ONLY if we are not doing a targeted quantity update 
+        // or if explicitly requested to change the primary location mapping.
+        if (request.LocationId.HasValue && entity.BatchStocks != null && !request.ReservedQuantity.HasValue)
         {
             var primaryStock = entity.BatchStocks.FirstOrDefault(bs => 
                 bs.Location?.Type != "Sales" && bs.Location?.Type != "Storefront");
             
-            if (primaryStock != null)
+            if (primaryStock != null && primaryStock.LocationId != request.LocationId.Value)
             {
                 primaryStock.LocationId = request.LocationId.Value;
                 primaryStock.UpdatedAt = DateTime.UtcNow;
             }
-            else if (entity.BatchStocks.Any())
-            {
-                // Fallback: If for some reason we don't have a non-sales stock yet, 
-                // we should either update the first one or create one. 
-                // In most cases, existing plants in cultivation will have a non-sales stock.
-                var first = entity.BatchStocks.First();
-                first.LocationId = request.LocationId.Value;
-                first.UpdatedAt = DateTime.UtcNow;
-            }
         }
 
-        await _context.SaveChangesAsync(cancellationToken);
+            await _context.SaveChangesAsync(cancellationToken);
 
-        return PlantBatchMapper.ToDto(entity);
+            return PlantBatchMapper.ToDto(entity);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            var entries = ex.Entries.Select(e => $"{e.Entity.GetType().Name} (ID: {e.Property("Id").CurrentValue})");
+            throw new BadRequestException($"Concurrency error: {ex.Message} | Entities involved: {string.Join(", ", entries)}");
+        }
+        catch (Exception ex)
+        {
+            // Log and wrap error to reveal internal causes for debugging
+            throw new BadRequestException($"Update failed: {ex.Message} {(ex.InnerException != null ? " | Inner: " + ex.InnerException.Message : "")}");
+        }
     }
 
     private static int GetStageLevel(string stage)
