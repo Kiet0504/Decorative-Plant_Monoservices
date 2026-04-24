@@ -204,10 +204,14 @@ public sealed class RoomScanCatalogRankingService : IRoomScanCatalogRankingServi
     private static RoomScanRecommendationDto MapRecommendation(ProductListingResponse p, string reason)
     {
         var img = p.Images?.FirstOrDefault(i => i.IsPrimary) ?? p.Images?.FirstOrDefault();
+        var title =
+            !string.IsNullOrWhiteSpace(p.CommonNameEn) ? p.CommonNameEn.Trim() :
+            !string.IsNullOrWhiteSpace(p.Title) ? p.Title.Trim() :
+            (p.ScientificName ?? string.Empty).Trim();
         return new RoomScanRecommendationDto
         {
             ListingId = p.Id,
-            Title = p.Title,
+            Title = title,
             Price = p.Price,
             ImageUrl = img?.Url,
             Reason = Truncate(reason.Trim(), 420)
