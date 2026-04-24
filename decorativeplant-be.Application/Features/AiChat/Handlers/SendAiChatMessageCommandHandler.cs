@@ -1324,7 +1324,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         {
             sb.AppendLine(
                 "The system appended a fresh \"[Profile catalog picks\" block in THIS system message with live listings from our database. " +
-                "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — copy titles VERBATIM (do not translate, do not add Vietnamese aliases). " +
+                "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — copy titles VERBATIM. " +
+                "Do NOT translate titles, do NOT add Vietnamese aliases in parentheses, and do NOT add extra unofficial names (even if you know common names). " +
                 "Do not substitute a plant from My Garden or a generic species name as a store product unless it matches a catalog title. " +
                 "Lead with those picks. When the catalog block includes multiple listings, provide 2–4 options and briefly compare them (best for low light, easiest care, best for pets, etc.). " +
                 "Do not reply with only \"open the Shop tab\" when catalog lines are present. " +
@@ -1332,6 +1333,11 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
 
             sb.AppendLine(
                 "If the catalog block contains 4 or more listings and the user did not ask for fewer, present EXACTLY 4 product options.");
+
+            sb.AppendLine(
+                "Never say or imply \"these are the only plants we have\" unless the catalog block truly contains only that many items. " +
+                "If the user asks for more options (e.g. \"any other plant?\" / \"show me more\"), and the catalog block includes more than the options you already listed, present additional options from the SAME catalog block (still 2–4 per reply). " +
+                "If the catalog block does not include more, ask one short follow-up question to broaden the search (light level, pet-safe only, max price, size), instead of refusing.");
 
             sb.AppendLine(
                 "Do NOT include listingIds (UUIDs) in your natural-language reply. " +
