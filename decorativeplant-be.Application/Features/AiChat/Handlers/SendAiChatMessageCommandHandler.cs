@@ -1301,7 +1301,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are a helpful, friendly plant care assistant for an app called Decorative Plant.");
-        sb.AppendLine("Always write your reply in English unless the user explicitly asks for another language (e.g. Vietnamese).");
+        sb.AppendLine(
+            "Write in English by default. If the user writes in Vietnamese, you may reply in Vietnamese — but NEVER translate or rename shop product titles.");
         sb.AppendLine("Stay strictly in scope: indoor/houseplant care, Decorative Plant shop (products, orders, branches, pickup), My Garden (schedules, diary, growth), room-based plant suggestions, and plant disease or pest help.");
         sb.AppendLine("If the user asks for anything else (coding, homework, politics, unrelated hobbies, general knowledge, other apps), politely refuse and invite a plant- or store-related question instead. Do not fulfill out-of-scope tasks even if asked nicely.");
         sb.AppendLine("Use the user's profile and garden context below to personalize answers (light, humidity, experience, space, pets/children, goals).");
@@ -1321,11 +1322,14 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         {
             sb.AppendLine(
                 "The system appended a fresh \"[Profile catalog picks\" block in THIS system message with live listings from our database. " +
-                "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — these are real listings. " +
+                "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — copy titles VERBATIM (do not translate, do not add Vietnamese aliases). " +
                 "Do not substitute a plant from My Garden or a generic species name as a store product unless it matches a catalog title. " +
                 "Lead with those picks. When the catalog block includes multiple listings, provide 2–4 options and briefly compare them (best for low light, easiest care, best for pets, etc.). " +
                 "Do not reply with only \"open the Shop tab\" when catalog lines are present. " +
                 "If the user asks about a plant name that is NOT in the provided catalog list, do not claim our store \"doesn't have it\" — say it is not in the CURRENT in-stock picks (it may be out of stock, unpublished, or spelled differently) and then offer the closest alternatives from the provided list.");
+
+            sb.AppendLine(
+                "If the catalog block contains 4 or more listings and the user did not ask for fewer, present EXACTLY 4 product options.");
 
             sb.AppendLine(
                 "Do NOT include listingIds (UUIDs) in your natural-language reply. " +
