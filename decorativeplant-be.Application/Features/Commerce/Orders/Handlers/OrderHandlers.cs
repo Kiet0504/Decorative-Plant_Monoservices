@@ -754,17 +754,20 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
     private readonly IApplicationDbContext _context;
     private readonly IStockService _stockService;
     private readonly IPayOSService _payOS;
+    private readonly IShippingService _shippingService;
     private readonly ILogger<CancelOrderHandler> _logger;
 
     public CancelOrderHandler(
         IApplicationDbContext context,
         IStockService stockService,
         IPayOSService payOS,
+        IShippingService shippingService,
         ILogger<CancelOrderHandler> logger)
     {
         _context = context;
         _stockService = stockService;
         _payOS = payOS;
+        _shippingService = shippingService;
         _logger = logger;
     }
 
@@ -895,6 +898,12 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
 
         await _context.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
+
+        // Notify GHN to cancel the shipment after the DB transaction commits.
+        // GHN only allows cancel before pickup (ready_to_pick / picking). Failures are
+        // non-fatal — log and move on; staff can cancel manually via the GHN dashboard.
+        await TryCancelGhnShipmentsAsync(order);
+
         return CreateOrderHandler.MapToResponse(order);
         }
         catch
@@ -903,6 +912,33 @@ public class CancelOrderHandler : IRequestHandler<CancelOrderCommand, OrderRespo
             throw;
         }
         }); // end strategy.ExecuteAsync
+    }
+
+    private async Task TryCancelGhnShipmentsAsync(OrderHeader order)
+    {
+        if (order.Notes == null) return;
+        if (!order.Notes.RootElement.TryGetProperty("shipments", out var shipments)
+            || shipments.ValueKind != System.Text.Json.JsonValueKind.Array) return;
+
+        foreach (var shipment in shipments.EnumerateArray())
+        {
+            if (!shipment.TryGetProperty("tracking_code", out var tc)) continue;
+            var trackingCode = tc.GetString();
+            if (string.IsNullOrEmpty(trackingCode)) continue;
+
+            try
+            {
+                var ok = await _shippingService.SwitchGhnStatusAsync(trackingCode, "cancel");
+                if (ok)
+                    _logger.LogInformation("GHN shipment {TrackingCode} cancelled for order {OrderCode}.", trackingCode, order.OrderCode);
+                else
+                    _logger.LogWarning("GHN cancel returned failure for shipment {TrackingCode} (order {OrderCode}). Cancel manually in GHN dashboard.", trackingCode, order.OrderCode);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error cancelling GHN shipment {TrackingCode} for order {OrderCode}.", trackingCode, order.OrderCode);
+            }
+        }
     }
 
     /// <summary>
@@ -2153,6 +2189,82 @@ public class CompleteOrderHandler : IRequestHandler<CompleteOrderCommand, OrderR
 
         _logger.LogInformation("CompleteOrderHandler: Order {OrderCode} completed by staff {StaffId}",
             order.OrderCode, cmd.StaffUserId);
+
+        return CreateOrderHandler.MapToResponse(order);
+    }
+}
+
+public class RejectAssignmentHandler : IRequestHandler<RejectAssignmentCommand, OrderResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly IOrderAssignmentService _orderAssignment;
+    private readonly ILogger<RejectAssignmentHandler> _logger;
+
+    public RejectAssignmentHandler(
+        IApplicationDbContext context,
+        IOrderAssignmentService orderAssignment,
+        ILogger<RejectAssignmentHandler> logger)
+    {
+        _context = context;
+        _orderAssignment = orderAssignment;
+        _logger = logger;
+    }
+
+    public async Task<OrderResponse> Handle(RejectAssignmentCommand cmd, CancellationToken ct)
+    {
+        var order = await _context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == cmd.OrderId, ct)
+            ?? throw new NotFoundException($"Order {cmd.OrderId} not found.");
+
+        if (!order.AssignedStaffId.HasValue || order.AssignedStaffId != cmd.StaffId)
+            throw new BadRequestException("You are not the assigned staff for this order.");
+
+        if (!string.Equals(order.Status, OrderStatusMachine.Confirmed, StringComparison.OrdinalIgnoreCase))
+            throw new BadRequestException(
+                "Orders can only be rejected before packing begins (status must be 'confirmed').");
+
+        // Block reject if GHN shipment was already successfully created.
+        var hasActiveShipment = order.Notes != null
+            && order.Notes.RootElement.TryGetProperty("shipments", out var shEl)
+            && shEl.ValueKind == JsonValueKind.Array
+            && shEl.GetArrayLength() > 0;
+        var hasHandoffFailure = order.Notes != null
+            && order.Notes.RootElement.TryGetProperty("ghn_handoff_failed", out var failEl)
+            && failEl.ValueKind == JsonValueKind.True;
+
+        if (hasActiveShipment && !hasHandoffFailure)
+            throw new BadRequestException(
+                "Cannot un-assign: a GHN shipment has already been created for this order. Cancel via GHN dashboard first.");
+
+        var branchId = order.OrderItems?.FirstOrDefault()?.BranchId;
+
+        order.AssignedStaffId = null;
+
+        var notesDict = new Dictionary<string, object?>();
+        if (order.Notes != null)
+            foreach (var p in order.Notes.RootElement.EnumerateObject())
+            {
+                if (p.Value.ValueKind == JsonValueKind.String) notesDict[p.Name] = p.Value.GetString();
+                else notesDict[p.Name] = JsonSerializer.Deserialize<object?>(p.Value.GetRawText());
+            }
+        notesDict["assignment_rejected_by"] = cmd.StaffId.ToString();
+        notesDict["assignment_rejected_at"] = DateTime.UtcNow.ToString("o");
+        if (!string.IsNullOrEmpty(cmd.Reason))
+            notesDict["assignment_rejection_reason"] = cmd.Reason;
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+
+        await _context.SaveChangesAsync(ct);
+
+        _logger.LogInformation(
+            "RejectAssignmentHandler: Staff {StaffId} un-assigned from Order {OrderCode}. Reason: {Reason}",
+            cmd.StaffId, order.OrderCode, cmd.Reason ?? "(none)");
+
+        if (branchId.HasValue)
+        {
+            try { await _orderAssignment.TryFlushQueueAsync(branchId.Value, ct); }
+            catch (Exception ex) { _logger.LogError(ex, "Queue flush failed after reject-assignment for Order {OrderId}.", cmd.OrderId); }
+        }
 
         return CreateOrderHandler.MapToResponse(order);
     }
