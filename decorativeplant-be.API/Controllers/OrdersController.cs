@@ -678,6 +678,7 @@ public class OrdersController : BaseController
     /// Payload (minimal): { OrderCode, Status, Description } where OrderCode is the GHN tracking code.
     /// </summary>
     [HttpPost("ghn/webhook")]
+    [Route("api/Orders/ghn/webhook")] // alias for GHN staging config (no version prefix)
     [AllowAnonymous]
     [DisableRateLimiting]
     public async Task<IActionResult> GhnWebhook(
