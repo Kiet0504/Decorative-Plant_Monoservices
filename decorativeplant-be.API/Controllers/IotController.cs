@@ -55,12 +55,12 @@ public class IotController : BaseController
         return CreatedAtAction(nameof(GetDeviceById), new { id = result.Id }, result);
     }
 
-    [HttpPatch("devices/{id}")]
-    public async Task<ActionResult> UpdateDevice(Guid id, [FromBody] UpdateIotDeviceDto dto)
+    [HttpPut("devices/{id}")]
+    public async Task<ActionResult<IotDeviceDto>> UpdateDevice(Guid id, [FromBody] UpdateIotDeviceDto dto)
     {
         var result = await Mediator.Send(new UpdateIotDeviceCommand { Id = id, Device = dto });
-        if (!result) return NotFound();
-        return NoContent();
+        if (result == null) return NotFound();
+        return Ok(result);
     }
 
     [HttpDelete("devices/{id}")]
