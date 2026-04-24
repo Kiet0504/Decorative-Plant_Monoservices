@@ -43,6 +43,7 @@ public class GhnService : IShippingService
 
     public int DefaultFromDistrictId => _settings.FromDistrictId;
     public string DefaultFromWardCode => _settings.FromWardCode;
+    public int DefaultServiceTypeId => _settings.ServiceTypeId;
 
     public async Task<ShippingFeeResponse> CalculateFeeAsync(ShippingFeeRequest request)
     {

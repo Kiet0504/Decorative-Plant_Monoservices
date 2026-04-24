@@ -90,7 +90,11 @@ public static class GhnOrderHelper
 
             if (string.IsNullOrEmpty(toName) || string.IsNullOrEmpty(toPhone))
             {
-                logger.LogWarning("GHN: Critical missing address info for Order {OrderCode}. Name={Name}, Phone={Phone}", order.OrderCode, toName, toPhone);
+                var missing = string.IsNullOrEmpty(toName) && string.IsNullOrEmpty(toPhone) ? "name and phone" :
+                              string.IsNullOrEmpty(toName) ? "name" : "phone";
+                logger.LogError("GHN: Cannot create shipment for Order {OrderCode} — delivery address is missing {Missing}.", order.OrderCode, missing);
+                MarkHandoffFailure(order, $"Delivery address missing: {missing}");
+                return false;
             }
 
             logger.LogInformation("GHN: Delivery address for Order {OrderCode}: Name={Name}, Phone={Phone}, Address={Address}, District={District}, Ward={Ward}",
@@ -109,16 +113,18 @@ public static class GhnOrderHelper
                 var name = "Decorative Plant";
                 if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
                     name = ts.GetString() ?? name;
-                return new ShippingOrderItem { Name = name, Quantity = oi.Quantity, Weight = 1000 };
+                return new ShippingOrderItem { Name = name, Quantity = oi.Quantity, Weight = 500 };
             }).ToList();
 
             var branchId = order.OrderItems.First().BranchId;
-            var clientCode = order.OrderCode ?? order.Id.ToString();
+            var clientCode = $"DECPLANT-{order.OrderCode ?? order.Id.ToString()}";
 
             var res = await shippingService.CreateOrderAsync(new ShippingOrderRequest {
                 ToName = toName, ToPhone = toPhone, ToAddress = toAddress, ToDistrictId = toDistrict, ToWardCode = toWard,
                 FromDistrictId = shippingService.DefaultFromDistrictId, FromWardCode = shippingService.DefaultFromWardCode,
-                Weight = ghnItems.Sum(i => i.Quantity) * 1000, InsuranceValue = orderTotal, ClientOrderCode = clientCode, Items = ghnItems,
+                Weight = Math.Max(ghnItems.Sum(i => i.Quantity) * 500, 500),
+                InsuranceValue = Math.Min(orderTotal, 5_000_000), ClientOrderCode = clientCode, Items = ghnItems,
+                ServiceTypeId = shippingService.DefaultServiceTypeId,
                 CodAmount = isCod ? orderTotal : 0, PaymentTypeId = isCod ? 2 : 1
             });
 

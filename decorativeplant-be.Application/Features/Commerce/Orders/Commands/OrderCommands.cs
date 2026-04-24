@@ -76,3 +76,15 @@ public class CompleteOrderCommand : IRequest<OrderResponse>
     public Guid StaffUserId { get; set; }
     public CompleteOrderRequest Request { get; set; } = null!;
 }
+
+/// <summary>
+/// Allows the assigned fulfillment_staff to un-assign themselves from an order
+/// without cancelling it. The order is re-queued for another staff to pick up.
+/// Only allowed when status == confirmed and no active GHN tracking exists.
+/// </summary>
+public class RejectAssignmentCommand : IRequest<OrderResponse>
+{
+    public Guid OrderId { get; set; }
+    public Guid StaffId { get; set; }
+    public string? Reason { get; set; }
+}

@@ -6,6 +6,7 @@ public interface IShippingService
 {
     int DefaultFromDistrictId { get; }
     string DefaultFromWardCode { get; }
+    int DefaultServiceTypeId { get; }
     Task<ShippingFeeResponse> CalculateFeeAsync(ShippingFeeRequest request);
     Task<ShippingOrderResponse> CreateOrderAsync(ShippingOrderRequest request);
     Task<List<GhnProvince>> GetProvincesAsync();

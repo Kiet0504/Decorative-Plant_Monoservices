@@ -275,6 +275,9 @@ public class OrdersController : BaseController
         var userId = GetUserId();
         var isAdmin = User.IsInRole("admin");
 
+        if (!FulfillmentStaffIsAssigned(order, userId))
+            return Forbid();
+
         Guid? staffBranchId = null;
         if (!isAdmin)
         {
@@ -433,6 +436,10 @@ public class OrdersController : BaseController
         [FromServices] IApplicationDbContext context,
         [FromServices] IShippingService shippingService)
     {
+        var order = await context.OrderHeaders.FindAsync(id);
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+        if (!FulfillmentStaffIsAssigned(order, GetUserId())) return Forbid();
+
         var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
         if (shipping?.TrackingCode == null) return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
         var url = await shippingService.PrintOrderAsync(shipping.TrackingCode);
@@ -447,6 +454,10 @@ public class OrdersController : BaseController
         [FromServices] IApplicationDbContext context,
         [FromServices] IShippingService shippingService)
     {
+        var order = await context.OrderHeaders.FindAsync(id);
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+        if (!FulfillmentStaffIsAssigned(order, GetUserId())) return Forbid();
+
         var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
         if (shipping?.TrackingCode == null) return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
         var info = await shippingService.GetOrderInfoAsync(shipping.TrackingCode);
@@ -465,6 +476,10 @@ public class OrdersController : BaseController
         [FromServices] IApplicationDbContext context,
         [FromServices] IShippingService shippingService)
     {
+        var order = await context.OrderHeaders.FindAsync(id);
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+        if (!FulfillmentStaffIsAssigned(order, GetUserId())) return Forbid();
+
         var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
         if (shipping?.TrackingCode == null) return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
         var ok = await shippingService.UpdateCodAsync(shipping.TrackingCode, request.CodAmount);
@@ -507,6 +522,19 @@ public class OrdersController : BaseController
     //   - picked+: package is physically in GHN custody → `shipping` (Chờ giao hàng)
     //   - delivered: dropped at customer → `delivered` (Đã giao)
     // Note: `confirmed` (Đã xác nhận) is set by the staff confirm action or payment success, not by any GHN state.
+    /// <summary>
+    /// Fulfillment staff may only act on orders explicitly assigned to them.
+    /// Admin, branch_manager, and store_staff are unrestricted.
+    /// </summary>
+    private bool FulfillmentStaffIsAssigned(OrderHeader order, Guid? userId)
+    {
+        if (User.IsInRole("admin") || User.IsInRole("branch_manager") || User.IsInRole("store_staff"))
+            return true;
+        if (!User.IsInRole("fulfillment_staff"))
+            return true; // unknown role — let Authorize attribute handle it
+        return order.AssignedStaffId.HasValue && order.AssignedStaffId == userId;
+    }
+
     private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
     {
         "ready_to_pick" or "picking"                                                             => "processing",
@@ -535,6 +563,11 @@ public class OrdersController : BaseController
         var actorUserId = GetUserId();
         if (User.IsInRole("fulfillment_staff") && actorUserId.HasValue)
         {
+            // Fulfillment staff must not cancel customer orders — use POST /reject-assignment instead.
+            var normalizedRequest = request.Status?.ToLowerInvariant() ?? "";
+            if (normalizedRequest == "cancelled")
+                return Forbid();
+
             var order = await context.OrderHeaders
                 .Include(o => o.OrderItems)
                 .AsNoTracking()
@@ -616,6 +649,28 @@ public class OrdersController : BaseController
         return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Order assigned successfully"));
     }
 
+    public class RejectAssignmentRequest { public string? Reason { get; set; } }
+
+    /// <summary>
+    /// Allows the currently-assigned fulfillment_staff to un-assign themselves from an order
+    /// without cancelling it. The order is re-queued for the next available staff.
+    /// Only allowed when the order is still in 'confirmed' status and no GHN shipment has been created.
+    /// </summary>
+    [HttpPost("{id:guid}/reject-assignment")]
+    [Authorize(Roles = "fulfillment_staff")]
+    public async Task<IActionResult> RejectAssignment(Guid id, [FromBody] RejectAssignmentRequest request)
+    {
+        var staffId = GetUserId();
+        if (staffId == null) return Unauthorized();
+        var result = await Mediator.Send(new RejectAssignmentCommand
+        {
+            OrderId = id,
+            StaffId = staffId.Value,
+            Reason = request?.Reason,
+        });
+        return Ok(ApiResponse<OrderResponse>.SuccessResponse(result, "Assignment rejected. Order re-queued."));
+    }
+
     /// <summary>
     /// Webhook endpoint GHN calls when shipment status changes.
     /// Authenticated via the shared "Token" header (configured in GHN's Hook Orders panel).
@@ -669,17 +724,16 @@ public class OrdersController : BaseController
 
         if (order == null)
         {
-            // Fallback: scan Notes.shipments[].tracking_code in-app (should rarely fire).
-            var all = await context.OrderHeaders
-                .Where(o => o.Notes != null)
-                .ToListAsync();
-            order = all.FirstOrDefault(o =>
-                o.Notes != null &&
-                o.Notes.RootElement.TryGetProperty("shipments", out var sh) &&
-                sh.ValueKind == JsonValueKind.Array &&
-                sh.EnumerateArray().Any(s =>
-                    s.TryGetProperty("tracking_code", out var tc) &&
-                    tc.GetString() == payload.OrderCode));
+            // Fallback: JSONB containment query — avoids loading all orders into memory.
+            // Uses PostgreSQL @> operator; fires only when Shipping row is missing (rare).
+            var searchJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                shipments = new[] { new { tracking_code = payload.OrderCode } }
+            });
+            order = await context.OrderHeaders
+                .Include(o => o.OrderItems)
+                .Where(o => o.Notes != null && EF.Functions.JsonContains(o.Notes, searchJson))
+                .FirstOrDefaultAsync();
         }
 
         if (order == null)
