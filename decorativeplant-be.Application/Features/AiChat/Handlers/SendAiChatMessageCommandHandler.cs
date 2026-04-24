@@ -219,12 +219,27 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 {
                     try
                     {
+                        var recoveryLines = new List<string>
+                        {
+                            $"Active issue (photo diagnosis): {diagnosis.Disease}"
+                        };
+                        if (diagnosis.Recommendations is { Count: > 0 })
+                        {
+                            recoveryLines.Add("Suggested actions: " + string.Join("; ", diagnosis.Recommendations.Take(6)));
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(diagnosis.Explanation))
+                        {
+                            recoveryLines.Add("Notes: " + diagnosis.Explanation.Trim());
+                        }
+
                         var plan = await _mediator.Send(new GenerateGardenPlantAiSchedulePlanQuery
                         {
                             UserId = request.UserId,
                             PlantId = focusPlant.Id,
                             HorizonDays = 30,
-                            UtcOffsetMinutes = request.UtcOffsetMinutes
+                            UtcOffsetMinutes = request.UtcOffsetMinutes,
+                            RecoveryDiagnosisContext = string.Join(Environment.NewLine, recoveryLines)
                         }, cancellationToken);
                         suggestedSchedules = plan.Tasks;
                     }

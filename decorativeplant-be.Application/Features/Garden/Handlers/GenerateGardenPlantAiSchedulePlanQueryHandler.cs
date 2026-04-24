@@ -126,6 +126,7 @@ Rules:
 - If taxonomy care text says water 1-2 times per week, prefer interval_days 3-4 unless logs suggest otherwise.
 - If unsure on species data, prefer "inspect weekly" and conservative watering, and set confidence to "low".
 - Only include fertilize/prune/repot when relevant to the species; otherwise omit them.
+- If a "CURRENT DIAGNOSIS / RECOVERY CONTEXT" section is present, add at least one inspect task due within the first 2-3 days (offset_days 0-2) to monitor the issue, and bias watering/fertilize cautiously toward recovery (do not invent extreme treatments).
 """;
 
         var userPrompt = new StringBuilder();
@@ -169,6 +170,13 @@ Rules:
         userPrompt.AppendLine("Recent care logs (most recent first):");
         userPrompt.AppendLine(recentLogsJson);
         userPrompt.AppendLine();
+        if (!string.IsNullOrWhiteSpace(request.RecoveryDiagnosisContext))
+        {
+            userPrompt.AppendLine("=== CURRENT DIAGNOSIS / RECOVERY CONTEXT (supportive check-ins + gentle adjustments; still obey species taxonomy above) ===");
+            userPrompt.AppendLine(request.RecoveryDiagnosisContext.Trim());
+            userPrompt.AppendLine();
+        }
+
         userPrompt.AppendLine("Generate a care schedule plan JSON for this plant.");
 
         JsonDocument json;

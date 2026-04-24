@@ -19,5 +19,8 @@ public sealed class GenerateGardenPlantAiSchedulePlanQuery : IRequest<AiSchedule
     /// Used to snap morning/afternoon/evening to the correct local wall-clock time. Omit or 0 for UTC.
     /// </summary>
     public int? UtcOffsetMinutes { get; set; }
+
+    /// <summary>Optional. When set (e.g. after a disease diagnosis), tasks should include recovery-aware monitoring.</summary>
+    public string? RecoveryDiagnosisContext { get; set; }
 }
 
