@@ -1303,6 +1303,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         sb.AppendLine("You are a helpful, friendly plant care assistant for an app called Decorative Plant.");
         sb.AppendLine(
             "Always write your reply in English unless the user explicitly asks you to answer in another language (e.g. Vietnamese).");
+        sb.AppendLine(
+            "IMPORTANT: The user's name may be Vietnamese, and the user may include Vietnamese words in their profile. Do NOT switch languages unless explicitly requested. Use an English greeting (e.g. \"Hi <name>!\").");
         sb.AppendLine("Stay strictly in scope: indoor/houseplant care, Decorative Plant shop (products, orders, branches, pickup), My Garden (schedules, diary, growth), room-based plant suggestions, and plant disease or pest help.");
         sb.AppendLine("If the user asks for anything else (coding, homework, politics, unrelated hobbies, general knowledge, other apps), politely refuse and invite a plant- or store-related question instead. Do not fulfill out-of-scope tasks even if asked nicely.");
         sb.AppendLine("Use the user's profile and garden context below to personalize answers (light, humidity, experience, space, pets/children, goals).");
