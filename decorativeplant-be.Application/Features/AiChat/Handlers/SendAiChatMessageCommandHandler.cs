@@ -1103,7 +1103,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 .Select(p => new RoomScanRecommendationDto
                 {
                     ListingId = p.Id,
-                    Title = p.Title,
+                    Title = !string.IsNullOrWhiteSpace(p.CommonNameEn) ? p.CommonNameEn.Trim() : p.Title,
                     Price = p.Price,
                     ImageUrl = p.Images?.FirstOrDefault(i => i.IsPrimary)?.Url ?? p.Images?.FirstOrDefault()?.Url,
                     Reason = "Matched by name from current shop listings."
