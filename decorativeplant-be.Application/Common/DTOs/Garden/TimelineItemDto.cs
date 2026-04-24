@@ -24,6 +24,9 @@ public class TimelineItemDto
     /// <summary>ID of the source entity (CareLog, milestone, or PlantDiagnosis).</summary>
     public Guid SourceId { get; set; }
 
+    /// <summary>Diagnosis items only: when set, the issue was marked resolved (still shown in diary).</summary>
+    public DateTime? ResolvedAtUtc { get; set; }
+
     /// <summary>Additional metadata.</summary>
     public object? Metadata { get; set; }
 }

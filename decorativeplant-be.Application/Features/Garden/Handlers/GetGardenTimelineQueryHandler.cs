@@ -88,6 +88,7 @@ public class GetGardenTimelineQueryHandler : IRequestHandler<GetGardenTimelineQu
                 Summary = summary,
                 ImageUrl = null,
                 SourceId = d.Id,
+                ResolvedAtUtc = d.ResolvedAtUtc,
                 Metadata = null
             });
         }

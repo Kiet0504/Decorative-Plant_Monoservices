@@ -14,6 +14,7 @@ public class PlantDiagnosisConfiguration : IEntityTypeConfiguration<PlantDiagnos
         builder.Property(p => p.UserInput).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(p => p.AiResult).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.Property(p => p.Feedback).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
+        builder.Property(p => p.ResolvedAtUtc).HasColumnType("timestamp with time zone");
         builder.HasOne(p => p.User).WithMany().HasForeignKey(p => p.UserId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(p => p.GardenPlant).WithMany(g => g.PlantDiagnoses).HasForeignKey(p => p.GardenPlantId).OnDelete(DeleteBehavior.Cascade);
     }

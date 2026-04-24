@@ -77,6 +77,10 @@ public class ApplicationDbContext : DbContext, IApplicationDbContext
     public DbSet<ArPreviewSession> ArPreviewSessions { get; set; } = null!;
     public DbSet<ProductModelAsset> ProductModelAssets { get; set; } = null!;
 
+    // Module 10: AI Assistant chat history
+    public DbSet<AiChatThread> AiChatThreads { get; set; } = null!;
+    public DbSet<AiChatMessage> AiChatMessages { get; set; } = null!;
+
     // ── Pessimistic Locking ──
 
     public async Task AcquireStockLockAsync(Guid listingId, CancellationToken ct = default)

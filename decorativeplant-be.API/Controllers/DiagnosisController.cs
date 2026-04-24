@@ -111,6 +111,55 @@ public class DiagnosisController : BaseController
         var result = await Mediator.Send(query);
         return Ok(ApiResponse<PagedResultDto<PlantDiagnosisDto>>.SuccessResponse(result));
     }
+
+    /// <summary>Save a diagnosis produced in AI Hub chat to the plant diary (no new image analysis).</summary>
+    [HttpPost("save-from-chat")]
+    public async Task<ActionResult<ApiResponse<PlantDiagnosisDto>>> SaveFromChat([FromBody] SaveChatDiagnosisRequest request)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<PlantDiagnosisDto>.ErrorResponse("User ID is required."));
+        }
+
+        if (request.AiResult == null)
+        {
+            return BadRequest(ApiResponse<PlantDiagnosisDto>.ErrorResponse("AiResult is required."));
+        }
+
+        var command = new SaveChatDiagnosisCommand
+        {
+            UserId = userId.Value,
+            GardenPlantId = request.GardenPlantId,
+            ImageUrl = request.ImageUrl,
+            AiResult = request.AiResult
+        };
+
+        var result = await Mediator.Send(command);
+        return StatusCode(201, ApiResponse<PlantDiagnosisDto>.SuccessResponse(result, "Diagnosis saved to your plant.", 201));
+    }
+
+    /// <summary>Mark a saved plant diagnosis as resolved (hidden from plant diary timeline).</summary>
+    [HttpPatch("{id:guid}/resolve")]
+    public async Task<ActionResult<ApiResponse<object>>> ResolveDiagnosis(Guid id)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<object>.ErrorResponse("User ID is required."));
+        }
+
+        await Mediator.Send(new ResolvePlantDiagnosisCommand { UserId = userId.Value, DiagnosisId = id });
+        return Ok(ApiResponse<object>.SuccessResponse(new { }, "Marked as resolved."));
+    }
+}
+
+/// <summary>Request body for saving an AI Hub chat diagnosis to a garden plant.</summary>
+public class SaveChatDiagnosisRequest
+{
+    public Guid GardenPlantId { get; set; }
+    public string? ImageUrl { get; set; }
+    public PlantDiagnosisAiResultDto? AiResult { get; set; }
 }
 
 /// <summary>Request body for submit diagnosis.</summary>

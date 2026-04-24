@@ -44,7 +44,8 @@ public static class DiagnosisMapper
             UserInput = userInput,
             AiResult = aiResult,
             Feedback = feedback,
-            CreatedAt = d.CreatedAt
+            CreatedAt = d.CreatedAt,
+            ResolvedAtUtc = d.ResolvedAtUtc
         };
     }
 
@@ -53,10 +54,8 @@ public static class DiagnosisMapper
     /// </summary>
     public static JsonDocument? BuildUserInputJson(string imageUrl, string? description)
     {
-        var dict = new Dictionary<string, object?>
-        {
-            ["image_urls"] = new[] { imageUrl }
-        };
+        var urls = string.IsNullOrWhiteSpace(imageUrl) ? Array.Empty<string>() : new[] { imageUrl };
+        var dict = new Dictionary<string, object?> { ["image_urls"] = urls };
         if (!string.IsNullOrEmpty(description)) dict["description"] = description;
 
         var json = JsonSerializer.SerializeToUtf8Bytes(dict, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
@@ -66,6 +65,22 @@ public static class DiagnosisMapper
     /// <summary>
     /// Builds AiResult JsonDocument from IAiDiagnosisService result.
     /// </summary>
+    /// <summary>Persist AI Hub / chat diagnosis without re-running vision models.</summary>
+    public static JsonDocument BuildAiResultJsonFromSummaryDto(PlantDiagnosisAiResultDto dto)
+    {
+        var dict = new Dictionary<string, object>
+        {
+            ["disease"] = dto.Disease,
+            ["confidence"] = dto.Confidence,
+            ["symptoms"] = dto.Symptoms ?? new List<string>(),
+            ["recommendations"] = dto.Recommendations ?? new List<string>()
+        };
+        if (!string.IsNullOrEmpty(dto.Explanation)) dict["explanation"] = dto.Explanation;
+
+        var json = JsonSerializer.SerializeToUtf8Bytes(dict, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
+        return JsonDocument.Parse(json);
+    }
+
     public static JsonDocument BuildAiResultJson(AiDiagnosisResultDto result)
     {
         var dict = new Dictionary<string, object>

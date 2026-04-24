@@ -5,7 +5,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
-using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Infrastructure.Data;
 using decorativeplant_be.Infrastructure.Data.Repositories;
@@ -23,6 +22,7 @@ using Amazon.Runtime;
 using Amazon;
 using decorativeplant_be.Application.Common.Settings;
 using decorativeplant_be.Application.Common.Security;
+using decorativeplant_be.Application.Common.Interfaces;
 
 namespace decorativeplant_be.Infrastructure;
 
@@ -184,6 +184,7 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<OllamaClient>();
         services.AddScoped<GeminiGenerativeContentClient>();
         services.AddScoped<IOllamaClient, OllamaOrGeminiClient>();
+        services.AddScoped<IAiContextInferenceService, GeminiAiContextInferenceService>();
         services.AddScoped<IChatImageIntentClassifier, OllamaChatImageIntentClassifier>();
         services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IRoomScanChatSuggestionIntentDetector,
             OllamaRoomScanChatSuggestionIntentDetector>();

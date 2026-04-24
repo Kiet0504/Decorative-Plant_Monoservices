@@ -71,6 +71,21 @@ public class BranchAllocationService : IBranchAllocationService
         return (title, unitPrice, image);
     }
 
+    private static int ExtractAvailableQuantity(BatchStock stock)
+    {
+        if (stock.Quantities == null) return 0;
+
+        if (!stock.Quantities.RootElement.TryGetProperty("available_quantity", out var aq))
+            return 0;
+
+        return aq.ValueKind switch
+        {
+            JsonValueKind.Number => aq.GetInt32(),
+            JsonValueKind.String when int.TryParse(aq.GetString(), out var v) => v,
+            _ => 0
+        };
+    }
+
     // ── Helper: get available stock — prioritize ProductListing.stock_quantity (source of truth for orders) ──
     private static int GetAvailableStockFromMap(ProductListing listing, Dictionary<Guid, int> stockMap)
     {
@@ -148,19 +163,15 @@ public class BranchAllocationService : IBranchAllocationService
             .Select(l => l.BatchId!.Value)
             .Distinct()
             .ToList();
-        // Batch-load all stock data and aggregate by BatchId in-memory to handle JSON parsing
-        var allStocksData = await _context.BatchStocks
+        // Note: BatchStock is per-location, so a BatchId can appear multiple times.
+        // Build a BatchId -> total available_quantity map to avoid duplicate-key errors.
+        var stockRows = await _context.BatchStocks
             .Where(s => s.BatchId.HasValue && allBatchIds.Contains(s.BatchId.Value))
             .ToListAsync(ct);
-
-        var stockMap = allStocksData
+        var stockMap = stockRows
+            .Where(s => s.BatchId.HasValue)
             .GroupBy(s => s.BatchId!.Value)
-            .ToDictionary(
-                g => g.Key,
-                g => g.Sum(s => 
-                    s.Quantities != null && s.Quantities.RootElement.TryGetProperty("available_quantity", out var aq) 
-                    ? aq.GetInt32() : 0)
-            );
+            .ToDictionary(g => g.Key, g => g.Sum(ExtractAvailableQuantity));
 
         // For each requested item, collect: title, price, image, quantity needed
         var cartProducts = new List<CartProduct>();

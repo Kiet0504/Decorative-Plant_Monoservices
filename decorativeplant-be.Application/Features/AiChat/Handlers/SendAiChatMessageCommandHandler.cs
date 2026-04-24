@@ -41,6 +41,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     private readonly IRoomScanCatalogRankingService _roomScanCatalogRanking;
     private readonly IRoomScanChatSuggestionIntentDetector _roomScanChatIntent;
     private readonly IAiChatProfileShopIntentDetector _profileShopIntentDetector;
+    private readonly IAiContextInferenceService _contextInference;
     private readonly IOptions<RoomScanHandlerOptions> _roomScanHandlerOptions;
     private readonly AiRoutingSettings _aiRouting;
     private readonly IUserContentSafetyService _contentSafety;
@@ -60,6 +61,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         IRoomScanCatalogRankingService roomScanCatalogRanking,
         IRoomScanChatSuggestionIntentDetector roomScanChatIntent,
         IAiChatProfileShopIntentDetector profileShopIntentDetector,
+        IAiContextInferenceService contextInference,
         IOptions<RoomScanHandlerOptions> roomScanHandlerOptions,
         IOptions<AiRoutingSettings> aiRouting,
         IUserContentSafetyService contentSafety,
@@ -77,6 +79,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         _roomScanCatalogRanking = roomScanCatalogRanking;
         _roomScanChatIntent = roomScanChatIntent;
         _profileShopIntentDetector = profileShopIntentDetector;
+        _contextInference = contextInference;
         _roomScanHandlerOptions = roomScanHandlerOptions;
         _aiRouting = aiRouting.Value;
         _contentSafety = contentSafety;
@@ -216,12 +219,27 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 {
                     try
                     {
+                        var recoveryLines = new List<string>
+                        {
+                            $"Active issue (photo diagnosis): {diagnosis.Disease}"
+                        };
+                        if (diagnosis.Recommendations is { Count: > 0 })
+                        {
+                            recoveryLines.Add("Suggested actions: " + string.Join("; ", diagnosis.Recommendations.Take(6)));
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(diagnosis.Explanation))
+                        {
+                            recoveryLines.Add("Notes: " + diagnosis.Explanation.Trim());
+                        }
+
                         var plan = await _mediator.Send(new GenerateGardenPlantAiSchedulePlanQuery
                         {
                             UserId = request.UserId,
                             PlantId = focusPlant.Id,
                             HorizonDays = 30,
-                            UtcOffsetMinutes = request.UtcOffsetMinutes
+                            UtcOffsetMinutes = request.UtcOffsetMinutes,
+                            RecoveryDiagnosisContext = string.Join(Environment.NewLine, recoveryLines)
                         }, cancellationToken);
                         suggestedSchedules = plan.Tasks;
                     }
@@ -317,7 +335,9 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
             focusRecentLogs,
             focusDiagnoses,
             conversationIncludesRoomScanCatalog,
-            (directTitleMatches is { Count: > 0 }) || (profileCatalogRecs is { Count: > 0 }));
+            (directTitleMatches is { Count: > 0 }) || (profileCatalogRecs is { Count: > 0 }),
+            request.IncludeUserProfileContext,
+            request.IncludeGardenListContext);
 
         if (directTitleMatches is { Count: > 0 })
         {
@@ -414,6 +434,44 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 lastUserText,
                 replyDto,
                 cancellationToken);
+
+            if (ShouldShowSetupIdeaCards(request.Messages, lastUserText, request.PlacementContextJson))
+            {
+                replyDto.UiSuggestions = new AiChatUiSuggestionsDto
+                {
+                    SetupIdeaCards = BuildSetupIdeaCardsDynamic(lastUserText, request.PlacementContextJson, request.Messages, reply),
+                    QuickActions = new List<AiChatQuickActionDto>(),
+                    AvailableStyles = BuildDefaultAvailableStyles()
+                };
+            }
+
+            // Gemini-powered context inference (Phase B): return suggestions + contextPatch proposals.
+            if (!string.IsNullOrWhiteSpace(lastUserText))
+            {
+                replyDto.UiSuggestions ??= new AiChatUiSuggestionsDto { AvailableStyles = BuildDefaultAvailableStyles() };
+                if (replyDto.UiSuggestions.AvailableStyles.Count == 0)
+                {
+                    replyDto.UiSuggestions.AvailableStyles = BuildDefaultAvailableStyles();
+                }
+
+                try
+                {
+                    var inferences = await _contextInference.InferAsync(
+                        lastUserText!,
+                        replyDto.UiSuggestions.AvailableStyles,
+                        cancellationToken);
+                    if (inferences.Count > 0)
+                    {
+                        // Keep it small to avoid UI spam.
+                        replyDto.UiSuggestions.ContextInferences = inferences.Take(4).ToList();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Context inference failed.");
+                }
+            }
+
             return replyDto;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
@@ -430,6 +488,531 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 ResolvedIntent = resolvedIntentApi
             };
         }
+    }
+
+    private static bool ShouldShowSetupIdeaCards(
+        IReadOnlyList<AiChatMessageDto> messages,
+        string? lastUserText,
+        string? placementContextJson)
+    {
+        if (string.IsNullOrWhiteSpace(lastUserText))
+        {
+            return false;
+        }
+
+        var t = lastUserText.Trim().ToLowerInvariant();
+        if (LooksLikeGreetingOrAckOnly(t))
+        {
+            return false;
+        }
+
+        // If the user explicitly asks for setup/decor ideas, we can show cards even after a style is chosen.
+        // Otherwise: stop showing setup cards once a style is chosen (prevents spam).
+        var explicitSetupAsk =
+            t.Contains("setup idea", StringComparison.Ordinal) ||
+            t.Contains("setup ideas", StringComparison.Ordinal) ||
+            t.Contains("setup", StringComparison.Ordinal) ||
+            t.Contains("decorate", StringComparison.Ordinal) ||
+            t.Contains("decoration", StringComparison.Ordinal) ||
+            (t.Contains("another", StringComparison.Ordinal) && t.Contains("style", StringComparison.Ordinal)) ||
+            t.Contains("different style", StringComparison.Ordinal) ||
+            t.Contains("other style", StringComparison.Ordinal);
+
+        if (!explicitSetupAsk && TryGetDesignStyleKeyFromPlacementContextJson(placementContextJson) is { Length: > 0 })
+        {
+            return false;
+        }
+
+        string[] keywords =
+        [
+            "decorate", "decoration", "style", "room", "corner", "setup", "vibe", "green room",
+            "living room", "bedroom", "office", "desk", "workspace"
+        ];
+
+        return keywords.Any(k => t.Contains(k, StringComparison.Ordinal));
+    }
+
+    private static bool LooksLikeGreetingOrAckOnly(string lower)
+    {
+        if (string.IsNullOrWhiteSpace(lower)) return true;
+        var t = lower.Trim();
+        if (t.Length > 80) return false;
+        string[] greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "thanks", "thank you"];
+        return greetings.Any(g => t == g || t.StartsWith(g + " ", StringComparison.Ordinal));
+    }
+
+    private static string? TryGetDesignStyleKeyFromPlacementContextJson(string? placementContextJson)
+    {
+        if (string.IsNullOrWhiteSpace(placementContextJson)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(placementContextJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (!root.TryGetProperty("designContext", out var design) || design.ValueKind != JsonValueKind.Object) return null;
+            if (!design.TryGetProperty("styleKey", out var style) || style.ValueKind != JsonValueKind.String) return null;
+            var s = style.GetString();
+            return string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<AiChatSetupIdeaCardDto> BuildSetupIdeaCardsDynamic(
+        string? lastUserText,
+        string? placementContextJson,
+        IReadOnlyList<AiChatMessageDto>? messages,
+        string? currentAssistantReply)
+    {
+        // Hard UX rule: exactly 3 setup cards, but choose the best 3 based on message + context.
+        var lower = (lastUserText ?? string.Empty).Trim().ToLowerInvariant();
+        // User text + prior assistant + this reply (cards are chosen after the LLM runs, so we can align with what it just said).
+        var hintLower = BuildStyleHintLowerForSetupCards(lastUserText, messages, currentAssistantReply);
+        var roomLightKey = TryGetRoomLightKeyFromPlacementContextJson(placementContextJson);
+
+        var wantsDesk = lower.Contains("desk", StringComparison.Ordinal) || lower.Contains("workspace", StringComparison.Ordinal) ||
+                        lower.Contains("office", StringComparison.Ordinal);
+        var wantsLiving = lower.Contains("living room", StringComparison.Ordinal) || lower.Contains("livingroom", StringComparison.Ordinal);
+        var wantsBedroom = lower.Contains("bedroom", StringComparison.Ordinal) || lower.Contains("sleep", StringComparison.Ordinal);
+        var wantsPetSafe = lower.Contains("pet", StringComparison.Ordinal) || lower.Contains("cat", StringComparison.Ordinal) ||
+                           lower.Contains("dog", StringComparison.Ordinal) || lower.Contains("kid", StringComparison.Ordinal) ||
+                           lower.Contains("child", StringComparison.Ordinal);
+        var wantsLively = lower.Contains("lively", StringComparison.Ordinal) || lower.Contains("tropical", StringComparison.Ordinal) ||
+                          lower.Contains("vibrant", StringComparison.Ordinal);
+        var wantsMinimal = lower.Contains("minimal", StringComparison.Ordinal) || lower.Contains("clean", StringComparison.Ordinal) ||
+                           lower.Contains("simple", StringComparison.Ordinal);
+
+        // User wants a different aesthetic than the default trio (often all tie at the same base score).
+        var wantsAlternativeStyle =
+            (lower.Contains("another", StringComparison.Ordinal) && lower.Contains("style", StringComparison.Ordinal)) ||
+            lower.Contains("different style", StringComparison.Ordinal) ||
+            lower.Contains("other style", StringComparison.Ordinal) ||
+            lower.Contains("something else", StringComparison.Ordinal) ||
+            lower.Contains("something different", StringComparison.Ordinal) ||
+            lower.Contains("more styles", StringComparison.Ordinal) ||
+            lower.Contains("other aesthetic", StringComparison.Ordinal) ||
+            lower.Contains("different aesthetic", StringComparison.Ordinal) ||
+            lower.Contains("new style", StringComparison.Ordinal) ||
+            lower.Contains("try a different", StringComparison.Ordinal);
+
+        var wantsScandi = hintLower.Contains("scandinavian", StringComparison.Ordinal) || hintLower.Contains("scandi", StringComparison.Ordinal) ||
+                          hintLower.Contains("nordic", StringComparison.Ordinal) || hintLower.Contains("hygge", StringComparison.Ordinal);
+        var wantsBohemian = hintLower.Contains("bohemian", StringComparison.Ordinal) || hintLower.Contains("boho", StringComparison.Ordinal) ||
+                             hintLower.Contains("jungalow", StringComparison.Ordinal) || hintLower.Contains("macrame", StringComparison.Ordinal);
+        var wantsBiophilic = hintLower.Contains("biophilic", StringComparison.Ordinal) || hintLower.Contains("wellness", StringComparison.Ordinal) ||
+                             hintLower.Contains("nature indoors", StringComparison.Ordinal);
+        var wantsJapandi = hintLower.Contains("japandi", StringComparison.Ordinal) || hintLower.Contains("wabi", StringComparison.Ordinal) ||
+                           hintLower.Contains("zen aesthetic", StringComparison.Ordinal);
+        var wantsMidCentury =
+            hintLower.Contains("mid-century", StringComparison.Ordinal) ||
+            hintLower.Contains("mid century", StringComparison.Ordinal) ||
+            hintLower.Contains("midcentury", StringComparison.Ordinal) ||
+            hintLower.Contains("mid-century modern", StringComparison.Ordinal) ||
+            hintLower.Contains("mid century modern", StringComparison.Ordinal) ||
+            hintLower.Contains("atomic age", StringComparison.Ordinal) ||
+            (hintLower.Contains("mcm", StringComparison.Ordinal) &&
+             (hintLower.Contains(" mcm ", StringComparison.Ordinal) || hintLower.Contains("mcm style", StringComparison.Ordinal) ||
+              hintLower.StartsWith("mcm ", StringComparison.Ordinal) || hintLower.EndsWith(" mcm", StringComparison.Ordinal)));
+
+        // Do not bury the starter cards if the user is doubling down on one of them.
+        var softenDefaultTrioPenalty = wantsMinimal || wantsDesk || wantsLively;
+        var defaultTrioPenalty = wantsAlternativeStyle && !softenDefaultTrioPenalty ? -34 : 0;
+        var altStyleBoost = wantsAlternativeStyle ? 22 : 0;
+        var namedAltBoost = (wantsScandi || wantsBohemian || wantsBiophilic || wantsJapandi) ? 18 : 0;
+        var wantsAnyNamedStyleHint = wantsScandi || wantsBohemian || wantsBiophilic || wantsJapandi || wantsMidCentury;
+        // When the user asks for "another style" but no specific style appears in hints, rotate which 3 non-starter cards we show (uses message depth so repeats still change).
+        var useAltDeckWindowRotation =
+            wantsAlternativeStyle && !wantsAnyNamedStyleHint && !softenDefaultTrioPenalty;
+
+        var library = new List<(AiChatSetupIdeaCardDto Card, Func<int> Score)>
+        {
+            (
+                BuildSetupIdeaCard(
+                    id: "Minimal_Green_Corner",
+                    title: "Minimal Green Corner",
+                    styleKey: "minimal",
+                    plantCount: 2,
+                    difficulty: "beginner",
+                    subtitle: roomLightKey == "low"
+                        ? "2 plants • low light friendly"
+                        : "2 plants • clean + simple"),
+                () =>
+                {
+                    var s = 10 + defaultTrioPenalty;
+                    if (wantsMinimal) s += 12;
+                    if (roomLightKey == "low") s += 10;
+                    if (wantsLiving) s += 3;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Tropical_Living",
+                    title: "Tropical Living",
+                    styleKey: "tropical",
+                    plantCount: 3,
+                    difficulty: "beginner",
+                    subtitle: roomLightKey == "low"
+                        ? "3 plants • bright window recommended"
+                        : "3 plants • lively + bold"),
+                () =>
+                {
+                    var s = 10 + defaultTrioPenalty;
+                    if (wantsLively) s += 12;
+                    if (wantsLiving) s += 6;
+                    if (roomLightKey == "low") s -= 8;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Desk_Plant_Setup",
+                    title: "Desk Plant Setup",
+                    styleKey: "desk",
+                    plantCount: 2,
+                    difficulty: "beginner",
+                    subtitle: roomLightKey == "low"
+                        ? "1–2 small plants • low light options"
+                        : "1–2 small plants • workspace"),
+                () =>
+                {
+                    var s = 10 + defaultTrioPenalty;
+                    if (wantsDesk) s += 14;
+                    if (roomLightKey == "low") s += 6;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Pet_Safe_Greens",
+                    title: "Pet-safe Greens",
+                    styleKey: "pet_safe",
+                    plantCount: 2,
+                    difficulty: "beginner",
+                    subtitle: "2 plants • kid/pet friendly"),
+                () =>
+                {
+                    var s = 8;
+                    if (wantsPetSafe) s += 14;
+                    if (wantsAlternativeStyle) s += 6;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Calm_Bedside",
+                    title: "Calm Bedside",
+                    styleKey: "minimal",
+                    plantCount: 1,
+                    difficulty: "beginner",
+                    subtitle: "1 plant • calm + easy care"),
+                () =>
+                {
+                    var s = 6;
+                    if (wantsBedroom) s += 14;
+                    if (wantsMinimal) s += 4;
+                    if (roomLightKey == "low") s += 4;
+                    if (wantsAlternativeStyle) s += 10;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Scandinavian_Serenity",
+                    title: "Scandinavian Serenity",
+                    styleKey: "scandinavian",
+                    plantCount: 2,
+                    difficulty: "beginner",
+                    subtitle: roomLightKey == "low"
+                        ? "2 plants • light woods + airy palette"
+                        : "2 plants • pale palette + natural wood"),
+                () =>
+                {
+                    var s = 9 + altStyleBoost + namedAltBoost;
+                    if (wantsScandi) s += 20;
+                    if (wantsMinimal) s += 4;
+                    if (roomLightKey == "bright") s += 3;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Bohemian_Jungalow",
+                    title: "Bohemian Jungalow",
+                    styleKey: "bohemian",
+                    plantCount: 3,
+                    difficulty: "beginner",
+                    subtitle: "3 plants • layered textures + warmth"),
+                () =>
+                {
+                    var s = 9 + altStyleBoost + namedAltBoost;
+                    if (wantsBohemian) s += 20;
+                    if (wantsLively) s += 6;
+                    if (wantsLiving) s += 4;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Biophilic_Corner",
+                    title: "Biophilic Corner",
+                    styleKey: "biophilic",
+                    plantCount: 3,
+                    difficulty: "beginner",
+                    subtitle: "3 plants • nature-forward + calm"),
+                () =>
+                {
+                    var s = 9 + altStyleBoost + namedAltBoost;
+                    if (wantsBiophilic) s += 20;
+                    if (wantsLiving) s += 3;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Japandi_Quiet",
+                    title: "Japandi Quiet",
+                    styleKey: "japandi",
+                    plantCount: 2,
+                    difficulty: "beginner",
+                    subtitle: "2 plants • calm lines + earthy tones"),
+                () =>
+                {
+                    var s = 9 + altStyleBoost + namedAltBoost;
+                    if (wantsJapandi) s += 20;
+                    if (wantsMinimal) s += 5;
+                    return s;
+                }
+            ),
+            (
+                BuildSetupIdeaCard(
+                    id: "Mid_Century_Grove",
+                    title: "Mid-Century Grove",
+                    styleKey: "mid_century",
+                    plantCount: 2,
+                    difficulty: "beginner",
+                    subtitle: "2 plants • teak tones + sculptural leaves"),
+                () =>
+                {
+                    var s = 9 + altStyleBoost + namedAltBoost;
+                    if (wantsMidCentury) s += 24;
+                    if (wantsLiving) s += 4;
+                    if (wantsLively) s += 3;
+                    if (wantsMinimal) s += 3;
+                    return s;
+                }
+            )
+        };
+
+        var tieSalt = $"{lower}|msg:{messages?.Count ?? 0}";
+        var scoredOrdered = library
+            .Select(x => (Card: x.Card, Score: x.Score()))
+            .OrderByDescending(t => t.Score)
+            .ThenBy(t => StableSetupCardTieBreaker(t.Card.Id, tieSalt))
+            .ToList();
+
+        List<AiChatSetupIdeaCardDto> picked;
+        if (useAltDeckWindowRotation)
+        {
+            var alts = scoredOrdered.Where(t => !IsStarterSetupIdeaCard(t.Card.Id)).ToList();
+            if (alts.Count >= 3)
+            {
+                var n = alts.Count;
+                var maxStart = n - 3;
+                var start = (int)(StableSetupCardTieBreaker("altwin", tieSalt) % (maxStart + 1));
+                picked = alts.Skip(start).Take(3).Select(t => t.Card).DistinctBy(x => x.Id).ToList();
+            }
+            else
+            {
+                picked = scoredOrdered.Select(t => t.Card).DistinctBy(x => x.Id).Take(3).ToList();
+            }
+        }
+        else
+        {
+            picked = scoredOrdered.Select(t => t.Card).DistinctBy(x => x.Id).Take(3).ToList();
+        }
+
+        // Always return exactly 3 (fallback).
+        if (picked.Count < 3)
+        {
+            var fallback = new[]
+            {
+                BuildSetupIdeaCard("Mid_Century_Grove", "Mid-Century Grove", "mid_century", 2, "beginner", "2 plants • teak tones + sculptural leaves"),
+                BuildSetupIdeaCard("Scandinavian_Serenity", "Scandinavian Serenity", "scandinavian", 2, "beginner", "2 plants • pale palette + natural wood"),
+                BuildSetupIdeaCard("Bohemian_Jungalow", "Bohemian Jungalow", "bohemian", 3, "beginner", "3 plants • layered textures + warmth"),
+            };
+            foreach (var c in fallback)
+            {
+                if (picked.Count >= 3) break;
+                if (picked.All(x => x.Id != c.Id)) picked.Add(c);
+            }
+        }
+
+        return picked;
+    }
+
+    private static string? TryGetRoomLightKeyFromPlacementContextJson(string? placementContextJson)
+    {
+        if (string.IsNullOrWhiteSpace(placementContextJson)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(placementContextJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (!root.TryGetProperty("roomContext", out var room) || room.ValueKind != JsonValueKind.Object) return null;
+            if (!room.TryGetProperty("lightKey", out var light) || light.ValueKind != JsonValueKind.String) return null;
+            var s = light.GetString();
+            s = string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToLowerInvariant();
+            return s is "low" or "medium" or "bright" ? s : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<AiChatDesignStyleOptionDto> BuildDefaultAvailableStyles()
+    {
+        return
+        [
+            new AiChatDesignStyleOptionDto { StyleKey = "minimal", Label = "Minimal" },
+            new AiChatDesignStyleOptionDto { StyleKey = "tropical", Label = "Tropical" },
+            new AiChatDesignStyleOptionDto { StyleKey = "desk", Label = "Desk" },
+            new AiChatDesignStyleOptionDto { StyleKey = "pet_safe", Label = "Pet-safe" },
+            new AiChatDesignStyleOptionDto { StyleKey = "scandinavian", Label = "Scandinavian" },
+            new AiChatDesignStyleOptionDto { StyleKey = "bohemian", Label = "Bohemian" },
+            new AiChatDesignStyleOptionDto { StyleKey = "biophilic", Label = "Biophilic" },
+            new AiChatDesignStyleOptionDto { StyleKey = "japandi", Label = "Japandi" },
+            new AiChatDesignStyleOptionDto { StyleKey = "mid_century", Label = "Mid-Century Modern" }
+        ];
+    }
+
+    private static string BuildStyleHintLowerForSetupCards(
+        string? lastUserText,
+        IReadOnlyList<AiChatMessageDto>? messages,
+        string? currentAssistantReply)
+    {
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(lastUserText))
+        {
+            sb.Append(lastUserText.Trim());
+            sb.Append(' ');
+        }
+
+        var prevAssistant = TryGetAssistantMessageBeforeLastUser(messages);
+        if (!string.IsNullOrWhiteSpace(prevAssistant))
+        {
+            var tail = prevAssistant.Trim();
+            if (tail.Length > 1600)
+            {
+                tail = tail[^1600..];
+            }
+
+            sb.Append(tail);
+            sb.Append(' ');
+        }
+
+        if (!string.IsNullOrWhiteSpace(currentAssistantReply))
+        {
+            var cur = currentAssistantReply.Trim();
+            if (cur.Length > 4000)
+            {
+                cur = cur[..4000];
+            }
+
+            sb.Append(cur);
+        }
+
+        return sb.ToString().ToLowerInvariant();
+    }
+
+    private static string? TryGetAssistantMessageBeforeLastUser(IReadOnlyList<AiChatMessageDto>? messages)
+    {
+        if (messages is not { Count: >= 2 }) return null;
+        var last = messages[^1];
+        if (!string.Equals(last.Role, "user", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        for (var i = messages.Count - 2; i >= 0; i--)
+        {
+            if (string.Equals(messages[i].Role, "assistant", StringComparison.OrdinalIgnoreCase))
+            {
+                return messages[i].Content;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsStarterSetupIdeaCard(string cardId) =>
+        string.Equals(cardId, "Minimal_Green_Corner", StringComparison.Ordinal) ||
+        string.Equals(cardId, "Tropical_Living", StringComparison.Ordinal) ||
+        string.Equals(cardId, "Desk_Plant_Setup", StringComparison.Ordinal);
+
+    private static uint StableSetupCardTieBreaker(string cardId, string tieSalt)
+    {
+        unchecked
+        {
+            uint h = 2166136261u;
+            foreach (var c in cardId)
+            {
+                h ^= c;
+                h *= 16777619u;
+            }
+
+            h ^= 0x9e3779b9u;
+            foreach (var c in tieSalt)
+            {
+                h ^= c;
+                h *= 16777619u;
+            }
+
+            return h;
+        }
+    }
+
+    private static AiChatSetupIdeaCardDto BuildSetupIdeaCard(
+        string id,
+        string title,
+        string styleKey,
+        int plantCount,
+        string difficulty,
+        string subtitle)
+    {
+        return new AiChatSetupIdeaCardDto
+        {
+            Id = id,
+            Title = title,
+            StyleKey = styleKey,
+            PlantCount = plantCount,
+            Difficulty = difficulty,
+            Subtitle = subtitle,
+            ActionMode = "PATCH_AND_PREFILL",
+            ContextPatch = new AiChatContextPatchEnvelopeDto
+            {
+                Version = 1,
+                Patch = new AiChatContextPatchDto
+                {
+                    DesignContext = new AiChatDesignContextPatchDto
+                    {
+                        StyleKey = styleKey
+                    }
+                }
+            },
+            PreviewImagePrompt = BuildSetupPreviewPrompt(styleKey)
+        };
+    }
+
+    private static string BuildSetupPreviewPrompt(string styleKey)
+    {
+        // Standardized prompt template (phase 1).
+        return
+            $"Indoor plant decoration setup, style: {styleKey}, room: bright modern living room, " +
+            "plants arranged naturally, minimal interior design photography, realistic lighting";
     }
 
     private async Task<List<RoomScanRecommendationDto>?> LoadProfileShopCatalogRecommendationsAsync(
@@ -712,7 +1295,9 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         IReadOnlyList<CareLog> focusRecentCareLogs,
         IReadOnlyList<PlantDiagnosis> focusDiagnoses,
         bool conversationIncludesRoomScanCatalog,
-        bool injectedProfileBasedCatalogThisTurn)
+        bool injectedProfileBasedCatalogThisTurn,
+        bool includeUserProfileContext,
+        bool includeGardenListContext)
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are a helpful, friendly plant care assistant for an app called Decorative Plant.");
@@ -738,7 +1323,8 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 "The system appended a fresh \"[Profile catalog picks\" block in THIS system message with live listings from our database. " +
                 "Recommend shop purchases using ONLY the exact product titles (and reasons) from that block — these are real listings. " +
                 "Do not substitute a plant from My Garden or a generic species name as a store product unless it matches a catalog title. " +
-                "Lead with those picks; do not reply with only \"open the Shop tab\" when catalog lines are present. " +
+                "Lead with those picks. When the catalog block includes multiple listings, provide 2–4 options and briefly compare them (best for low light, easiest care, best for pets, etc.). " +
+                "Do not reply with only \"open the Shop tab\" when catalog lines are present. " +
                 "If the user asks about a plant name that is NOT in the provided catalog list, do not claim our store \"doesn't have it\" — say it is not in the CURRENT in-stock picks (it may be out of stock, unpublished, or spelled differently) and then offer the closest alternatives from the provided list.");
 
             sb.AppendLine(
@@ -755,37 +1341,47 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
 
         sb.AppendLine(
             "In greetings, address the user naturally (e.g. \"you\" or a short first name). Avoid awkwardly repeating a long legal-style display name in full.");
+        sb.AppendLine(
+            "CRITICAL: Do NOT invent personal facts (name, pets, kids, location, budgets, preferences). " +
+            "Only mention a specific personal detail if it is explicitly present in the \"User profile\" block below or the user said it in the conversation. " +
+            "If a field is \"not set\", treat it as unknown and ask a short clarifying question instead of guessing.");
         sb.AppendLine();
 
-        sb.AppendLine("--- User profile ---");
-        sb.AppendLine($"Display name: {user.DisplayName ?? "not set"}");
-        sb.AppendLine($"Experience: {user.ExperienceLevel ?? "not set"}");
-        sb.AppendLine($"City / zone: {user.LocationCity ?? "not set"} / {user.HardinessZone ?? "not set"}");
-        sb.AppendLine($"Sunlight at home: {user.SunlightExposure ?? "not set"}");
-        sb.AppendLine($"Room temperature preference: {user.RoomTemperatureRange ?? "not set"}");
-        sb.AppendLine($"Humidity: {user.HumidityLevel ?? "not set"}");
-        sb.AppendLine($"Typical watering habit: {user.WateringFrequency ?? "not set"}");
-        sb.AppendLine($"Placement: {user.PlacementLocation ?? "not set"}, space: {user.SpaceSize ?? "not set"}");
-        sb.AppendLine($"Children or pets at home: {(user.HasChildrenOrPets.HasValue ? user.HasChildrenOrPets.Value.ToString() : "not set")}");
-        sb.AppendLine($"Preferred style: {user.PreferredStyle ?? "not set"}, budget: {user.BudgetRange ?? "not set"}");
-        sb.AppendLine($"Plant goals: {FormatGoals(user.PlantGoals)}");
-        sb.AppendLine();
-
-        sb.AppendLine("--- User's garden (recent plants) ---");
-        var list = plants.ToList();
-        if (list.Count == 0)
+        if (includeUserProfileContext)
         {
-            sb.AppendLine("No plants in the garden yet.");
+            sb.AppendLine("--- User profile ---");
+            sb.AppendLine($"Display name: {user.DisplayName ?? "not set"}");
+            sb.AppendLine($"Experience: {user.ExperienceLevel ?? "not set"}");
+            sb.AppendLine($"City / zone: {user.LocationCity ?? "not set"} / {user.HardinessZone ?? "not set"}");
+            sb.AppendLine($"Sunlight at home: {user.SunlightExposure ?? "not set"}");
+            sb.AppendLine($"Room temperature preference: {user.RoomTemperatureRange ?? "not set"}");
+            sb.AppendLine($"Humidity: {user.HumidityLevel ?? "not set"}");
+            sb.AppendLine($"Typical watering habit: {user.WateringFrequency ?? "not set"}");
+            sb.AppendLine($"Placement: {user.PlacementLocation ?? "not set"}, space: {user.SpaceSize ?? "not set"}");
+            sb.AppendLine($"Children or pets at home: {(user.HasChildrenOrPets.HasValue ? user.HasChildrenOrPets.Value.ToString() : "not set")}");
+            sb.AppendLine($"Preferred style: {user.PreferredStyle ?? "not set"}, budget: {user.BudgetRange ?? "not set"}");
+            sb.AppendLine($"Plant goals: {FormatGoals(user.PlantGoals)}");
+            sb.AppendLine();
         }
-        else
+
+        if (includeGardenListContext)
         {
-            foreach (var p in list)
+            sb.AppendLine("--- User's garden (recent plants) ---");
+            var list = plants.ToList();
+            if (list.Count == 0)
             {
-                var d = GardenPlantMapper.DeserializeDetails(p.Details);
-                var name = string.IsNullOrWhiteSpace(d.Nickname) ? "Unnamed plant" : d.Nickname;
-                var tax = p.Taxonomy?.ScientificName ?? "Unknown species";
-                var health = d.Health ?? "?";
-                sb.AppendLine($"- {name} ({tax}), health: {health}");
+                sb.AppendLine("No plants in the garden yet.");
+            }
+            else
+            {
+                foreach (var p in list)
+                {
+                    var d = GardenPlantMapper.DeserializeDetails(p.Details);
+                    var name = string.IsNullOrWhiteSpace(d.Nickname) ? "Unnamed plant" : d.Nickname;
+                    var tax = p.Taxonomy?.ScientificName ?? "Unknown species";
+                    var health = d.Health ?? "?";
+                    sb.AppendLine($"- {name} ({tax}), health: {health}");
+                }
             }
         }
 

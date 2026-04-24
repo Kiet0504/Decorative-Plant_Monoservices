@@ -66,6 +66,10 @@ public interface IApplicationDbContext
     DbSet<ArPreviewSession> ArPreviewSessions { get; }
     DbSet<ProductModelAsset> ProductModelAssets { get; }
 
+    // Module 10: AI Assistant chat history
+    DbSet<AiChatThread> AiChatThreads { get; }
+    DbSet<AiChatMessage> AiChatMessages { get; }
+
     Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade Database { get; }
     
     /// <summary>

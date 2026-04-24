@@ -20,6 +20,9 @@ public class PlantDiagnosisDto
     public PlantDiagnosisFeedbackDto? Feedback { get; set; }
 
     public DateTime? CreatedAt { get; set; }
+
+    /// <summary>When set, the diagnosis is resolved (still listed in plant diary timeline).</summary>
+    public DateTime? ResolvedAtUtc { get; set; }
 }
 
 /// <summary>
