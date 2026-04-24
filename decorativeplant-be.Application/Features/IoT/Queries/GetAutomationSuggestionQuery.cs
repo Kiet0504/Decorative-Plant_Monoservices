@@ -7,4 +7,5 @@ public class GetAutomationSuggestionQuery : IRequest<List<AutomationSuggestionDt
 {
     public Guid DeviceId { get; set; }
     public string? GrowthStage { get; set; }
+    public string? Season { get; set; }
 }

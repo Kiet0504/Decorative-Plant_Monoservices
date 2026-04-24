@@ -57,9 +57,17 @@ public class AutomationRulesController : BaseController
 
     /// <summary>Get suggested conditions based on plants at the device's location.</summary>
     [HttpGet("suggestion/{deviceId}")]
-    public async Task<ActionResult<IEnumerable<AutomationSuggestionDto>>> GetSuggestions(Guid deviceId)
+    public async Task<ActionResult<IEnumerable<AutomationSuggestionDto>>> GetSuggestions(
+        Guid deviceId, 
+        [FromQuery] string? growthStage, 
+        [FromQuery] string? season)
     {
-        var result = await Mediator.Send(new GetAutomationSuggestionQuery { DeviceId = deviceId });
+        var result = await Mediator.Send(new GetAutomationSuggestionQuery 
+        { 
+            DeviceId = deviceId,
+            GrowthStage = growthStage,
+            Season = season
+        });
         return Ok(result);
     }
 }

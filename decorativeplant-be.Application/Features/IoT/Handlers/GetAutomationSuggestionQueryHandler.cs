@@ -39,7 +39,7 @@ public class GetAutomationSuggestionQueryHandler : IRequestHandler<GetAutomation
             .Distinct()
             .ToListAsync(cancellationToken);
 
-        var currentSeason = GetCurrentSeason();
+        var currentSeason = !string.IsNullOrEmpty(request.Season) ? request.Season : GetCurrentSeason();
         var results = new List<AutomationSuggestionDto>();
 
         foreach (var taxonomy in taxonomies)
