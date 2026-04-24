@@ -19,8 +19,56 @@ public static class AutomationRuleMqttNotifier
         var device = await repo.GetIotDeviceByIdAsync(deviceId.Value, ct);
         if (device == null || string.IsNullOrEmpty(device.SecretKey)) return;
 
+        // 1. Extract operating context from DeviceInfo
+        string opSeason = "spring";
+        string opStage = "seedling";
+        bool isAutoEnabled = true;
+
+        if (device.DeviceInfo != null)
+        {
+            try
+            {
+                var root = device.DeviceInfo.RootElement;
+                if (root.TryGetProperty("operatingSeason", out var sProp) && sProp.ValueKind == JsonValueKind.String)
+                    opSeason = sProp.GetString() ?? "spring";
+                
+                if (root.TryGetProperty("operatingStage", out var stProp) && stProp.ValueKind == JsonValueKind.String)
+                    opStage = stProp.GetString() ?? "seedling";
+
+                if (root.TryGetProperty("isAutomationEnabled", out var aProp))
+                {
+                    if (aProp.ValueKind == JsonValueKind.True) isAutoEnabled = true;
+                    else if (aProp.ValueKind == JsonValueKind.False) isAutoEnabled = false;
+                }
+            }
+            catch { }
+        }
+
+        // 2. Fetch and filter rules
         var rules = await repo.GetAutomationRulesAsync(deviceId.Value, null, ct);
-        var activeRules = rules.Where(r => r.IsActive).Select(ToDto).ToList();
+        
+        List<AutomationRuleDto> activeRules;
+        if (!isAutoEnabled)
+        {
+            activeRules = new List<AutomationRuleDto>(); // Master Toggle OFF -> No rules run
+        }
+        else
+        {
+            activeRules = rules
+                .Where(r => r.IsActive)
+                .Where(r => {
+                    var name = r.Name?.ToUpper() ?? "";
+                    bool hasTags = name.Contains("[") && name.Contains("]");
+                    if (!hasTags) return true; // Global rules without tags always run if active
+
+                    bool seasonMatch = name.Contains($"[{opSeason.ToUpper()}]");
+                    bool stageMatch = name.Contains($"[{opStage.ToUpper()}]");
+                    return seasonMatch && stageMatch;
+                })
+                .Select(ToDto)
+                .ToList();
+        }
+
         var json = JsonSerializer.Serialize(activeRules, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
         await mqttService.PublishRulesUpdateAsync(device.SecretKey, json, ct);
     }
