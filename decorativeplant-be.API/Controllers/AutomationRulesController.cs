@@ -1,6 +1,7 @@
 using decorativeplant_be.Application.DTOs.IoT;
 using decorativeplant_be.Application.Features.IoT.Queries;
 using decorativeplant_be.Application.Features.IoT.Commands;
+using decorativeplant_be.Application.Features.IoT.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -52,5 +53,13 @@ public class AutomationRulesController : BaseController
         var ok = await Mediator.Send(new DeleteAutomationRuleCommand { RuleId = id });
         if (!ok) return NotFound();
         return NoContent();
+    }
+
+    /// <summary>Get suggested conditions based on plants at the device's location.</summary>
+    [HttpGet("suggestion/{deviceId}")]
+    public async Task<ActionResult<IEnumerable<AutomationSuggestionDto>>> GetSuggestions(Guid deviceId)
+    {
+        var result = await Mediator.Send(new GetAutomationSuggestionQuery { DeviceId = deviceId });
+        return Ok(result);
     }
 }

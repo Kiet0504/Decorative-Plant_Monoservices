@@ -102,4 +102,24 @@ public class PaymentsController : BaseController
         var result = await Mediator.Send(new ConfirmCodReceivedCommand { PaymentId = id, StaffId = GetUserId() });
         return Ok(ApiResponse<PaymentResponse>.SuccessResponse(result, "COD Payment Confirmed"));
     }
+
+    [HttpPost("{id:guid}/mark-refunded")]
+    [Authorize(Roles = "store_staff,branch_manager,fulfillment_staff,admin")]
+    public async Task<IActionResult> MarkRefunded(Guid id, [FromBody] MarkRefundedRequest? request)
+    {
+        var result = await Mediator.Send(new MarkRefundedCommand
+        {
+            PaymentId = id,
+            StaffId = GetUserId(),
+            Note = request?.Note,
+            EvidenceImageUrls = request?.EvidenceImageUrls
+        });
+        return Ok(ApiResponse<PaymentResponse>.SuccessResponse(result, "Payment marked as refunded"));
+    }
+}
+
+public class MarkRefundedRequest
+{
+    public string? Note { get; set; }
+    public List<string>? EvidenceImageUrls { get; set; }
 }

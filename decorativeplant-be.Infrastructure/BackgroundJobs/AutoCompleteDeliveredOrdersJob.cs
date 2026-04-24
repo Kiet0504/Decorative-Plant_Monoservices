@@ -1,3 +1,4 @@
+using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.Interfaces;
 using decorativeplant_be.Application.Features.Commerce.Orders;
 using Microsoft.EntityFrameworkCore;
@@ -11,6 +12,7 @@ namespace decorativeplant_be.Infrastructure.BackgroundJobs;
 /// Shopee-style auto-close: orders delivered longer than
 /// <see cref="_autoCompleteThreshold"/> transition to "completed" on the
 /// customer's behalf. Runs every <see cref="_checkInterval"/>.
+/// Excludes offline counter ship-to-customer orders (customer confirms via email link).
 ///
 /// Uses the scalar <c>OrderHeader.DeliveredAt</c> column + partial index so
 /// the eligibility check is a single indexed range scan rather than a
@@ -64,6 +66,9 @@ public class AutoCompleteDeliveredOrdersJob : BackgroundService
                      && o.DeliveredAt != null
                      && o.DeliveredAt <= cutoff)
             .ToListAsync(ct);
+
+        // Offline counter ship: customer must confirm via email link — do not auto-complete.
+        candidates = candidates.Where(o => !OrderCustomerNotificationHelper.IsOfflineDeliveryOrder(o)).ToList();
 
         if (candidates.Count == 0) return;
 

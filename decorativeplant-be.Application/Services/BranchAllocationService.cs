@@ -34,7 +34,8 @@ public interface IBranchAllocationService
     /// </summary>
     Task<List<AllocationResult>> AllocateAsync(
         List<(Guid ListingId, int Quantity)> requestedItems,
-        CancellationToken ct);
+        CancellationToken ct,
+        Guid? fulfillFromBranchId = null);
 }
 
 public class BranchAllocationService : IBranchAllocationService
@@ -95,7 +96,7 @@ public class BranchAllocationService : IBranchAllocationService
                 return sq.GetInt32();
         }
 
-        // Fallback: check BatchStock available_quantity
+        // Fallback: use pre-aggregated available stock from map
         if (listing.BatchId.HasValue && stockMap.TryGetValue(listing.BatchId.Value, out var availableQty))
         {
             return availableQty;
@@ -111,7 +112,8 @@ public class BranchAllocationService : IBranchAllocationService
 
     public async Task<List<AllocationResult>> AllocateAsync(
         List<(Guid ListingId, int Quantity)> requestedItems,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? fulfillFromBranchId = null)
     {
         // ══════════════════════════════════════════════════════════
         // Phase 1: Resolve each cart item to its product title
@@ -183,6 +185,20 @@ public class BranchAllocationService : IBranchAllocationService
 
             if (string.IsNullOrEmpty(title))
             {
+                if (fulfillFromBranchId.HasValue && primaryListing.BranchId != fulfillFromBranchId.Value)
+                {
+                    throw new BadRequestException(
+                        $"Listing {listingId} is not stocked at the selected branch.");
+                }
+
+                var primaryStock = GetAvailableStockFromMap(primaryListing, stockMap);
+                if (fulfillFromBranchId.HasValue && primaryStock < qty)
+                {
+                    throw new BadRequestException(
+                        $"Insufficient stock at branch for listing {listingId}. Available: {primaryStock}, requested: {qty}.");
+                }
+
+                var stockForPhase2 = fulfillFromBranchId.HasValue ? primaryStock : qty;
                 cartProducts.Add(new CartProduct
                 {
                     Title = title ?? listingId.ToString(),
@@ -191,13 +207,37 @@ public class BranchAllocationService : IBranchAllocationService
                     QuantityNeeded = qty,
                     SiblingListings = new List<(ProductListing listing, int stock)>
                     {
-                        (primaryListing, qty)
+                        (primaryListing, stockForPhase2)
                     }
                 });
                 continue;
             }
 
-            // Find siblings by TaxonomyId (preferred) or title fallback
+            if (!fulfillFromBranchId.HasValue)
+            {
+                // Strict assignment: respect the exact listing the user added to cart
+                var primaryStock = GetAvailableStockFromMap(primaryListing, stockMap);
+                if (primaryStock < qty)
+                {
+                    throw new BadRequestException(
+                        $"Insufficient stock at branch for listing {listingId}. Available: {primaryStock}, requested: {qty}.");
+                }
+
+                cartProducts.Add(new CartProduct
+                {
+                    Title = title,
+                    UnitPrice = price,
+                    Image = image,
+                    QuantityNeeded = qty,
+                    SiblingListings = new List<(ProductListing listing, int stock)>
+                    {
+                        (primaryListing, primaryStock)
+                    }
+                });
+                continue;
+            }
+
+            // Find siblings by TaxonomyId (preferred) or title fallback (for BOPIS overrides)
             var siblings = allRelevantListings
                 .Where(l =>
                 {
@@ -222,12 +262,17 @@ public class BranchAllocationService : IBranchAllocationService
                     siblingsWithStock.Add((s, stock));
             }
 
+            // Restrict to the chosen branch
+            siblingsWithStock = siblingsWithStock
+                .Where(s => s.listing.BranchId == fulfillFromBranchId.Value)
+                .ToList();
+
             // Validate total stock
             int totalAvailable = siblingsWithStock.Sum(x => x.stock);
             if (totalAvailable < qty)
             {
                 throw new BadRequestException(
-                    $"Insufficient stock for '{title}'. Available: {totalAvailable}, requested: {qty}.");
+                    $"Insufficient stock for '{title}' at selected branch. Available: {totalAvailable}, requested: {qty}.");
             }
 
             cartProducts.Add(new CartProduct

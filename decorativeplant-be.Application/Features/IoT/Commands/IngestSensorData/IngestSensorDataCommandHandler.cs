@@ -213,13 +213,13 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
 
         Console.WriteLine($"[Diagnostic] Total Triggered Actuators count: {triggeredActuators.Count}");
 
-        // --- Conflict Resolution Logic ---
+        // --- Conflict Resolution & Execution Logic ---
         foreach (var actuator in triggeredActuators)
         {
             var actuatorKey = actuator.Key;
             var matchedRules = actuator.Value;
 
-            Console.WriteLine($"[Diagnostic] Checking conflicts for '{actuatorKey}'. Rule count: {matchedRules.Count}");
+            Console.WriteLine($"[Diagnostic] Processing actuator '{actuatorKey}'. Rule count: {matchedRules.Count}");
 
             if (matchedRules.Count > 1)
             {
@@ -234,10 +234,9 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
                     var ruleNames = string.Join(", ", matchedRules.Select(r => $"'{r.Rule.Name}'"));
                     
                     // 1. Send STOP Command via MQTT (Kill-switch)
-                    // We send "value: turn_off" so main.py on ESP32 can parse it correctly
                     await _mqttService.PublishCommandAsync(device.SecretKey, actuatorKey, new { value = "turn_off", note = "Emergency stop due to rule conflict" }, cancellationToken);
 
-                    // --- Updated Alert Deduplication & Email Throttling Logic ---
+                    // --- Updated Alert Deduplication Logic ---
                     var existingAlerts = await _iotRepository.GetIotAlertsAsync(device.Id, null, cancellationToken);
                     var existingAlert = existingAlerts.FirstOrDefault(a => a.ComponentKey == actuatorKey && a.ResolutionInfo == null);
 
@@ -249,90 +248,70 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
                     if (existingAlert != null)
                     {
                         finalAlert = existingAlert;
-                        
-                        // Extract throttling metadata from AlertInfo JSONB
                         var alertData = new Dictionary<string, object>();
                         if (finalAlert.AlertInfo != null)
                         {
-                            try
-                            {
-                                alertData = JsonSerializer.Deserialize<Dictionary<string, object>>(finalAlert.AlertInfo.RootElement.GetRawText()) ?? new();
-                            }
-                            catch { }
+                            try { alertData = JsonSerializer.Deserialize<Dictionary<string, object>>(finalAlert.AlertInfo.RootElement.GetRawText()) ?? new(); } catch { }
                         }
 
                         notificationCount = alertData.TryGetValue("notificationCount", out var c) ? Convert.ToInt32(c.ToString()) : 1;
                         var lastSentStr = alertData.TryGetValue("lastNotificationAt", out var ls) ? ls.ToString() : null;
                         DateTime lastSent = string.IsNullOrEmpty(lastSentStr) ? finalAlert.CreatedAt ?? now : DateTime.Parse(lastSentStr);
 
-                        var minutesSinceLast = (now - lastSent).TotalMinutes;
-
-                        // Throttling logic: 0 - 2 - 30 scale
-                        if (notificationCount == 1 && minutesSinceLast >= 2)
-                        {
-                            notificationCount = 2;
-                            shouldNotify = true;
-                        }
-                        else if (notificationCount >= 2 && minutesSinceLast >= 30)
+                        if ((now - lastSent).TotalMinutes >= (notificationCount == 1 ? 2 : 30))
                         {
                             notificationCount++;
                             shouldNotify = true;
                         }
 
-                        // Update Alert Content
                         var updatedInfo = new
                         {
                             severity = "CRITICAL",
                             title = "Rule Conflict Detected",
                             message = $"Emergency STOP sent to {actuatorKey}.",
-                            description = $"Conflict detected between rules: {ruleNames}. System is preventing simultaneous control (Sensor: {request.ComponentKey}, Value: {request.Value}).",
-                            solution = "Review your automation rules to resolve priority or condition overlaps.",
+                            description = $"Conflict detected between rules: {ruleNames}.",
                             lastTriggeredAt = now.ToString("o"),
                             notificationCount = notificationCount,
-                            lastNotificationAt = shouldNotify ? now.ToString("o") : lastSentStr,
-                            conflictingRules = matchedRules.Select(r => new { id = r.Rule.Id, name = r.Rule.Name, actionType = r.ActionType }).ToList()
+                            lastNotificationAt = shouldNotify ? now.ToString("o") : lastSentStr
                         };
                         finalAlert.AlertInfo = JsonSerializer.SerializeToDocument(updatedInfo);
                         await _iotRepository.UpdateIotAlertAsync(finalAlert, cancellationToken);
                     }
                     else
                     {
-                        // Create New Alert
                         shouldNotify = true;
                         finalAlert = new IotAlert
                         {
-                            Id = Guid.NewGuid(),
-                            DeviceId = device.Id,
-                            ComponentKey = actuatorKey,
-                            AlertInfo = JsonSerializer.SerializeToDocument(new
-                            {
-                                severity = "CRITICAL",
-                                title = "Rule Conflict Detected",
+                            Id = Guid.NewGuid(), DeviceId = device.Id, ComponentKey = actuatorKey,
+                            AlertInfo = JsonSerializer.SerializeToDocument(new {
+                                severity = "CRITICAL", title = "Rule Conflict Detected",
                                 message = $"Emergency STOP sent to {actuatorKey}.",
-                                description = $"Conflict detected between rules: {ruleNames}. (Sensor: {request.ComponentKey}, Value: {request.Value}).",
-                                solution = "Review your automation rules to resolve priority or condition overlaps.",
-                                firstTriggeredAt = now.ToString("o"),
-                                lastTriggeredAt = now.ToString("o"),
-                                notificationCount = 1,
-                                lastNotificationAt = now.ToString("o"),
-                                triggeredRules = matchedRules.Select(r => new { id = r.Rule.Id, name = r.Rule.Name, actionType = r.ActionType }).ToList()
+                                description = $"Conflict detected between rules: {ruleNames}.",
+                                firstTriggeredAt = now.ToString("o"), notificationCount = 1, lastNotificationAt = now.ToString("o")
                             }),
                             CreatedAt = now
                         };
                         await _iotRepository.CreateIotAlertAsync(finalAlert, cancellationToken);
                     }
 
-                    // 3. Notify Staff (triggers Email) only if throttling allows
                     if (shouldNotify)
                     {
-                        await _publisher.Publish(new decorativeplant_be.Application.Features.IoT.Events.IotAlertTriggeredNotification
-                        {
-                            Device = device,
-                            Alert = finalAlert,
-                            RuleName = "SYSTEM CONFLICT DETECTOR"
-                        }, cancellationToken);
+                        await _publisher.Publish(new decorativeplant_be.Application.Features.IoT.Events.IotAlertTriggeredNotification { Device = device, Alert = finalAlert, RuleName = "SYSTEM CONFLICT" }, cancellationToken);
                     }
                 }
+                else
+                {
+                    // Multiple rules but all agree on the same action - dispatch once
+                    var bestRule = p1Rules.Any() ? p1Rules.First() : matchedRules.First();
+                    await _mqttService.PublishCommandAsync(device.SecretKey, actuatorKey, new { value = bestRule.ActionType }, cancellationToken);
+                }
+            }
+            else if (matchedRules.Count == 1)
+            {
+                // Normal case: exactly one rule matches
+                var (rule, actionType) = matchedRules[0];
+                Console.WriteLine($"[Diagnostic] Dispatching action '{actionType}' for rule '{rule.Name}' to actuator '{actuatorKey}'");
+                await _mqttService.PublishCommandAsync(device.SecretKey, actuatorKey, new { value = actionType }, cancellationToken);
             }
         }
 

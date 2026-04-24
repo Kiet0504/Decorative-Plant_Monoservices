@@ -17,6 +17,8 @@ public class IotRepository : IIotRepository
     public async Task<IotDevice?> GetDeviceBySecretAsync(string secretKey, CancellationToken cancellationToken)
     {
         return await _context.Set<IotDevice>()
+            .Include(d => d.Location)
+            .Include(d => d.Branch)
             .FirstOrDefaultAsync(d => d.SecretKey == secretKey, cancellationToken);
     }
 

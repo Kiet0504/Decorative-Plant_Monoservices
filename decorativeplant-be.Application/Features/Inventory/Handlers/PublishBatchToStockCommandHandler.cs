@@ -54,93 +54,95 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
         if (batch.CurrentTotalQuantity < request.Quantity)
             throw new BadRequestException($"Insufficient quantity in batch. Available: {batch.CurrentTotalQuantity}");
 
-        // 1. Find or create a 'Sales' location for this branch
-        var location = await _context.InventoryLocations
-            .FirstOrDefaultAsync(x => x.BranchId == batch.BranchId && (x.Type == "Sales" || x.Type == "Storefront"), ct);
-
-        if (location == null)
-        {
-            location = new InventoryLocation
-            {
-                Id = Guid.NewGuid(),
-                BranchId = batch.BranchId,
-                Name = "Main Sales Floor",
-                Type = "Sales",
-                Code = $"SALES-{batch.BranchId.Value.ToString().Substring(0, 4).ToUpper()}",
-                Details = JsonDocument.Parse(JsonSerializer.Serialize(new { description = "Automatically created sales area" }))
-            };
-            _context.InventoryLocations.Add(location);
-            _logger.LogInformation("Created default sales location for branch {BranchId}", batch.BranchId);
-        }
-
-        // 2. Decrement Batch Quantity (Moving plants out of cultivation)
+        // 1. Decrement Master Batch Quantity (Moving plants out of cultivation)
         batch.CurrentTotalQuantity -= request.Quantity;
 
-        // 3. CONSOLIDATION LOGIC: Find all stock records for this batch at this branch
+        // 2. Find all stock records for this batch at this branch
         var allStocks = await _context.BatchStocks
             .Include(s => s.Location)
             .Where(x => x.BatchId == batch.Id && x.Location!.BranchId == batch.BranchId)
             .ToListAsync(ct);
 
-        int totalAvailable = 0;
-        int totalReserved = 0;
-        int totalReceived = 0;
+        // 3. Update stock records: Convert Reserved to Available within Cultivation Stocks
+        var cultivationStocksQuery = allStocks
+            .Where(s => s.Location?.Type != "Sales" && s.Location?.Type != "Storefront");
 
-        foreach (var s in allStocks)
+        if (request.SourceLocationId.HasValue)
         {
-            if (s.Quantities != null)
-            {
-                var root = s.Quantities.RootElement;
-                if (root.TryGetProperty("available_quantity", out var aq)) totalAvailable += aq.GetInt32();
-                if (root.TryGetProperty("reserved_quantity", out var rq)) totalReserved += rq.GetInt32();
-                if (root.TryGetProperty("total_received", out var tr)) totalReceived += tr.GetInt32();
-            }
-        }
-
-        totalAvailable += request.Quantity;
-        totalReserved = Math.Max(0, totalReserved - request.Quantity);
-        totalReceived += request.Quantity;
-
-        var quantitiesJson = JsonDocument.Parse(JsonSerializer.Serialize(new
-        {
-            quantity = totalAvailable + totalReserved, 
-            available_quantity = totalAvailable,
-            reserved_quantity = totalReserved,
-            total_received = totalReceived
-        }));
-
-        var targetStock = allStocks.FirstOrDefault(s => s.LocationId == location.Id) 
-                          ?? allStocks.FirstOrDefault(); 
-
-        if (targetStock == null)
-        {
-            targetStock = new BatchStock
-            {
-                Id = Guid.NewGuid(),
-                BatchId = batch.Id,
-                LocationId = location.Id,
-                Quantities = quantitiesJson,
-                HealthStatus = "Healthy",
-                UpdatedAt = DateTime.UtcNow
-            };
-            _context.BatchStocks.Add(targetStock);
+            cultivationStocksQuery = cultivationStocksQuery
+                .OrderByDescending(s => s.LocationId == request.SourceLocationId.Value);
         }
         else
         {
-            targetStock.LocationId = location.Id; 
-            targetStock.Quantities = quantitiesJson;
-            targetStock.UpdatedAt = DateTime.UtcNow;
+            cultivationStocksQuery = cultivationStocksQuery
+                .OrderByDescending(s => {
+                    if (s.Quantities == null) return 0;
+                    if (s.Quantities.RootElement.TryGetProperty("reserved_quantity", out var rq)) return rq.GetInt32();
+                    return 0;
+                });
         }
 
-        var extraStocks = allStocks.Where(s => s.Id != targetStock.Id).ToList();
-        if (extraStocks.Any())
+        var cultivationStocks = cultivationStocksQuery.ToList();
+
+        // Convert reserved to available
+        int remainingToPublish = request.Quantity;
+        foreach (var sourceStock in cultivationStocks)
         {
-            _context.BatchStocks.RemoveRange(extraStocks);
+            if (remainingToPublish <= 0) break;
+
+            int sInitial = 0;
+            int sAvailable = 0;
+            int sReserved = 0;
+            int sReceived = 0;
+            
+            if (sourceStock.Quantities != null)
+            {
+                var root = sourceStock.Quantities.RootElement;
+                if (root.TryGetProperty("quantity", out var q) && q.ValueKind == JsonValueKind.Number) sInitial = (int)q.GetDouble();
+                if (root.TryGetProperty("available_quantity", out var aq) && aq.ValueKind == JsonValueKind.Number) sAvailable = (int)aq.GetDouble();
+                if (root.TryGetProperty("reserved_quantity", out var rq) && rq.ValueKind == JsonValueKind.Number) sReserved = (int)rq.GetDouble();
+                if (root.TryGetProperty("total_received", out var tr) && tr.ValueKind == JsonValueKind.Number) sReceived = (int)tr.GetDouble();
+            }
+
+            int canTake = Math.Min(remainingToPublish, sReserved);
+            
+            sReserved -= canTake;
+            sAvailable += canTake;
+            sReceived += canTake; 
+
+            sourceStock.Quantities = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                quantity = sInitial,
+                total_received = sReceived,
+                reserved_quantity = sReserved,
+                available_quantity = sAvailable
+            }));
+            sourceStock.UpdatedAt = DateTime.UtcNow;
+            
+            remainingToPublish -= canTake;
         }
 
-        // 4. Ensure a ProductListing exists for this species at this branch
+        if (remainingToPublish > 0)
+        {
+            throw new BadRequestException($"Could not find enough reserved plants to publish. Missing: {remainingToPublish}");
+        }
+
+        // 4. Calculate total available for ProductListing update (Across ALL batches of this species at this branch)
+        int totalAvailable = await _context.BatchStocks
+            .Include(s => s.Batch)
+            .Include(s => s.Location)
+            .Where(s => s.Batch!.TaxonomyId == batch.TaxonomyId && s.Location!.BranchId == batch.BranchId)
+            .ToListAsync(ct)
+            .ContinueWith(t => t.Result.Sum(s => {
+                if (s.Quantities == null) return 0;
+                if (s.Quantities.RootElement.TryGetProperty("available_quantity", out var aq) && aq.ValueKind == JsonValueKind.Number) return (int)aq.GetDouble();
+                return 0;
+            }));
+
+        // 5. Ensure a ProductListing exists for this species at this branch
         var existingListing = await _context.ProductListings
-            .FirstOrDefaultAsync(x => x.BranchId == batch.BranchId && x.BatchId == batch.Id, ct);
+            .Include(x => x.Batch)
+            .FirstOrDefaultAsync(x => x.BranchId == batch.BranchId && x.Batch!.TaxonomyId == batch.TaxonomyId, ct);
 
         string taxonomyTitleVi = batch.Taxonomy?.CommonNames?.RootElement.TryGetProperty("vi", out var viName) == true ? viName.GetString() ?? "" : "";
         string taxonomyTitleEn = batch.Taxonomy?.CommonNames?.RootElement.TryGetProperty("en", out var enName) == true ? enName.GetString() ?? "" : "";
@@ -200,11 +202,8 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             // Upgrade existing listing if it's using placeholder data
             var info = JsonSerializer.Deserialize<Dictionary<string, object>>(existingListing.ProductInfo!.RootElement.GetRawText())!;
             
-            // Update only necessary info - preserve original listing title/desc to maintain history/edits
-            // info["title"] = targetTitle; // Removed: Preserve original title
             info["stock_quantity"] = totalAvailable;
             
-            // Sync price ONLY if it doesn't exist or if specifically intended (keeping it for now as price usually syncs)
             if (request.Price != null)
             {
                info["price"] = request.Price;
@@ -216,7 +215,6 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                 if (!string.IsNullOrEmpty(taxonomyDesc)) info["description"] = taxonomyDesc;
             }
 
-            // 3. Backfill Care & Growth Info if missing
             if (!info.ContainsKey("care_info") || info["care_info"] == null)
             {
                 if (batch.Taxonomy?.CareInfo != null) info["care_info"] = batch.Taxonomy.CareInfo;
@@ -228,7 +226,6 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
 
             existingListing.ProductInfo = JsonDocument.Parse(JsonSerializer.Serialize(info));
 
-            // 4. Backfill Images if empty
             if (existingListing.Images == null || existingListing.Images.RootElement.ValueKind != JsonValueKind.Array || existingListing.Images.RootElement.GetArrayLength() == 0)
             {
                 if (!string.IsNullOrEmpty(batch.Taxonomy?.ImageUrl))
@@ -243,7 +240,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             _logger.LogInformation("Updated existing ProductListing {ListingId} with stock and potential taxonomy backfill", existingListing.Id);
         }
 
-        // 5. Send notification to all Admins
+        // 6. Send notification to all Admins
         try
         {
             var adminEmails = await _context.UserAccounts
@@ -255,7 +252,6 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
             {
                 var subject = $"New Plants Sent to Sales: {batch.BatchCode}";
                 
-                // Extract purchase cost from SourceInfo if it exists
                 decimal cost = 0;
                 if (batch.SourceInfo != null)
                 {

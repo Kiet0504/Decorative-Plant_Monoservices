@@ -94,6 +94,7 @@ public class UpdateAutomationRuleCommandHandler : IRequestHandler<UpdateAutomati
         var rule = await _repo.GetAutomationRuleByIdAsync(request.RuleId, cancellationToken);
         if (rule == null) return false;
 
+        bool wasActive = rule.IsActive;
         var dto = request.Dto;
         rule.DeviceId = dto.DeviceId;
         rule.Name = dto.Name;
@@ -105,6 +106,31 @@ public class UpdateAutomationRuleCommandHandler : IRequestHandler<UpdateAutomati
 
         await _repo.UpdateAutomationRuleAsync(rule, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        // If rule was disabled, send a STOP command to affected actuators to ensure they stop immediately
+        if (wasActive && !rule.IsActive && rule.Actions != null && rule.DeviceId.HasValue)
+        {
+            try
+            {
+                var device = await _repo.GetIotDeviceByIdAsync(rule.DeviceId.Value, cancellationToken);
+                if (device != null)
+                {
+                    var actionsArray = rule.Actions.RootElement.ValueKind == JsonValueKind.Array 
+                        ? rule.Actions.RootElement.EnumerateArray() 
+                        : (rule.Actions.RootElement.TryGetProperty("actions", out var ap) ? ap.EnumerateArray() : Enumerable.Empty<JsonElement>());
+
+                    foreach (var action in actionsArray)
+                    {
+                        var actuatorKey = action.TryGetProperty("target_component_key", out var ak) ? ak.GetString() : null;
+                        if (!string.IsNullOrEmpty(actuatorKey))
+                        {
+                            await _mqttService.PublishCommandAsync(device.SecretKey, actuatorKey, new { value = "turn_off", note = "Rule disabled by user" }, cancellationToken);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[Sync Error] Failed to send stop command: {ex.Message}"); }
+        }
 
         await AutomationRuleMqttNotifier.NotifyDeviceAsync(rule.DeviceId, _repo, _mqttService, cancellationToken);
 
@@ -138,6 +164,31 @@ public class DeleteAutomationRuleCommandHandler : IRequestHandler<DeleteAutomati
         
         await _repo.DeleteAutomationRuleAsync(rule, cancellationToken);
         await _unitOfWork.SaveChangesAsync(cancellationToken);
+
+        // Send a STOP command to affected actuators if the rule was active
+        if (rule.IsActive && rule.Actions != null && rule.DeviceId.HasValue)
+        {
+            try
+            {
+                var device = await _repo.GetIotDeviceByIdAsync(rule.DeviceId.Value, cancellationToken);
+                if (device != null)
+                {
+                    var actionsArray = rule.Actions.RootElement.ValueKind == JsonValueKind.Array 
+                        ? rule.Actions.RootElement.EnumerateArray() 
+                        : (rule.Actions.RootElement.TryGetProperty("actions", out var ap) ? ap.EnumerateArray() : Enumerable.Empty<JsonElement>());
+
+                    foreach (var action in actionsArray)
+                    {
+                        var actuatorKey = action.TryGetProperty("target_component_key", out var ak) ? ak.GetString() : null;
+                        if (!string.IsNullOrEmpty(actuatorKey))
+                        {
+                            await _mqttService.PublishCommandAsync(device.SecretKey, actuatorKey, new { value = "turn_off", note = "Rule deleted by user" }, cancellationToken);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[Sync Error] Failed to send stop command on delete: {ex.Message}"); }
+        }
 
         await AutomationRuleMqttNotifier.NotifyDeviceAsync(rule.DeviceId, _repo, _mqttService, cancellationToken);
 

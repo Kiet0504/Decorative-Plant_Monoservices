@@ -16,6 +16,13 @@ namespace decorativeplant_be.Application.Features.Commerce.Payment.Handlers;
 
 using decorativeplant_be.Application.Features.Commerce.Orders;
 
+/// <summary>In-store / counter immediate pickup orders that share PayOS guest + confirm rules.</summary>
+internal static class CounterImmediatePickupOrderTypes
+{
+    public static bool Matches(string? orderType) =>
+        string.Equals(orderType, "bopis_immediate", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(orderType, "offline_pickup", StringComparison.OrdinalIgnoreCase);
+}
 
 public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, PaymentResponse>
 {
@@ -51,7 +58,7 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
             {
                 var root = order.TypeInfo.RootElement;
                 var orderType = root.TryGetProperty("order_type", out var ot) ? ot.GetString() : null;
-                isBopisImmediateGuest = string.Equals(orderType, "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+                isBopisImmediateGuest = CounterImmediatePickupOrderTypes.Matches(orderType);
             }
 
             if (!isOwner && !isBopisImmediateGuest)
@@ -91,45 +98,29 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         var firstOrder = orders.First();
         var mainOrderCode = firstOrder.OrderCode ?? firstOrder.Id.ToString();
 
-        // Reuse an unexpired pending PaymentTransaction for the same order set.
-        // PayOS links expire after 30 minutes; we treat anything under 28 min as still valid.
-        // FIX #2: Use pessimistic locking (skip locked rows) to avoid race condition when multiple requests
-        // try to reuse the same pending transaction simultaneously.
+        // Removed reuse logic to ensure we always generate a fresh PayOS link if the user clicks Pay Now again.
+        // This avoids the "Order does not exist or has already been processed" error on PayOS when an old link expires or gets cancelled.
+
+        // To prevent database bloat from spamming "Pay Now", we will mark existing pending transactions as cancelled.
         var sortedOrderIds = cmd.Request.OrderIds.OrderBy(id => id).ToList();
-        var reuseCutoff = DateTime.UtcNow.AddMinutes(-28);
-        var recentPending = await _context.PaymentTransactions
-            .Where(p => p.OrderId == firstOrder.Id && p.CreatedAt >= reuseCutoff && p.Details != null)
-            .OrderByDescending(p => p.CreatedAt)
+        var existingPending = await _context.PaymentTransactions
+            .Where(p => p.OrderId == firstOrder.Id && p.Details != null)
             .ToListAsync(ct);
 
-        var reusable = recentPending.FirstOrDefault(p =>
+        foreach (var pt in existingPending)
         {
-            var root = p.Details!.RootElement;
-            if (!root.TryGetProperty("status", out var st)
-                || !string.Equals(st.GetString(), "pending", StringComparison.OrdinalIgnoreCase)) return false;
-            if (!root.TryGetProperty("order_ids", out var idsEl)
-                || idsEl.ValueKind != JsonValueKind.Array) return false;
-            var existingIds = idsEl.EnumerateArray().Select(e => e.GetGuid()).OrderBy(id => id).ToList();
-            return existingIds.SequenceEqual(sortedOrderIds);
-        });
-
-        if (reusable != null)
-        {
-            // Re-verify the record hasn't been modified/cancelled by another concurrent operation
-            var reusableRefresh = await _context.PaymentTransactions.FindAsync(new object[] { reusable.Id }, cancellationToken: ct);
-            if (reusableRefresh?.Details != null)
+            var root = pt.Details!.RootElement;
+            if (root.TryGetProperty("status", out var st) && string.Equals(st.GetString(), "pending", StringComparison.OrdinalIgnoreCase))
             {
-                var status = reusableRefresh.Details.RootElement.TryGetProperty("status", out var st) ? st.GetString() : null;
-                if (string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase))
+                var dict = JsonSerializer.Deserialize<Dictionary<string, object>>(pt.Details.RootElement.GetRawText());
+                if (dict != null)
                 {
-                    _logger.LogInformation("Reusing pending PaymentTransaction {TxId} for orders [{OrderIds}]",
-                        reusable.Id, string.Join(", ", sortedOrderIds));
-                    return MapToResponse(reusableRefresh);
+                    dict["status"] = "cancelled";
+                    dict["cancel_reason"] = "Replaced by a newer payment attempt";
+                    pt.Details = JsonDocument.Parse(JsonSerializer.Serialize(dict));
                 }
             }
         }
-
-        // FIX #4: Use timestamp + random suffix instead of GetHashCode to prevent collision
         // GetHashCode() is non-deterministic across processes and can collide for different inputs
         var random = new Random();
         long payosOrderCode = (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % 1_000_000_000L) * 10 + random.Next(0, 10);
@@ -213,6 +204,20 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
                 r.PickedUpAt = DateTime.TryParse(pat.GetString(), out var pdt) ? pdt : null;
 
             r.PickedUpBy = root.TryGetProperty("picked_up_by_name", out var pbn) ? pbn.GetString() : null;
+
+            if (root.TryGetProperty("refunded_at", out var rat) && rat.ValueKind == JsonValueKind.String)
+                r.RefundedAt = DateTime.TryParse(rat.GetString(), out var rdt) ? rdt : null;
+
+            r.RefundedBy = root.TryGetProperty("refunded_by_name", out var rbn) ? rbn.GetString() : null;
+            r.RefundNote = root.TryGetProperty("refund_note", out var rn) ? rn.GetString() : null;
+            if (root.TryGetProperty("refund_evidence_images", out var imagesElement) && imagesElement.ValueKind == JsonValueKind.Array)
+            {
+                r.RefundEvidenceImages = imagesElement.EnumerateArray()
+                    .Select(x => x.GetString())
+                    .Where(x => !string.IsNullOrEmpty(x))
+                    .Cast<string>()
+                    .ToList();
+            }
         }
         return r;
     }
@@ -351,7 +356,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                         {
                             var isBopisImmediate = order.TypeInfo != null
                                 && order.TypeInfo.RootElement.TryGetProperty("order_type", out var ot)
-                                && string.Equals(ot.GetString(), "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+                                && CounterImmediatePickupOrderTypes.Matches(ot.GetString());
 
                             if (order.Status == "pending")
                             {
@@ -359,34 +364,40 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
 
-                                // BOPIS immediate: once payment is paid, it should move to confirmed
+                                // Counter immediate pickup: once payment is paid, it should move to confirmed
                                 // so store staff can complete handover at counter.
                                 if (isBopisImmediate)
                                 {
-                                    decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
-                                        .ApplyFromExternalSource(
-                                            order,
-                                            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,
-                                            source: "PayOSWebhook",
-                                            reason: "Payment confirmed");
+                                    OrderStatusMachine.ApplyFromExternalSource(
+                                        order,
+                                        OrderStatusMachine.Confirmed,
+                                        source: "PayOSWebhook",
+                                        reason: "Payment confirmed");
+                                }
+                                // Ship-from-branch (counter) + home delivery + PayOS: must reach confirmed and
+                                // seed GHN shipment metadata here — same paid gate as BOPIS. Otherwise the order
+                                // stays pending until staff "Confirm", and TryCreateGhn on that transition can
+                                // race or be skipped while fulfillment expects GHN rows for "Hand to GHN".
+                                else if (OrderTypeInfoHelper.IsOfflineCounterDeliveryShipOrder(order))
+                                {
+                                    OrderStatusMachine.ApplyFromExternalSource(
+                                        order,
+                                        OrderStatusMachine.Confirmed,
+                                        source: "PayOSWebhook",
+                                        reason: "Payment confirmed (offline ship-from-branch delivery)");
+                                    await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
                                 }
                             }
 
-                            var notesObj = new Dictionary<string, object?>();
-                            if (order.Notes != null)
-                            {
-                                foreach (var prop in order.Notes.RootElement.EnumerateObject())
-                                    notesObj[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
-                                        ? prop.Value.GetString() : prop.Value.GetRawText();
-                            }
-                            // FIX #4: Sync payment_status from PaymentTransaction to OrderHeader.Notes
+                            // FIX #4: Sync payment fields while preserving JSON kinds (status_history[], shipments[], …).
+                            var notesObj = OfflineDeliveryDeliveredMailHelper.CloneNotesToDictionary(order);
                             notesObj["payment_status"] = "paid";
                             notesObj["payment_confirmed_at"] = DateTime.UtcNow.ToString("o");
                             order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
 
-                            // Status stays `pending` — fulfillment staff must manually confirm,
-                            // pack, and hand to carrier. No auto-advance on payment so the
-                            // staff workflow (Confirm → Pack → Ship) is not bypassed.
+                            // Most bank_transfer orders stay `pending` until fulfillment confirms.
+                            // Exceptions: counter BOPIS / offline_pickup (auto-confirmed above) and
+                            // offline counter ship-from-branch delivery (auto-confirmed + GHN seed above).
                         }
                     }
                 }
@@ -451,37 +462,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
             foreach (var order in orders)
             {
-                try
-                {
-                    if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
-                    {
-                        var total = "0";
-                        if (order.Financials != null)
-                        {
-                            total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
-                        }
-
-                        var model = new Dictionary<string, string>
-                        {
-                            { "CustomerName", order.User.DisplayName ?? "Customer" },
-                            { "OrderCode", order.OrderCode ?? "N/A" },
-                            { "BranchName", "Decorative Plant Store" },
-                            { "Total", total }
-                        };
-
-                        await _emailTemplateService.SendTemplateAsync(
-                            "OrderConfirmed",
-                            model,
-                            order.User.Email,
-                            $"Order Confirmed - {order.OrderCode}",
-                            order.User.DisplayName,
-                            ct);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode}", order.OrderCode);
-                }
+                await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
+                    order, order.User, _emailTemplateService, _logger, ct);
 
                 // Also notify fulfillment_staff/branch_manager at the order's branch.
                 // Fire-and-log: never block the webhook ack on email delivery.
@@ -675,7 +657,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                         {
                             var isBopisImmediate = order.TypeInfo != null
                                 && order.TypeInfo.RootElement.TryGetProperty("order_type", out var ot)
-                                && string.Equals(ot.GetString(), "bopis_immediate", StringComparison.OrdinalIgnoreCase);
+                                && CounterImmediatePickupOrderTypes.Matches(ot.GetString());
 
                             if (order.Status == "pending")
                             {
@@ -683,7 +665,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
 
-                                // BOPIS immediate: after successful sync, move pending -> confirmed
+                                // Counter immediate pickup: after successful sync, move pending -> confirmed
                                 // so staff can see "Complete Order" action in UI.
                                 if (isBopisImmediate)
                                 {
@@ -728,37 +710,8 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
 
                 foreach (var order in syncedOrders)
                 {
-                    try
-                    {
-                        if (order.User != null && !string.IsNullOrEmpty(order.User.Email))
-                        {
-                            var total = "0";
-                            if (order.Financials != null)
-                            {
-                                total = order.Financials.RootElement.TryGetProperty("total", out var t) ? t.GetString() ?? "0" : "0";
-                            }
-
-                            var model = new Dictionary<string, string>
-                            {
-                                { "CustomerName", order.User.DisplayName ?? "Customer" },
-                                { "OrderCode", order.OrderCode ?? "N/A" },
-                                { "BranchName", "Decorative Plant Store" },
-                                { "Total", total }
-                            };
-
-                            await _emailTemplateService.SendTemplateAsync(
-                                "OrderConfirmed",
-                                model,
-                                order.User.Email,
-                                $"Order Confirmed - {order.OrderCode}",
-                                order.User.DisplayName,
-                                ct);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Failed to send order confirmation email for {OrderCode} during sync", order.OrderCode);
-                    }
+                    await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
+                        order, order.User, _emailTemplateService, _logger, ct);
 
                     try
                     {
@@ -856,6 +809,94 @@ public class ConfirmCodReceivedCommandHandler : IRequestHandler<ConfirmCodReceiv
         }
 
         _logger.LogInformation("Staff {StaffName} ({StaffId}) confirmed receipt of COD money for transaction {PaymentId}.", staffName, request.StaffId, payment.Id);
+
+        await _context.SaveChangesAsync(ct);
+        return CreatePaymentHandler.MapToResponse(payment);
+    }
+}
+
+public class MarkRefundedCommandHandler : IRequestHandler<MarkRefundedCommand, PaymentResponse>
+{
+    private readonly IApplicationDbContext _context;
+    private readonly ILogger<MarkRefundedCommandHandler> _logger;
+
+    public MarkRefundedCommandHandler(IApplicationDbContext context, ILogger<MarkRefundedCommandHandler> logger)
+    {
+        _context = context;
+        _logger = logger;
+    }
+
+    public async Task<PaymentResponse> Handle(MarkRefundedCommand request, CancellationToken ct)
+    {
+        var payment = await _context.PaymentTransactions.FindAsync(new object[] { request.PaymentId }, ct);
+        if (payment == null || payment.Details == null)
+            throw new NotFoundException("Payment transaction not found.");
+
+        var root = payment.Details.RootElement;
+        var status = root.TryGetProperty("status", out var s) ? s.GetString() : null;
+
+        // Only allow refund on payments that have been paid/success
+        var refundableStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "paid", "success", "cod_picked_up" };
+
+        if (status == null || !refundableStatuses.Contains(status))
+            throw new BadRequestException(
+                $"Only paid/success/cod_picked_up payments can be marked as refunded. Current status: {status ?? "null"}");
+
+        if (string.Equals(status, "refunded", StringComparison.OrdinalIgnoreCase))
+            throw new BadRequestException("This payment has already been marked as refunded.");
+
+        var details = new Dictionary<string, object?>();
+        foreach (var prop in root.EnumerateObject())
+        {
+            if (prop.Name == "order_ids")
+                details[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
+            else
+                details[prop.Name] = prop.Value.ValueKind == JsonValueKind.String
+                    ? prop.Value.GetString() : prop.Value.GetRawText();
+        }
+
+        details["status"] = "refunded";
+        details["refunded_at"] = DateTime.UtcNow.ToString("o");
+        details["refunded_by"] = request.StaffId;
+
+        var staffName = await _context.UserAccounts
+            .Where(u => u.Id == request.StaffId)
+            .Select(u => u.DisplayName)
+            .FirstOrDefaultAsync(ct);
+        details["refunded_by_name"] = staffName ?? "Unknown Staff";
+
+        if (!string.IsNullOrWhiteSpace(request.Note))
+            details["refund_note"] = request.Note;
+
+        if (request.EvidenceImageUrls != null && request.EvidenceImageUrls.Count > 0)
+            details["refund_evidence_images"] = request.EvidenceImageUrls;
+
+        payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
+
+        // Sync refunded status to OrderHeader.Notes
+        var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId }, ct);
+        if (order != null)
+        {
+            var notesObj = new Dictionary<string, object?>();
+            if (order.Notes != null)
+            {
+                foreach (var prop in order.Notes.RootElement.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.String)
+                        notesObj[prop.Name] = prop.Value.GetString();
+                    else
+                        notesObj[prop.Name] = JsonSerializer.Deserialize<object?>(prop.Value.GetRawText());
+                }
+            }
+            notesObj["payment_status"] = "refunded";
+            notesObj["refunded_at"] = DateTime.UtcNow.ToString("o");
+            order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesObj));
+        }
+
+        _logger.LogInformation(
+            "Staff {StaffName} ({StaffId}) marked payment {PaymentId} as refunded. Note: {Note}",
+            staffName, request.StaffId, payment.Id, request.Note ?? "(none)");
 
         await _context.SaveChangesAsync(ct);
         return CreatePaymentHandler.MapToResponse(payment);

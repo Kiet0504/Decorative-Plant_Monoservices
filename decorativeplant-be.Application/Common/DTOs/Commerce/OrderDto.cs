@@ -9,6 +9,10 @@ public class CreateOrderRequest
     public string? CustomerNote { get; set; }
     public string? VoucherCode { get; set; }
     public decimal ShippingFee { get; set; } // Total shipping fee from frontend
+    /// <summary>
+    /// When set (e.g. walk-in order at a branch), stock allocation is restricted to this branch only.
+    /// </summary>
+    public Guid? FulfillFromBranchId { get; set; }
     // Delivery address (required if delivery)
     public DeliveryAddressDto? DeliveryAddress { get; set; }
     // Order items
@@ -28,11 +32,17 @@ public class UpdateOrderStatusRequest
     public string? RejectionReason { get; set; }
     public string? TrackingCode { get; set; }
     public string? CarrierName { get; set; }
+    public List<string>? EvidenceImageUrls { get; set; }
 }
 
 public class CancelOrderRequest
 {
     public string? CancellationReason { get; set; }
+}
+
+public class ConfirmReceiptByTokenRequest
+{
+    public string Token { get; set; } = "";
 }
 
 public class SwitchGhnStatusRequest
@@ -88,6 +98,7 @@ public class OrderResponse
     public DateTime? ConfirmedAt { get; set; }
     public Guid? AssignedStaffId { get; set; }
     public string? AssignedStaffName { get; set; }
+    public List<string>? EvidenceImageUrls { get; set; }
     public List<OrderItemResponse> Items { get; set; } = new();
 }
 
@@ -130,6 +141,8 @@ public class DeliveryAddressDto
     public string? City { get; set; }
     public int DistrictId { get; set; }
     public string WardCode { get; set; } = string.Empty;
+    /// <summary>Optional — used for order confirmation emails (e.g. walk-in delivery at branch).</summary>
+    public string? Email { get; set; }
 }
 
 public class ManualAssignRequest
@@ -147,6 +160,11 @@ public class CreateBopisImmediateRequest
     public string PaymentMethod { get; set; } = "cash"; // cash|qr_code
     public string? VoucherCode { get; set; }
     public List<CreateBopisImmediateItemRequest> Items { get; set; } = new();
+    /// <summary>
+    /// When true, order is stored as <c>offline_pickup</c> (walk-in counter), not <c>bopis_immediate</c>.
+    /// Same fulfillment path; different reporting/labels in apps.
+    /// </summary>
+    public bool IsOfflineCounterPickup { get; set; }
 }
 
 public class CreateBopisImmediateItemRequest

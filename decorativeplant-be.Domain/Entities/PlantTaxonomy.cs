@@ -15,6 +15,7 @@ public class PlantTaxonomy : BaseEntity
     public JsonDocument? GrowthInfo { get; set; }
     public string? ImageUrl { get; set; }
     public Guid? CategoryId { get; set; }
+    public JsonDocument? AutomationMasterData { get; set; }
 
     public PlantCategory? Category { get; set; }
     public ICollection<PlantBatch> PlantBatches { get; set; } = new List<PlantBatch>();

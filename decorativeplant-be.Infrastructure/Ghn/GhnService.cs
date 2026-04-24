@@ -230,6 +230,131 @@ public class GhnService : IShippingService
         }
     }
 
+    public async Task<string?> PrintOrderAsync(string ghnOrderCode)
+    {
+        if (!_isConfigured) return null;
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { order_codes = new[] { ghnOrderCode } }, JsonOptions);
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/a5/gen-token", content);
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var code) && code.GetInt32() == 200 && root.TryGetProperty("data", out var data))
+            {
+                var token = data.TryGetProperty("token", out var t) ? t.GetString() : null;
+                if (!string.IsNullOrEmpty(token))
+                {
+                    var isDev = _settings.BaseUrl.Contains("dev");
+                    var domain = isDev ? "dev-online-gateway.ghn.vn" : "online-gateway.ghn.vn";
+                    return $"https://{domain}/a5/public-api/printA5?token={token}";
+                }
+            }
+            _logger.LogWarning("GHN print token generation failed for {OrderCode}", ghnOrderCode);
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Error generating GHN print token for {OrderCode}", ghnOrderCode); }
+        return null;
+    }
+
+    public async Task<string?> GetOrderInfoAsync(string ghnOrderCode)
+    {
+        if (!_isConfigured) return null;
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { order_code = ghnOrderCode }, JsonOptions);
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/detail", content);
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var code) && code.GetInt32() == 200 && root.TryGetProperty("data", out var data))
+            {
+                return data.GetRawText();
+            }
+        }
+        catch (Exception ex) { _logger.LogError(ex, "Error fetching GHN order info for {OrderCode}", ghnOrderCode); }
+        return null;
+    }
+
+    public async Task<bool> UpdateCodAsync(string ghnOrderCode, int newCodAmount)
+    {
+        if (!_isConfigured) return false;
+        try
+        {
+            var payload = JsonSerializer.Serialize(new { order_code = ghnOrderCode, cod_amount = newCodAmount }, JsonOptions);
+            var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/updateCOD", content);
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var code) && code.GetInt32() == 200) return true;
+            
+            var msg = root.TryGetProperty("message", out var m) ? m.GetString() : "Unknown error";
+            _logger.LogWarning("GHN update COD failed for {OrderCode} -> {Amount}: {Message}", ghnOrderCode, newCodAmount, msg);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating GHN COD for {OrderCode}", ghnOrderCode);
+            return false;
+        }
+    }
+
+    // ── GHN Advanced APIs (Services, Leadtime, SOC) ──
+
+    public async Task<string?> GetAvailableServicesAsync(int fromDistrictId, int toDistrictId)
+    {
+        if (!_isConfigured) return null;
+        try
+        {
+            var body = new { shop_id = _settings.ShopId, from_district = fromDistrictId, to_district = toDistrictId };
+            var content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/available-services", content);
+            return await response.Content.ReadAsStringAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching available services from district {From} to {To}", fromDistrictId, toDistrictId);
+            return null;
+        }
+    }
+
+    public async Task<string?> CalculateExpectedDeliveryTimeAsync(int fromDistrictId, string fromWardCode, int toDistrictId, string toWardCode, int serviceId)
+    {
+        if (!_isConfigured) return null;
+        try
+        {
+            var body = new { from_district_id = fromDistrictId, from_ward_code = fromWardCode, to_district_id = toDistrictId, to_ward_code = toWardCode, service_id = serviceId };
+            var content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/leadtime", content);
+            return await response.Content.ReadAsStringAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching leadtime for service {ServiceId}", serviceId);
+            return null;
+        }
+    }
+
+    public async Task<string?> GetOrderFeeAsync(string ghnOrderCode)
+    {
+        if (!_isConfigured) return null;
+        try
+        {
+            var body = new { order_code = ghnOrderCode };
+            var content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), System.Text.Encoding.UTF8, "application/json");
+            // The API requires token and ShopID in the header (which is already configured in _httpClient)
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/soc", content);
+            return await response.Content.ReadAsStringAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching SOC fee for order {OrderCode}", ghnOrderCode);
+            return null;
+        }
+    }
+
     // ── GHN Master Data (Location) ──
 
     public async Task<List<GhnProvince>> GetProvincesAsync()
