@@ -277,9 +277,16 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
 
         AiChatTurnIntent mainIntent;
         string resolvedIntentApi;
-        if (AiChatIntentResolver.IsRoomScanThread(
+        // If the client explicitly focuses a single product listing (e.g. "Ask more" from a card),
+        // do not force the conversation into room-scan mode just because the thread contains an
+        // earlier hidden "[Room scan context]" seed.
+        var isRoomScanThread =
+            !request.ProductListingId.HasValue &&
+            AiChatIntentResolver.IsRoomScanThread(
                 conversationIncludesRoomScanCatalog,
-                request.RoomScanFollowUp != null))
+                request.RoomScanFollowUp != null);
+
+        if (isRoomScanThread)
         {
             mainIntent = AiChatTurnIntent.RoomScanThread;
             resolvedIntentApi = AiChatIntentResolver.ResolvedRoomScanThread;
@@ -306,7 +313,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
         List<RoomScanRecommendationDto>? profileCatalogRecs = null;
         if (mainIntent == AiChatTurnIntent.ProfileShopRecommendations)
         {
-            profileCatalogRecs = await LoadProfileShopCatalogRecommendationsAsync(user, lastUserText, cancellationToken);
+            profileCatalogRecs = await LoadProfileShopCatalogRecommendationsAsync(request, user, lastUserText, cancellationToken);
         }
 
         // If the user asked about a specific shop item by name/title, prefer an explicit product-listing search.
@@ -1016,6 +1023,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
     }
 
     private async Task<List<RoomScanRecommendationDto>?> LoadProfileShopCatalogRecommendationsAsync(
+        SendAiChatMessageCommand request,
         UserAccount user,
         string? lastUserText,
         CancellationToken cancellationToken)
@@ -1032,6 +1040,13 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                 notes = notes[..1200] + "…";
             }
 
+            // Avoid repeating the same picks when the user asks for "different/another" products
+            // in a profile-based shop conversation.
+            var exclude = request.PreviousRecommendationListingIds?
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+
             var ranking = await _roomScanCatalogRanking.GetRecommendationsAsync(
                 new RoomScanCatalogRankingRequest
                 {
@@ -1042,7 +1057,7 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                     SkillLevel = skill,
                     PipelineMode = pipelineMode,
                     RankRefinementNotes = notes,
-                    ExcludeListingIds = null
+                    ExcludeListingIds = exclude
                 },
                 cancellationToken);
 

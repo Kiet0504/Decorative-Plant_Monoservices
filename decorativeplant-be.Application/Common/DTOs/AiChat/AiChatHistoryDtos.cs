@@ -66,6 +66,12 @@ public sealed class AiChatSendMessageRequestDto
     public Guid? GardenPlantId { get; set; }
     public RoomScanChatFollowUpDto? RoomScanFollowUp { get; set; }
 
+    /// <summary>
+    /// Listing ids the client has already rendered as recommendations in this chat.
+    /// Used to reduce repeats for profile-based shop recommendations.
+    /// </summary>
+    public List<Guid>? PreviousRecommendationListingIds { get; set; }
+
     public Guid? ArSessionId { get; set; }
     public Guid? ProductListingId { get; set; }
     public string? PlacementContextJson { get; set; }

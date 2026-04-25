@@ -100,6 +100,7 @@ public sealed class SendAiChatMessageV2CommandHandler : IRequestHandler<SendAiCh
             AttachedImageBase64 = request.Request.AttachedImageBase64,
             AttachedImageMimeType = request.Request.AttachedImageMimeType,
             RoomScanFollowUp = request.Request.RoomScanFollowUp,
+            PreviousRecommendationListingIds = request.Request.PreviousRecommendationListingIds,
             ArSessionId = request.Request.ArSessionId,
             ProductListingId = request.Request.ProductListingId,
             PlacementContextJson = request.Request.PlacementContextJson,

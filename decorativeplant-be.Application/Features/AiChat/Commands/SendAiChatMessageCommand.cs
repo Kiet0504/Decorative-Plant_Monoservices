@@ -18,6 +18,12 @@ public sealed class SendAiChatMessageCommand : IRequest<AiChatReplyDto>
 
     public RoomScanChatFollowUpDto? RoomScanFollowUp { get; set; }
 
+    /// <summary>
+    /// Listing ids the client has already shown as "Suggested from our shop" in this chat.
+    /// Used to reduce repeats for profile-based shop recommendations (not room-scan follow-ups).
+    /// </summary>
+    public List<Guid>? PreviousRecommendationListingIds { get; set; }
+
     public Guid? ArSessionId { get; set; }
 
     public Guid? ProductListingId { get; set; }
