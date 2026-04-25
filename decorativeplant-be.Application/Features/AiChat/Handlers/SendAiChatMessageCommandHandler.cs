@@ -214,47 +214,12 @@ public sealed class SendAiChatMessageCommandHandler : IRequestHandler<SendAiChat
                     "AI chat: formal Gemini+Ollama diagnosis completed for user {UserId} (disease label: {Disease}).",
                     request.UserId,
                     diagnosis.Disease);
-                List<CareScheduleTaskInfoDto>? suggestedSchedules = null;
-                if (focusPlant != null)
-                {
-                    try
-                    {
-                        var recoveryLines = new List<string>
-                        {
-                            $"Active issue (photo diagnosis): {diagnosis.Disease}"
-                        };
-                        if (diagnosis.Recommendations is { Count: > 0 })
-                        {
-                            recoveryLines.Add("Suggested actions: " + string.Join("; ", diagnosis.Recommendations.Take(6)));
-                        }
-
-                        if (!string.IsNullOrWhiteSpace(diagnosis.Explanation))
-                        {
-                            recoveryLines.Add("Notes: " + diagnosis.Explanation.Trim());
-                        }
-
-                        var plan = await _mediator.Send(new GenerateGardenPlantAiSchedulePlanQuery
-                        {
-                            UserId = request.UserId,
-                            PlantId = focusPlant.Id,
-                            HorizonDays = 30,
-                            UtcOffsetMinutes = request.UtcOffsetMinutes,
-                            RecoveryDiagnosisContext = string.Join(Environment.NewLine, recoveryLines)
-                        }, cancellationToken);
-                        suggestedSchedules = plan.Tasks;
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "AI chat: could not generate suggested schedules after diagnosis.");
-                    }
-                }
 
                 return new AiChatReplyDto
                 {
                     Reply = FormatDiagnosisAsChatReply(diagnosis),
                     SuggestedIntent = PlantChatIntentDetector.DiseaseDiagnosisIntent,
                     Diagnosis = ToDiagnosisSummary(diagnosis),
-                    SuggestedSchedules = suggestedSchedules,
                     ResolvedIntent = AiChatIntentResolver.ResolvedFormalDiagnosis
                 };
             }
