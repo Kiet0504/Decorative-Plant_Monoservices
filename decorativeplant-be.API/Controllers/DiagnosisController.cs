@@ -139,6 +139,32 @@ public class DiagnosisController : BaseController
         return StatusCode(201, ApiResponse<PlantDiagnosisDto>.SuccessResponse(result, "Diagnosis saved to your plant.", 201));
     }
 
+    /// <summary>
+    /// Generate a recovery-aware AI schedule plan from a previously saved plant diagnosis.
+    /// This runs only the scheduler (not the vision diagnosis model).
+    /// </summary>
+    [HttpPost("{id:guid}/recovery-schedule-plan")]
+    public async Task<ActionResult<ApiResponse<AiSchedulePlanDto>>> GenerateRecoverySchedulePlan(
+        Guid id,
+        [FromBody] GenerateRecoverySchedulePlanRequest request)
+    {
+        var userId = GetUserId(User);
+        if (userId == null)
+        {
+            return BadRequest(ApiResponse<AiSchedulePlanDto>.ErrorResponse("User ID is required."));
+        }
+
+        var result = await Mediator.Send(new GenerateRecoveryScheduleFromDiagnosisQuery
+        {
+            UserId = userId.Value,
+            DiagnosisId = id,
+            HorizonDays = request.HorizonDays,
+            UtcOffsetMinutes = request.UtcOffsetMinutes
+        });
+
+        return Ok(ApiResponse<AiSchedulePlanDto>.SuccessResponse(result));
+    }
+
     /// <summary>Mark a saved plant diagnosis as resolved (hidden from plant diary timeline).</summary>
     [HttpPatch("{id:guid}/resolve")]
     public async Task<ActionResult<ApiResponse<object>>> ResolveDiagnosis(Guid id)
@@ -175,4 +201,10 @@ public class SubmitFeedbackRequest
 {
     public string UserFeedback { get; set; } = string.Empty;
     public string? ExpertNotes { get; set; }
+}
+
+public class GenerateRecoverySchedulePlanRequest
+{
+    public int HorizonDays { get; set; } = 30;
+    public int? UtcOffsetMinutes { get; set; }
 }
