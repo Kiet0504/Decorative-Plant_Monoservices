@@ -94,6 +94,7 @@ public class AiChatController : BaseController
             AttachedImageBase64 = request.AttachedImageBase64,
             AttachedImageMimeType = request.AttachedImageMimeType,
             RoomScanFollowUp = request.RoomScanFollowUp,
+            PreviousRecommendationListingIds = request.PreviousRecommendationListingIds,
             ArSessionId = request.ArSessionId,
             ProductListingId = request.ProductListingId,
             PlacementContextJson = request.PlacementContextJson,
