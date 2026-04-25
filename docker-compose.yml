@@ -93,7 +93,10 @@ services:
       - AiDiagnosis__Model=${AiDiagnosis__Model:-gpt-4o}
       - AiDiagnosis__MaxTokens=${AiDiagnosis__MaxTokens:-1024}
       - AiDiagnosis__GeminiApiKey=${AiDiagnosis__GeminiApiKey:-}
+      # Gemini JSON/vision tasks (bbox suggestion, chat JSON tools)
       - AiDiagnosis__GeminiModel=${AiDiagnosis__GeminiModel:-gemini-2.5-flash}
+      # Gemini image generation/editing tasks (placement preview image)
+      - AiDiagnosis__GeminiImageModel=${AiDiagnosis__GeminiImageModel:-gemini-3.1-flash-image-preview}
       - AiDiagnosis__GeminiBaseUrl=${AiDiagnosis__GeminiBaseUrl:-https://generativelanguage.googleapis.com}
       # Gemini Live (ephemeral tokens for /v1/ai/live/token); requires AiDiagnosis__GeminiApiKey
       - AiLive__Enabled=${AiLive__Enabled:-true}

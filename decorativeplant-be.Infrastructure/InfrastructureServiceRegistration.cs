@@ -170,6 +170,8 @@ public static class InfrastructureServiceRegistration
         services.AddScoped<IChatDiagnosisPipelineSettings, ChatDiagnosisPipelineSettings>();
         services.Configure<RoomScanSettings>(configuration.GetSection(RoomScanSettings.SectionName));
         services.AddScoped<IRoomScanGeminiClient, GeminiRoomScanClient>();
+        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IAiPlacementSuggestionClient, GeminiPlacementSuggestionClient>();
+        services.AddScoped<decorativeplant_be.Application.Common.Interfaces.IAiPlacementPreviewGenerator, GeminiPlacementPreviewGenerator>();
         services.AddScoped<IAiDiagnosisService>(sp =>
         {
             var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AiDiagnosisSettings>>().Value;
