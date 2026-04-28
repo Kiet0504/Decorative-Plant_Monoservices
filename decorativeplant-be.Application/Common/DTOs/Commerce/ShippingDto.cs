@@ -3,7 +3,7 @@ namespace decorativeplant_be.Application.Common.DTOs.Commerce;
 public class CreateShippingRequest
 {
     public Guid OrderId { get; set; }
-    public string Carrier { get; set; } = "ghn"; // ghn|ghtk|viettel_post
+    public string Carrier { get; set; } = "ghn"; // ghn|viettel_post
     public string Method { get; set; } = "standard"; // standard|express
     public string Fee { get; set; } = "0";
 }

@@ -14,7 +14,6 @@ using decorativeplant_be.Domain.Entities;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using decorativeplant_be.Infrastructure.Ghn;
-using decorativeplant_be.Infrastructure.Ghtk;
 
 namespace decorativeplant_be.API.Controllers;
 
@@ -239,11 +238,107 @@ public class OrdersController : BaseController
                     tracking.Carrier = shipment.TryGetProperty("carrier", out var c) ? c.GetString() : "GHN";
                     tracking.BranchId = shipment.TryGetProperty("branch_id", out var b) ? b.GetString() : null;
                     results.Add(tracking);
+
+                    // Auto-sync order status from GHN on every tracking fetch
+                    if (!string.IsNullOrEmpty(tracking.Status))
+                    {
+                        var mapped = MapGhnStatusToOrderStatus(tracking.Status);
+                        if (mapped != null && !string.Equals(order.Status, mapped, StringComparison.OrdinalIgnoreCase)
+                            && !decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.IsTerminal(order.Status))
+                        {
+                            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
+                                .ApplyFromExternalSource(order, mapped, source: "TrackingAutoSync",
+                                    reason: $"Auto-synced from GHN tracking: {tracking.Status}");
+                        }
+                    }
                 }
             }
         }
 
+        await context.SaveChangesAsync(CancellationToken.None);
         return Ok(ApiResponse<List<GhnTrackingResponse>>.SuccessResponse(results));
+    }
+
+    [HttpPost("{id:guid}/tracking/sync-status")]
+    [Authorize(Roles = "store_staff,branch_manager,fulfillment_staff,admin")]
+    public async Task<IActionResult> SyncGhnStatus(
+        Guid id,
+        [FromServices] IApplicationDbContext context,
+        [FromServices] IShippingService shippingService,
+        [FromServices] IStockService stockService,
+        [FromServices] ILogger<OrdersController> logger)
+    {
+        var order = await context.OrderHeaders
+            .Include(o => o.OrderItems)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null)
+            return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+
+        if (!FulfillmentStaffIsAssigned(order, GetUserId()))
+            return Forbid();
+
+        // Get tracking code from Notes.shipments or Shipping table
+        string? trackingCode = null;
+        if (order.Notes?.RootElement.TryGetProperty("shipments", out var shipments) == true
+            && shipments.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var shipment in shipments.EnumerateArray())
+            {
+                if (shipment.TryGetProperty("tracking_code", out var tc))
+                {
+                    trackingCode = tc.GetString();
+                    if (!string.IsNullOrEmpty(trackingCode)) break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(trackingCode))
+        {
+            var row = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
+            trackingCode = row?.TrackingCode;
+        }
+
+        if (string.IsNullOrEmpty(trackingCode))
+            return BadRequest(ApiResponse<object>.ErrorResponse("No GHN tracking code found for this order"));
+
+        var tracking = await shippingService.TrackOrderAsync(trackingCode);
+        if (tracking == null || string.IsNullOrEmpty(tracking.Status))
+            return BadRequest(ApiResponse<object>.ErrorResponse("Could not fetch status from GHN"));
+
+        var ghnStatus = tracking.Status;
+        var mapped = MapGhnStatusToOrderStatus(ghnStatus);
+
+        if (mapped == null)
+            return Ok(ApiResponse<object>.SuccessResponse(
+                new { ghnStatus, orderStatus = order.Status, synced = false },
+                $"GHN status '{ghnStatus}' has no internal mapping"));
+
+        if (string.Equals(order.Status, mapped, StringComparison.OrdinalIgnoreCase))
+            return Ok(ApiResponse<object>.SuccessResponse(
+                new { ghnStatus, orderStatus = order.Status, synced = false },
+                "Order status is already up to date"));
+
+        var wasTerminal = decorativeplant_be.Application.Features.Commerce.Orders
+            .OrderStatusMachine.IsTerminal(order.Status);
+
+        decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
+            .ApplyFromExternalSource(order, mapped, source: "ManualGhnSync",
+                reason: $"Manual sync — GHN status: {ghnStatus}");
+
+        if (!wasTerminal &&
+            (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Returned ||
+             mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Cancelled) &&
+            order.OrderItems?.Count > 0)
+        {
+            try { await stockService.RestoreOrderStockAsync(order.OrderItems, CancellationToken.None); }
+            catch (Exception ex) { logger.LogError(ex, "ManualGhnSync: stock restore failed for order {Id}", id); }
+        }
+
+        await context.SaveChangesAsync(CancellationToken.None);
+        logger.LogInformation("ManualGhnSync: order {Id} updated {From} → {To}", id, order.Status, mapped);
+        return Ok(ApiResponse<object>.SuccessResponse(
+            new { ghnStatus, orderStatus = mapped, synced = true },
+            $"Synced: order status updated to '{mapped}'"));
     }
 
     [HttpPost("{id:guid}/tracking/switch-status")]
@@ -537,12 +632,12 @@ public class OrdersController : BaseController
 
     private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
     {
-        "ready_to_pick" or "picking"                                                             => "processing",
-        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail"  => "shipping",
-        "delivered"                                                                              => "delivered",
-        "waiting_to_return" or "return" or "returned"                                            => "returned",
-        "cancel" or "lost"                                                                       => "cancelled",
-        _                                                                                        => null,
+        "ready_to_pick" or "picking" or "money_collect_picking"                                                                                  => "processing",
+        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail" or "money_collect_delivering" or "exception"     => "shipping",
+        "delivered"                                                                                                                              => "delivered",
+        "waiting_to_return" or "return" or "return_transporting" or "return_sorting" or "returning" or "return_fail" or "returned"               => "returned",
+        "cancel" or "lost" or "damage"                                                                                                           => "cancelled",
+        _                                                                                                                                         => null,
     };
 
     [HttpPost]
@@ -867,171 +962,6 @@ public class OrdersController : BaseController
         public string Status { get; set; } = string.Empty;    // GHN status name
         public string? Description { get; set; }
         public string? Type { get; set; }                     // e.g., "switch_status", "Update_weight"
-    }
-
-    /// <summary>
-    /// Webhook endpoint GHTK calls on shipment status changes.
-    /// Docs: https://api.ghtk.vn/docs/submit-order/logistic-overview (webhook section).
-    /// Authenticated via shared <c>X-Secure-Token</c> header (configured in GHTK dashboard).
-    /// GHTK posts numeric <c>status_id</c> plus <c>label_id</c> / <c>partner_id</c> (our client order id).
-    /// </summary>
-    [HttpPost("ghtk/webhook")]
-    [AllowAnonymous]
-    [DisableRateLimiting]
-    public async Task<IActionResult> GhtkWebhook(
-        [FromBody] GhtkWebhookRequest payload,
-        [FromServices] IApplicationDbContext context,
-        [FromServices] IStockService stockService,
-        [FromServices] IOptions<GhtkSettings> ghtkOptions,
-        [FromServices] IEmailService emailService,
-        [FromServices] IOptions<CustomerPortalLinksOptions> portalLinks,
-        [FromServices] ILogger<OrdersController> logger)
-    {
-        // 1) Shared-secret header check (empty config disables — dev only).
-        var expected = ghtkOptions.Value.WebhookToken;
-        if (!string.IsNullOrWhiteSpace(expected))
-        {
-            var provided = Request.Headers["X-Secure-Token"].ToString();
-            if (string.IsNullOrEmpty(provided))
-                provided = Request.Headers["Token"].ToString(); // fallback alias
-            if (!string.Equals(provided, expected, StringComparison.Ordinal))
-            {
-                logger.LogWarning("GHTK webhook rejected: invalid or missing X-Secure-Token header.");
-                return Unauthorized(ApiResponse<object>.ErrorResponse("Invalid webhook token", statusCode: 401));
-            }
-        }
-
-        var trackingCode = payload.LabelId ?? payload.TrackingId;
-        if (string.IsNullOrWhiteSpace(trackingCode) && string.IsNullOrWhiteSpace(payload.PartnerId))
-            return BadRequest(ApiResponse<object>.ErrorResponse("Missing label_id / tracking_id / partner_id"));
-
-        // 2) Locate Shipping row by GHTK tracking code, or fall back to our client order id (partner_id).
-        Shipping? shipping = null;
-        if (!string.IsNullOrWhiteSpace(trackingCode))
-        {
-            shipping = await context.Shippings.FirstOrDefaultAsync(s => s.TrackingCode == trackingCode);
-        }
-
-        OrderHeader? order = null;
-        if (shipping?.OrderId != null)
-        {
-            order = await context.OrderHeaders.Include(o => o.OrderItems)
-                .FirstOrDefaultAsync(o => o.Id == shipping.OrderId);
-        }
-        else if (!string.IsNullOrWhiteSpace(payload.PartnerId) && Guid.TryParse(payload.PartnerId, out var pid))
-        {
-            order = await context.OrderHeaders.Include(o => o.OrderItems)
-                .FirstOrDefaultAsync(o => o.Id == pid);
-            if (order != null && shipping == null)
-            {
-                shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == order.Id);
-            }
-        }
-
-        if (order == null)
-            return NotFound(ApiResponse<object>.ErrorResponse("Order for GHTK callback not found"));
-
-        // 3) Map GHTK numeric status → local order status. Unknown codes: ack without writing history.
-        var mapped = MapGhtkStatusToOrderStatus(payload.StatusId);
-        var shippingStatusText = payload.StatusText ?? payload.StatusId.ToString();
-
-        // Idempotency: if the Shipping row already has this status, it's a GHTK retry — ack-only.
-        if (shipping != null && string.Equals(shipping.Status, shippingStatusText, StringComparison.OrdinalIgnoreCase))
-        {
-            logger.LogInformation("GHTK webhook duplicate for tracking {Code} status {Status} — no-op.",
-                trackingCode, shippingStatusText);
-            return Ok(ApiResponse<object>.SuccessResponse(new { orderId = order.Id, status = order.Status, duplicate = true }));
-        }
-
-        if (shipping != null) shipping.Status = shippingStatusText;
-
-        if (mapped != null && !string.Equals(order.Status, mapped, StringComparison.OrdinalIgnoreCase))
-        {
-            var wasTerminalBefore = decorativeplant_be.Application.Features.Commerce.Orders
-                .OrderStatusMachine.IsTerminal(order.Status);
-
-            decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine
-                .ApplyFromExternalSource(order, mapped, source: "GhtkWebhook",
-                    reason: payload.Reason ?? payload.StatusText ?? $"GHTK status {payload.StatusId}");
-
-            if (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered
-                && OrderCustomerNotificationHelper.IsOfflineDeliveryOrder(order))
-            {
-                try
-                {
-                    await OfflineDeliveryDeliveredMailHelper.TryIssueTokenAndNotifyForDeliveredOfflineOrderAsync(
-                        order, portalLinks, emailService, logger, CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "GHTK webhook: offline delivered confirmation email failed for order {OrderId}", order.Id);
-                }
-            }
-
-            // Restore stock if GHTK ended the order without delivery and we hadn't already closed locally.
-            if (!wasTerminalBefore &&
-                (mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Returned ||
-                 mapped == decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Cancelled) &&
-                order.OrderItems != null && order.OrderItems.Count > 0)
-            {
-                try
-                {
-                    await stockService.RestoreOrderStockAsync(order.OrderItems, CancellationToken.None);
-                    logger.LogInformation("GHTK webhook: restored stock for order {OrderId} on status {Mapped}.",
-                        order.Id, mapped);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "GHTK webhook: failed to restore stock for order {OrderId}.", order.Id);
-                }
-            }
-        }
-        else if (mapped == null)
-        {
-            logger.LogInformation("GHTK webhook: status_id {Status} has no order-status mapping, keeping order.status={Order}.",
-                payload.StatusId, order.Status);
-        }
-
-        await context.SaveChangesAsync(CancellationToken.None);
-        return Ok(ApiResponse<object>.SuccessResponse(new { orderId = order.Id, status = order.Status }));
-    }
-
-    /// <summary>
-    /// GHTK numeric status codes → local order state. Reference codes from
-    /// https://api.ghtk.vn/docs/submit-order/logistic-overview (status table).
-    /// </summary>
-    private static string? MapGhtkStatusToOrderStatus(int statusId) => statusId switch
-    {
-        -1 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Cancelled, // hủy đơn
-        1  => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Pending,    // chưa tiếp nhận
-        2  => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Confirmed,  // đã tiếp nhận
-        // picked / in warehouse / sorting → internal processing
-        3 or 4 or 11 or 123 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Processing,
-        5 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Shipping,    // đang giao
-        6 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Delivered,   // giao thành công
-        // Returns: 7 = không lấy được hàng; 9 = không giao được; 12/13/20/21 = return flow
-        7 or 9 or 12 or 13 or 20 or 21 => decorativeplant_be.Application.Features.Commerce.Orders.OrderStatusMachine.Returned,
-        _ => null
-    };
-
-    public class GhtkWebhookRequest
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("label_id")]
-        public string? LabelId { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("tracking_id")]
-        public string? TrackingId { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("partner_id")]
-        public string? PartnerId { get; set; } // our client order id (Guid string)
-        [System.Text.Json.Serialization.JsonPropertyName("status_id")]
-        public int StatusId { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("action_time")]
-        public string? ActionTime { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("reason_code")]
-        public string? ReasonCode { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("reason")]
-        public string? Reason { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("status_text")]
-        public string? StatusText { get; set; }
     }
 
     [HttpPost("offline-bopis-request")]
