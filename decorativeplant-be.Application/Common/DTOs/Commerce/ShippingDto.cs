@@ -1,5 +1,27 @@
 namespace decorativeplant_be.Application.Common.DTOs.Commerce;
 
+public class UpdateGhnOrderInfoRequest
+{
+    public string? ToName { get; set; }
+    public string? ToPhone { get; set; }
+    public string? ToAddress { get; set; }
+    public int? ToDistrictId { get; set; }
+    public string? ToWardCode { get; set; }
+    public string? Note { get; set; }
+}
+
+public class CreateSupportTicketRequest
+{
+    public string Type { get; set; } = "other"; // damaged|lost|exception|delivery_fail|other
+    public string Description { get; set; } = string.Empty;
+    public List<string> EvidenceImages { get; set; } = new();
+}
+
+public class ResolveSupportTicketRequest
+{
+    public string ResolutionNote { get; set; } = string.Empty;
+}
+
 public class CreateShippingRequest
 {
     public Guid OrderId { get; set; }

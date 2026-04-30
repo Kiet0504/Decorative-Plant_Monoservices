@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using decorativeplant_be.Application.Common;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
@@ -11,6 +12,7 @@ using decorativeplant_be.Application.Features.Commerce.Orders.Commands;
 using decorativeplant_be.Application.Features.Commerce.Orders.Queries;
 using decorativeplant_be.Application.Services;
 using decorativeplant_be.Domain.Entities;
+using decorativeplant_be.API.Hubs;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using decorativeplant_be.Infrastructure.Ghn;
@@ -582,6 +584,170 @@ public class OrdersController : BaseController
         return Ok(ApiResponse<object>.SuccessResponse(new { codAmount = request.CodAmount }, "COD amount updated successfully."));
     }
 
+    [HttpPost("{id:guid}/tracking/ghn-update-info")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> UpdateGhnOrderInfo(
+        Guid id,
+        [FromBody] UpdateGhnOrderInfoRequest request,
+        [FromServices] IApplicationDbContext context,
+        [FromServices] IShippingService shippingService)
+    {
+        var order = await context.OrderHeaders.FindAsync(id);
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+        if (!FulfillmentStaffIsAssigned(order, GetUserId())) return Forbid();
+
+        var shipping = await context.Shippings.FirstOrDefaultAsync(s => s.OrderId == id && s.TrackingCode != null);
+        if (shipping?.TrackingCode == null)
+            return NotFound(ApiResponse<object>.ErrorResponse("GHN tracking code not found for this order."));
+
+        var ok = await shippingService.UpdateOrderInfoAsync(shipping.TrackingCode, request);
+        if (!ok) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to update order info on GHN."));
+        return Ok(ApiResponse<object>.SuccessResponse(null, "Order info updated on GHN."));
+    }
+
+    // ── Support Tickets (stored in OrderHeader.Notes.support_tickets[]) ──
+
+    [HttpGet("{id:guid}/support-tickets")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> GetSupportTickets(
+        Guid id,
+        [FromServices] IApplicationDbContext context)
+    {
+        var order = await context.OrderHeaders.FindAsync(id);
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+        if (!FulfillmentStaffIsAssigned(order, GetUserId())) return Forbid();
+
+        var tickets = ReadSupportTickets(order);
+        return Ok(ApiResponse<object>.SuccessResponse(tickets));
+    }
+
+    [HttpPost("{id:guid}/support-tickets")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> CreateSupportTicket(
+        Guid id,
+        [FromBody] CreateSupportTicketRequest request,
+        [FromServices] IApplicationDbContext context)
+    {
+        var order = await context.OrderHeaders.FindAsync(id);
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+        if (!FulfillmentStaffIsAssigned(order, GetUserId())) return Forbid();
+
+        var ticket = new
+        {
+            id = Guid.NewGuid().ToString(),
+            type = request.Type,
+            description = request.Description,
+            status = "open",
+            evidence_images = request.EvidenceImages,
+            created_at = DateTime.UtcNow.ToString("o"),
+            created_by = GetUserId()?.ToString(),
+            resolved_at = (string?)null,
+            resolution_note = (string?)null,
+        };
+
+        var notes = ReadOrderNotes(order);
+        var tickets = notes.TryGetValue("support_tickets", out var existing) && existing is List<object?> list
+            ? list : new List<object?>();
+        tickets.Add(ticket);
+        notes["support_tickets"] = tickets;
+        order.Notes = System.Text.Json.JsonDocument.Parse(JsonSerializer.Serialize(notes));
+
+        await context.SaveChangesAsync(CancellationToken.None);
+        return Ok(ApiResponse<object>.SuccessResponse(ticket, "Support ticket created."));
+    }
+
+    [HttpPost("{id:guid}/support-tickets/{ticketId}/resolve")]
+    [Authorize(Roles = "admin,store_staff,branch_manager,fulfillment_staff")]
+    public async Task<IActionResult> ResolveSupportTicket(
+        Guid id,
+        string ticketId,
+        [FromBody] ResolveSupportTicketRequest request,
+        [FromServices] IApplicationDbContext context)
+    {
+        var order = await context.OrderHeaders.FindAsync(id);
+        if (order == null) return NotFound(ApiResponse<object>.ErrorResponse("Order not found", statusCode: 404));
+        if (!FulfillmentStaffIsAssigned(order, GetUserId())) return Forbid();
+
+        var notes = ReadOrderNotes(order);
+        if (!notes.TryGetValue("support_tickets", out var raw) || raw is not List<object?> tickets)
+            return NotFound(ApiResponse<object>.ErrorResponse("No tickets found for this order."));
+
+        var updated = false;
+        var result = new List<object?>();
+        foreach (var t in tickets)
+        {
+            if (t == null) { result.Add(t); continue; }
+            var json = JsonSerializer.Serialize(t);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("id", out var tid) && tid.GetString() == ticketId)
+            {
+                result.Add(new
+                {
+                    id = ticketId,
+                    type = root.TryGetProperty("type", out var tp) ? tp.GetString() : null,
+                    description = root.TryGetProperty("description", out var desc) ? desc.GetString() : null,
+                    status = "resolved",
+                    evidence_images = root.TryGetProperty("evidence_images", out var ei)
+                        ? JsonSerializer.Deserialize<List<string>>(ei.GetRawText()) : new List<string>(),
+                    created_at = root.TryGetProperty("created_at", out var ca) ? ca.GetString() : null,
+                    created_by = root.TryGetProperty("created_by", out var cb) ? cb.GetString() : null,
+                    resolved_at = DateTime.UtcNow.ToString("o"),
+                    resolution_note = request.ResolutionNote,
+                });
+                updated = true;
+            }
+            else result.Add(t);
+        }
+
+        if (!updated) return NotFound(ApiResponse<object>.ErrorResponse("Ticket not found."));
+
+        notes["support_tickets"] = result;
+        order.Notes = System.Text.Json.JsonDocument.Parse(JsonSerializer.Serialize(notes));
+        await context.SaveChangesAsync(CancellationToken.None);
+        return Ok(ApiResponse<object>.SuccessResponse(null, "Ticket resolved."));
+    }
+
+    private static List<object?> ReadSupportTickets(OrderHeader order)
+    {
+        if (order.Notes == null) return new();
+        if (order.Notes.RootElement.TryGetProperty("support_tickets", out var arr)
+            && arr.ValueKind == JsonValueKind.Array)
+            return arr.EnumerateArray()
+                .Select(e => (object?)JsonSerializer.Deserialize<object>(e.GetRawText()))
+                .ToList();
+        return new();
+    }
+
+    private static Dictionary<string, object?> ReadOrderNotes(OrderHeader order)
+    {
+        var result = new Dictionary<string, object?>();
+        if (order.Notes == null) return result;
+        foreach (var p in order.Notes.RootElement.EnumerateObject())
+        {
+            if (p.Value.ValueKind == JsonValueKind.Array)
+            {
+                var items = new List<object?>();
+                foreach (var el in p.Value.EnumerateArray())
+                    items.Add(JsonSerializer.Deserialize<object?>(el.GetRawText()));
+                result[p.Name] = items;
+            }
+            else
+            {
+                result[p.Name] = p.Value.ValueKind switch
+                {
+                    JsonValueKind.String => p.Value.GetString(),
+                    JsonValueKind.Number => p.Value.TryGetInt64(out var l) ? l : p.Value.GetDouble(),
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.Null => null,
+                    _ => JsonSerializer.Deserialize<object?>(p.Value.GetRawText()),
+                };
+            }
+        }
+        return result;
+    }
+
     [HttpGet("ghn/services")]
     [Authorize]
     public async Task<IActionResult> GetGhnServices([FromQuery] int toDistrictId, [FromServices] IShippingService shippingService)
@@ -783,7 +949,8 @@ public class OrdersController : BaseController
         [FromServices] IOptions<GhnSettings> ghnOptions,
         [FromServices] IEmailService emailService,
         [FromServices] IOptions<CustomerPortalLinksOptions> portalLinks,
-        [FromServices] ILogger<OrdersController> logger)
+        [FromServices] ILogger<OrdersController> logger,
+        [FromServices] IHubContext<OrderHub> hubContext)
     {
         // 1) Token header check. Empty config = disabled (dev only).
         var expected = ghnOptions.Value.WebhookToken;
@@ -953,6 +1120,18 @@ public class OrdersController : BaseController
         }
 
         await context.SaveChangesAsync(CancellationToken.None);
+
+        // Push real-time update đến các client đang subscribe order này
+        await hubContext.Clients
+            .Group($"order-{order.Id}")
+            .SendAsync("OrderStatusUpdated", new
+            {
+                orderId = order.Id,
+                status = order.Status,
+                source = "ghn",
+                updatedAt = DateTime.UtcNow
+            });
+
         return Ok(ApiResponse<object>.SuccessResponse(new { orderId = order.Id, status = order.Status }));
     }
 

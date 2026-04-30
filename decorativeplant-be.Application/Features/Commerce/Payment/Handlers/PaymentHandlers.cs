@@ -233,6 +233,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
     private readonly IShippingService _shippingService;
     private readonly IStockService _stockService;
     private readonly IOrderAssignmentService _orderAssignment;
+    private readonly IOrderRealtimeNotifier _realtimeNotifier;
 
     public HandlePayOSWebhookHandler(
         IApplicationDbContext context,
@@ -242,7 +243,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         IEmailService emailService,
         IShippingService shippingService,
         IStockService stockService,
-        IOrderAssignmentService orderAssignment)
+        IOrderAssignmentService orderAssignment,
+        IOrderRealtimeNotifier realtimeNotifier)
     {
         _context = context;
         _payOS = payOS;
@@ -252,6 +254,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         _shippingService = shippingService;
         _stockService = stockService;
         _orderAssignment = orderAssignment;
+        _realtimeNotifier = realtimeNotifier;
     }
 
     public async Task<bool> Handle(HandlePayOSWebhookCommand cmd, CancellationToken ct)
@@ -474,6 +477,16 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Staff notify failed for Order {OrderCode}", order.OrderCode);
+                }
+
+                // Push real-time update đến client đang xem order
+                try
+                {
+                    await _realtimeNotifier.NotifyOrderStatusUpdatedAsync(order.Id, order.Status, "payos");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "SignalR notify failed for Order {OrderId}", order.Id);
                 }
             }
         }
