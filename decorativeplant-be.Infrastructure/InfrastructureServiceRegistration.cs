@@ -14,7 +14,6 @@ using decorativeplant_be.Infrastructure.Cache;
 using decorativeplant_be.Infrastructure.Email;
 using decorativeplant_be.Infrastructure.Services;
 using decorativeplant_be.Infrastructure.Ghn;
-using decorativeplant_be.Infrastructure.Ghtk;
 using decorativeplant_be.Infrastructure.Storage.S3;
 using decorativeplant_be.Infrastructure.Auth;
 using Amazon.S3;
@@ -80,10 +79,6 @@ public static class InfrastructureServiceRegistration
         // Configure GHN (Giao Hang Nhanh) Settings
         services.Configure<GhnSettings>(configuration.GetSection(GhnSettings.SectionName));
         services.AddHttpClient<IShippingService, GhnService>();
-
-        // Configure GHTK (Giao Hang Tiet Kiem) — parallel carrier. Docs: https://api.ghtk.vn/docs/
-        services.Configure<GhtkSettings>(configuration.GetSection(GhtkSettings.SectionName));
-        services.AddHttpClient<IGhtkShippingService, GhtkService>();
 
         // Register Branch Allocation Service (Chain Store model)
         services.AddScoped<decorativeplant_be.Application.Services.IBranchAllocationService,
@@ -256,6 +251,20 @@ public static class InfrastructureServiceRegistration
                 ValidAudience = jwtSettings.Audience,
                 IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.SecretKey)),
                 ClockSkew = TimeSpan.Zero
+            };
+
+            // SignalR dùng WebSocket nên không thể gắn Authorization header.
+            // JWT Bearer mặc định sẽ đọc token từ query string ?access_token= cho các hub path.
+            options.Events = new JwtBearerEvents
+            {
+                OnMessageReceived = context =>
+                {
+                    var accessToken = context.Request.Query["access_token"];
+                    var path = context.HttpContext.Request.Path;
+                    if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                        context.Token = accessToken;
+                    return Task.CompletedTask;
+                }
             };
         });
 

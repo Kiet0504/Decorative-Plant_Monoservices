@@ -11,6 +11,9 @@ using decorativeplant_be.Infrastructure;
 using decorativeplant_be.Infrastructure.Data;
 using decorativeplant_be.API.Extensions;
 using decorativeplant_be.API.Middleware;
+using decorativeplant_be.API.Hubs;
+using decorativeplant_be.API.Services;
+using decorativeplant_be.Application.Services;
 using Microsoft.AspNetCore.RateLimiting;
 using System.Threading.RateLimiting;
 
@@ -133,6 +136,10 @@ try
     // Add Infrastructure services (DbContext, Identity, JWT, Repositories, etc.)
     builder.Services.AddInfrastructureServices(builder.Configuration);
 
+    // Add SignalR for real-time order status updates
+    builder.Services.AddSignalR();
+    builder.Services.AddScoped<IOrderRealtimeNotifier, OrderRealtimeNotifier>();
+
     // Add Health Checks
     builder.Services.AddHealthChecks()
         .AddDbContextCheck<ApplicationDbContext>("database");
@@ -228,6 +235,9 @@ app.UseAuthentication();
     app.UseRateLimiter();
 
     app.MapControllers();
+
+    // SignalR hub for real-time order status
+    app.MapHub<OrderHub>("/hubs/orders");
 
     // Map health check endpoints
     app.MapHealthChecks("/health");

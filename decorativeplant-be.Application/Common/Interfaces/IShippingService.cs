@@ -17,6 +17,7 @@ public interface IShippingService
     Task<string?> PrintOrderAsync(string ghnOrderCode);
     Task<string?> GetOrderInfoAsync(string ghnOrderCode);
     Task<bool> UpdateCodAsync(string ghnOrderCode, int newCodAmount);
+    Task<bool> UpdateOrderInfoAsync(string ghnOrderCode, UpdateGhnOrderInfoRequest request);
     Task<string?> GetAvailableServicesAsync(int fromDistrictId, int toDistrictId);
     Task<string?> CalculateExpectedDeliveryTimeAsync(int fromDistrictId, string fromWardCode, int toDistrictId, string toWardCode, int serviceId);
     Task<string?> GetOrderFeeAsync(string ghnOrderCode);

@@ -302,6 +302,36 @@ public class GhnService : IShippingService
         }
     }
 
+    public async Task<bool> UpdateOrderInfoAsync(string ghnOrderCode, UpdateGhnOrderInfoRequest request)
+    {
+        if (!_isConfigured) return false;
+        try
+        {
+            var body = new Dictionary<string, object> { ["order_code"] = ghnOrderCode };
+            if (!string.IsNullOrWhiteSpace(request.ToName))    body["to_name"]    = request.ToName;
+            if (!string.IsNullOrWhiteSpace(request.ToPhone))   body["to_phone"]   = request.ToPhone;
+            if (!string.IsNullOrWhiteSpace(request.ToAddress)) body["to_address"] = request.ToAddress;
+            if (request.ToDistrictId.HasValue)                 body["to_district_id"] = request.ToDistrictId.Value;
+            if (!string.IsNullOrWhiteSpace(request.ToWardCode)) body["to_ward_code"] = request.ToWardCode;
+            if (!string.IsNullOrWhiteSpace(request.Note))      body["note"]       = request.Note;
+
+            var content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), System.Text.Encoding.UTF8, "application/json");
+            var response = await _httpClient.PostAsync("/shiip/public-api/v2/shipping-order/update", content);
+            var responseBody = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("code", out var code) && code.GetInt32() == 200) return true;
+            var msg = root.TryGetProperty("message", out var m) ? m.GetString() : "Unknown error";
+            _logger.LogWarning("GHN update order info failed for {OrderCode}: {Message}", ghnOrderCode, msg);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating GHN order info for {OrderCode}", ghnOrderCode);
+            return false;
+        }
+    }
+
     // ── GHN Advanced APIs (Services, Leadtime, SOC) ──
 
     public async Task<string?> GetAvailableServicesAsync(int fromDistrictId, int toDistrictId)
