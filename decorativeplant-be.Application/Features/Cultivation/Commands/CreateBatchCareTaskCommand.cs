@@ -13,4 +13,6 @@ public class CreateBatchCareTaskCommand : IRequest<Guid>
     public string RepeatEvery { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string CareRequirement { get; set; } = string.Empty;
+    public string? Stage { get; set; }
+    public string? Season { get; set; }
 }

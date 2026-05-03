@@ -57,7 +57,9 @@ public static class CultivationMapper
             RepeatEvery = repeatEvery,
             BatchId = entity.BatchId,
             BranchId = entity.Batch?.BranchId,
-            BranchName = entity.Batch?.Branch?.Name
+            BranchName = entity.Batch?.Branch?.Name,
+            Stage = ExtractValue(entity.Details, "stage"),
+            Season = ExtractValue(entity.Details, "season")
         };
     }
 
