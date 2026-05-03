@@ -53,6 +53,7 @@ public class HealthIncidentController : BaseController
             ResolutionNotes = dto.ResolutionNotes,
             TreatmentDetails = dto.TreatmentDetails,
             ImageUrls = dto.ImageUrls,
+            IsManagerApproval = dto.IsManagerApproval,
             ResolvedAt = dto.ResolvedAt,
             ResolvedBy = GetUserId()
         };

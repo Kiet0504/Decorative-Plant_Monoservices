@@ -62,6 +62,12 @@ public class BatchCareTaskDto
 
     [JsonPropertyName("branchName")]
     public string? BranchName { get; set; }
+
+    [JsonPropertyName("stage")]
+    public string? Stage { get; set; }
+
+    [JsonPropertyName("season")]
+    public string? Season { get; set; }
 }
 
 public class BatchCareTaskDetailDto : BatchCareTaskDto
