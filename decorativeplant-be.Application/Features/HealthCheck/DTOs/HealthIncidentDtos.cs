@@ -77,5 +77,6 @@ public class ResolveHealthIncidentDto
     public string ResolutionNotes { get; set; } = string.Empty;
     public Dictionary<string, object>? TreatmentDetails { get; set; }
     public List<string>? ImageUrls { get; set; }
+    public bool IsManagerApproval { get; set; }
     public DateTime? ResolvedAt { get; set; }
 }
