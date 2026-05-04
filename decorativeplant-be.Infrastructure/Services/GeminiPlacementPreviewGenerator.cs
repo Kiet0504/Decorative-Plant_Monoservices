@@ -191,15 +191,20 @@ public sealed class GeminiPlacementPreviewGenerator : IAiPlacementPreviewGenerat
     {
         var note = string.IsNullOrWhiteSpace(notes) ? "" : "\nUser notes:\n" + notes.Trim();
         return
-            "Edit the provided room photo to add ONE realistic potted houseplant.\n" +
-            $"Style goal: {styleKey}.\n" +
-            "Placement guidance (normalized 0..1000):\n" +
+            "Edit the provided room photo.\n" +
+            "The image may include on-photo guides: a solid green rectangle and the label \"PLACE PLANT HERE\" marks the exact target region. " +
+            "Place ONE realistic potted houseplant so its pot sits naturally in that marked region (contact with floor/table as appropriate). " +
+            "Align the plant with the guide more strictly than numeric coordinates alone.\n" +
+            $"Overall style direction: {styleKey}.\n" +
+            "Apply this style to the scene in a cohesive way—not only the pot: modest coordinated decor touches are encouraged " +
+            "(e.g. cushion tones, a throw, small tabletop objects, subtle wall color harmony, rug hints) while staying photorealistic. " +
+            "Do not replace the whole room or add large new furniture.\n" +
+            "Numeric backup placement (normalized 0..1000, [yMin,xMin,yMax,xMax]):\n" +
             $"box2d=[{box2d[0]},{box2d[1]},{box2d[2]},{box2d[3]}].\n" +
             "Rules:\n" +
-            "- Keep the room intact; change as little as possible outside the plant area.\n" +
-            "- Match perspective, lighting, and shadows.\n" +
-            "- Do not add extra furniture.\n" +
-            "- If the box is too small/odd, place the plant NEAR it while keeping a natural-looking placement.\n" +
+            "- Keep architecture, windows, and major layout recognizable.\n" +
+            "- Match perspective, lighting, and shadows for the plant and any decor edits.\n" +
+            "- If the marked region conflicts with the scene, prefer the on-image green guide over the numbers.\n" +
             note;
     }
 

@@ -51,6 +51,7 @@ public sealed class GeminiPlacementSuggestionClient : IAiPlacementSuggestionClie
             "}\n" +
             "Rules:\n" +
             "- box2d values are integers normalized 0..1000.\n" +
+            "- The region MUST be a square: (yMax - yMin) MUST equal (xMax - xMin).\n" +
             "- Prefer an empty floor corner or a stable tabletop surface; avoid doorways/walkways.\n" +
             "- Do NOT place plants on top of beds/pillows or blocking screens.\n" +
             "- Avoid covering a person's body if visible.\n";
@@ -71,26 +72,23 @@ public sealed class GeminiPlacementSuggestionClient : IAiPlacementSuggestionClie
         if (parsed == null || parsed.PlacementBoxes.Count == 0)
         {
             _logger.LogWarning("Placement suggestion: Gemini returned empty/invalid JSON. Falling back to center-lower box.");
-            return Fallback();
+            var fallback = Fallback();
+            _logger.LogInformation(
+                "Placement suggestion (fallback): {Result}",
+                JsonSerializer.Serialize(fallback, JsonOptions));
+            return fallback;
         }
 
-        // Clamp + normalize
         foreach (var b in parsed.PlacementBoxes)
         {
-            if (b.Box2d == null || b.Box2d.Length != 4)
-            {
-                b.Box2d = new[] { 520, 360, 940, 760 };
-            }
-            for (var i = 0; i < 4; i++)
-            {
-                b.Box2d[i] = Math.Clamp(b.Box2d[i], 0, 1000);
-            }
-            if (string.IsNullOrWhiteSpace(b.Id)) b.Id = "primary";
-            if (string.IsNullOrWhiteSpace(b.Label)) b.Label = "recommended_plant_area";
-            b.Confidence = b.Confidence.HasValue ? Math.Clamp(b.Confidence.Value, 0, 1) : 0.55;
+            EnsureBox2dClampedSquare(b);
         }
 
         parsed.GeneratedAt = DateTime.UtcNow;
+        _logger.LogInformation(
+            "Placement suggestion: {Result}",
+            JsonSerializer.Serialize(parsed, JsonOptions));
+
         return parsed;
     }
 
@@ -119,21 +117,84 @@ public sealed class GeminiPlacementSuggestionClient : IAiPlacementSuggestionClie
         return null;
     }
 
-    private static AiPlacementSuggestResultDto Fallback() =>
-        new()
+    private static AiPlacementSuggestResultDto Fallback()
+    {
+        var box = new AiPlacementBoxDto
+        {
+            Id = "primary",
+            Label = "recommended_plant_area",
+            Box2d = [520, 360, 940, 760],
+            Confidence = 0.35
+        };
+        EnsureBox2dClampedSquare(box);
+        return new AiPlacementSuggestResultDto
         {
             GeneratedAt = DateTime.UtcNow,
-            PlacementBoxes =
-            [
-                new AiPlacementBoxDto
-                {
-                    Id = "primary",
-                    Label = "recommended_plant_area",
-                    Box2d = [520, 360, 940, 760],
-                    Confidence = 0.35
-                }
-            ]
+            PlacementBoxes = new List<AiPlacementBoxDto> { box }
         };
+    }
+
+    /// <summary>
+    /// Clamp model output to the image, then force an axis-aligned square (equal span on x and y in 0..1000 space).
+    /// </summary>
+    private static void EnsureBox2dClampedSquare(AiPlacementBoxDto b)
+    {
+        if (b.Box2d == null || b.Box2d.Length != 4)
+        {
+            b.Box2d = [520, 360, 940, 760];
+        }
+
+        for (var i = 0; i < 4; i++)
+        {
+            b.Box2d[i] = Math.Clamp(b.Box2d[i], 0, 1000);
+        }
+
+        b.Box2d = NormalizeBox2dToSquare(b.Box2d);
+
+        if (string.IsNullOrWhiteSpace(b.Id)) b.Id = "primary";
+        if (string.IsNullOrWhiteSpace(b.Label)) b.Label = "recommended_plant_area";
+        b.Confidence = b.Confidence.HasValue ? Math.Clamp(b.Confidence.Value, 0, 1) : 0.55;
+    }
+
+    private static int[] NormalizeBox2dToSquare(int[] box)
+    {
+        var y0 = box[0];
+        var x0 = box[1];
+        var y1 = box[2];
+        var x1 = box[3];
+        if (y1 < y0)
+        {
+            (y0, y1) = (y1, y0);
+        }
+
+        if (x1 < x0)
+        {
+            (x0, x1) = (x1, x0);
+        }
+
+        var w = Math.Max(1, x1 - x0);
+        var h = Math.Max(1, y1 - y0);
+        var side = Math.Max(w, h);
+        var cy = (y0 + y1) / 2.0;
+        var cx = (x0 + x1) / 2.0;
+
+        // Shrink side until a square centered at (cx, cy) fits in [0, 1000]^2.
+        while (side > 1)
+        {
+            var y0n = (int)Math.Round(cy - side / 2.0);
+            var x0n = (int)Math.Round(cx - side / 2.0);
+            if (y0n >= 0 && x0n >= 0 && y0n + side <= 1000 && x0n + side <= 1000)
+            {
+                return [y0n, x0n, y0n + side, x0n + side];
+            }
+
+            side--;
+        }
+
+        var yf = (int)Math.Clamp(Math.Round(cy - 0.5), 0, 999);
+        var xf = (int)Math.Clamp(Math.Round(cx - 0.5), 0, 999);
+        return [yf, xf, yf + 1, xf + 1];
+    }
 
     private static string NormalizeB64(string raw)
     {
