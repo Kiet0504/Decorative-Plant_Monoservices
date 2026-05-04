@@ -13,6 +13,8 @@ public class StockTransferConfiguration : IEntityTypeConfiguration<StockTransfer
         builder.Property(s => s.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.Property(s => s.TransferCode).HasMaxLength(50);
         builder.Property(s => s.Status).HasMaxLength(50);
+        builder.Property(s => s.DeliveryStaffIds)
+            .HasColumnType("uuid[]");
         builder.Property(s => s.LogisticsInfo).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.HasOne(s => s.Batch).WithMany(p => p.StockTransfers).HasForeignKey(s => s.BatchId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(s => s.FromBranch).WithMany(b => b.StockTransfersFrom).HasForeignKey(s => s.FromBranchId).OnDelete(DeleteBehavior.SetNull);

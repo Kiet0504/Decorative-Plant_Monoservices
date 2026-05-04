@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace decorativeplant_be.Application.Features.Inventory.DTOs;
 
 public class StockTransferDto
@@ -21,4 +23,6 @@ public class StockTransferDto
     public DateTime? ReceivedAt { get; set; }
     public int? FromStockSnapshot { get; set; }
     public int? ToStockSnapshot { get; set; }
+    /// <summary>Assigned fulfillment staff user IDs after branch manager assigns delivery crew.</summary>
+    public List<Guid>? DeliveryStaffIds { get; set; }
 }

@@ -50,11 +50,28 @@ public class InventoryController : BaseController
     }
 
     /// <summary>
-    /// Mark transfer as Shipped.
+    /// Assign one fulfillment dispatcher at the originating branch (after admin approval), when two are available.
+    /// </summary>
+    [HttpPost("transfers/assign-delivery-staff")]
+    [Authorize(Roles = "branch_manager,admin")]
+    public async Task<ActionResult<ApiResponse<StockTransferDto>>> AssignDeliveryStaff(
+        [FromBody] AssignDeliveryStaffToTransferCommand command)
+    {
+        command.ActingUserId = GetUserId();
+        command.ActingRole = GetUserRole();
+        var result = await Mediator.Send(command);
+        return Ok(ApiResponse<StockTransferDto>.SuccessResponse(result, "Fulfillment crew assigned."));
+    }
+
+    /// <summary>
+    /// Confirm dispatch (assigned fulfillment crew or admin). Stock is deducted when this succeeds.
     /// </summary>
     [HttpPost("transfers/ship")]
+    [Authorize(Roles = "fulfillment_staff,admin")]
     public async Task<ActionResult<ApiResponse<StockTransferDto>>> ShipTransfer([FromBody] ShipStockTransferCommand command)
     {
+        command.ActingUserId = GetUserId();
+        command.ActingRole = GetUserRole();
         var result = await Mediator.Send(command);
         return Ok(ApiResponse<StockTransferDto>.SuccessResponse(result, "Transfer shipped."));
     }

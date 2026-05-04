@@ -9,4 +9,7 @@ public class ShipStockTransferCommand : IRequest<StockTransferDto>
     public string? ShippingProvider { get; set; }
     public string? TrackingNumber { get; set; }
     public string? ShippedBy { get; set; }
+
+    public Guid? ActingUserId { get; set; }
+    public string? ActingRole { get; set; }
 }

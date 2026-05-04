@@ -9,6 +9,9 @@ public class StaffAssignmentDto
     public string StaffEmail { get; set; } = string.Empty;
     /// <summary>User display name at assignment time (from user_account.display_name).</summary>
     public string? StaffDisplayName { get; set; }
+
+    /// <summary>Canonical role from user_account.role (store_staff, fulfillment_staff, branch_manager, etc.).</summary>
+    public string StaffRole { get; set; } = string.Empty;
     public Guid BranchId { get; set; }
     public string BranchName { get; set; } = string.Empty;
     public string? Position { get; set; }
