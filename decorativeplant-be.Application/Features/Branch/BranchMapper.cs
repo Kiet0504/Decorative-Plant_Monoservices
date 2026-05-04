@@ -43,6 +43,7 @@ public static class BranchMapper
         StaffId = sa.StaffId,
         StaffEmail = staffEmail,
         StaffDisplayName = staffDisplayName,
+        StaffRole = sa.Staff.Role ?? string.Empty,
         BranchId = sa.BranchId,
         BranchName = branchName,
         Position = sa.Position,

@@ -34,7 +34,8 @@ public static class InventoryMapper
             ShippedAt = GetLogisticsDate(transfer.LogisticsInfo, "shipped_at"),
             ReceivedAt = GetLogisticsDate(transfer.LogisticsInfo, "received_at"),
             FromStockSnapshot = GetLogisticsInt(transfer.LogisticsInfo, "from_stock_snapshot"),
-            ToStockSnapshot = GetLogisticsInt(transfer.LogisticsInfo, "to_stock_snapshot")
+            ToStockSnapshot = GetLogisticsInt(transfer.LogisticsInfo, "to_stock_snapshot"),
+            DeliveryStaffIds = transfer.DeliveryStaffIds?.Count > 0 ? transfer.DeliveryStaffIds : null
         };
     }
 
@@ -44,12 +45,14 @@ public static class InventoryMapper
         DateTime? shippedAt = null,
         object? shippedBy = null,
         string? trackingNumber = null,
-        string? shippingProvider = null, 
+        string? shippingProvider = null,
         DateTime? receivedAt = null,
         object? receivedBy = null,
         string? receivingNotes = null,
         int? fromStockSnapshot = null,
         int? toStockSnapshot = null,
+        DateTime? deliveryStaffAssignedAtUtc = null,
+        string? deliveryStaffAssignedByName = null,
         JsonDocument? existingInfo = null)
     {
         var dict = new Dictionary<string, object?>();
@@ -79,6 +82,10 @@ public static class InventoryMapper
         if (fromStockSnapshot.HasValue) dict["from_stock_snapshot"] = fromStockSnapshot;
         if (toStockSnapshot.HasValue) dict["to_stock_snapshot"] = toStockSnapshot;
 
+        if (deliveryStaffAssignedAtUtc.HasValue) dict["delivery_staff_assigned_at"] = deliveryStaffAssignedAtUtc;
+        if (!string.IsNullOrEmpty(deliveryStaffAssignedByName))
+            dict["delivery_staff_assigned_by"] = deliveryStaffAssignedByName;
+
         var json = JsonSerializer.SerializeToUtf8Bytes(dict, JsonOptions);
         return JsonDocument.Parse(json);
     }
@@ -105,6 +112,8 @@ public static class InventoryMapper
         }
         return null;
     }
+
+    public static string? GetSpeciesDisplayName(PlantBatch? batch) => GetSpeciesName(batch);
 
     private static string? GetSpeciesName(PlantBatch? batch)
     {

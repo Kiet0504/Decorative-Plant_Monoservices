@@ -32,7 +32,37 @@ public class ShipStockTransferCommandHandler : IRequestHandler<ShipStockTransfer
             .FirstOrDefaultAsync(t => t.Id == request.TransferId, cancellationToken);
         
         if (transfer == null) throw new NotFoundException(nameof(StockTransfer), request.TransferId);
-        if (transfer.Status != "approved") throw new ValidationException("Transfer must be Approved before Shipping.");
+        var st = transfer.Status ?? "";
+        if (!st.Equals("delivery_staff_assigned", StringComparison.OrdinalIgnoreCase))
+            throw new ValidationException("Transfer must have delivery staff assigned before shipping can be confirmed.");
+
+        var role = request.ActingRole?.Trim();
+        var isAdmin = string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase);
+        if (!isAdmin)
+        {
+            if (!request.ActingUserId.HasValue)
+                throw new ValidationException("User context is required to confirm dispatch.");
+
+            var assignees = transfer.DeliveryStaffIds ?? new List<Guid>();
+            if (!assignees.Contains(request.ActingUserId.Value))
+                throw new ValidationException("Only fulfillment staff assigned to this transfer can confirm dispatch.");
+
+            var actor = await _context.UserAccounts
+                .AsNoTracking()
+                .FirstOrDefaultAsync(u => u.Id == request.ActingUserId.Value, cancellationToken)
+                ?? throw new ValidationException("User not found.");
+
+            if (!string.Equals(actor.Role, "fulfillment_staff", StringComparison.OrdinalIgnoreCase))
+                throw new ValidationException("Only fulfillment staff (or admin) can confirm dispatch.");
+
+            var onSourceBranch = await _context.StaffAssignments
+                .AsNoTracking()
+                .AnyAsync(
+                    sa => sa.StaffId == request.ActingUserId.Value && sa.BranchId == transfer.FromBranchId,
+                    cancellationToken);
+            if (!onSourceBranch)
+                throw new ValidationException("You must be assigned to the originating branch to confirm this shipment.");
+        }
 
         // Deduct from Source Reserved Stock
         // Prioritize "Sales" or "Storefront" locations
