@@ -20,6 +20,7 @@ public class GetInventoryLocationsQueryHandler : IRequestHandler<GetInventoryLoc
     public async Task<IEnumerable<InventoryLocationDto>> Handle(GetInventoryLocationsQuery request, CancellationToken cancellationToken)
     {
         var query = _context.InventoryLocations
+            .Include(x => x.Taxonomy)
             .Include(x => x.BatchStocks)
                 .ThenInclude(bs => bs.Batch)
                     .ThenInclude(b => b!.Taxonomy)
@@ -45,6 +46,7 @@ public class GetInventoryLocationsQueryHandler : IRequestHandler<GetInventoryLoc
                         Id = l.Id,
                         BranchId = l.BranchId,
                         ParentLocationId = l.ParentLocationId,
+                        TaxonomyId = l.TaxonomyId,
                         Code = l.Code,
                         Name = l.Name,
                         Type = l.Type,
@@ -64,6 +66,13 @@ public class GetInventoryLocationsQueryHandler : IRequestHandler<GetInventoryLoc
                                     
                                 return 0;
                             }),
+                        SpeciesName = l.Taxonomy != null ? (
+                            (l.Taxonomy.CommonNames != null && l.Taxonomy.CommonNames.RootElement.ValueKind == JsonValueKind.Object && 
+                             l.Taxonomy.CommonNames.RootElement.TryGetProperty("en", out var en) && en.ValueKind == JsonValueKind.String) ? en.GetString() :
+                            (l.Taxonomy.CommonNames != null && l.Taxonomy.CommonNames.RootElement.ValueKind == JsonValueKind.Object && 
+                             l.Taxonomy.CommonNames.RootElement.TryGetProperty("vi", out var vi) && vi.ValueKind == JsonValueKind.String) ? vi.GetString() :
+                            l.Taxonomy.ScientificName
+                        ) : null,
                         EnvironmentType = (isObject && details!.Value.TryGetProperty("environment_type", out var env) && env.ValueKind == JsonValueKind.String) ? env.GetString() : null,
                         PositionX = (isObject && details!.Value.TryGetProperty("position_x", out var posX) && posX.ValueKind == JsonValueKind.Number && posX.TryGetDouble(out var posXVal)) ? posXVal : null,
                         PositionY = (isObject && details!.Value.TryGetProperty("position_y", out var posY) && posY.ValueKind == JsonValueKind.Number && posY.TryGetDouble(out var posYVal)) ? posYVal : null,

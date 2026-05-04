@@ -110,6 +110,27 @@ public class GetRevenueSummaryQueryHandler : IRequestHandler<GetRevenueSummaryQu
         }
 
         var totalRevenue = totalOrderRevenue + totalSubscriptionRevenue;
+        
+        // 3. Import Cost (Expenses from Plant Batches)
+        var batches = await _context.PlantBatches
+            .Where(b => (request.BranchId == null || b.BranchId == request.BranchId) &&
+                        b.CreatedAt >= fromDate && b.CreatedAt <= toDate)
+            .Select(b => b.SourceInfo)
+            .ToListAsync(cancellationToken);
+
+        decimal totalImportCost = 0;
+        foreach (var si in batches)
+        {
+            if (si != null && si.RootElement.TryGetProperty("purchase_cost", out var costProp))
+            {
+                if (costProp.ValueKind == JsonValueKind.Number && costProp.TryGetDecimal(out var dVal))
+                    totalImportCost += dVal;
+                else if (costProp.ValueKind == JsonValueKind.String && decimal.TryParse(costProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var sVal))
+                    totalImportCost += sVal;
+            }
+        }
+
+        var netProfit = totalRevenue - totalImportCost;
         var avgOrderValue = orderCount > 0 ? totalOrderRevenue / orderCount : 0;
 
         return new RevenueSummaryDto
@@ -118,7 +139,9 @@ public class GetRevenueSummaryQueryHandler : IRequestHandler<GetRevenueSummaryQu
             OrderRevenue = totalOrderRevenue.ToString("0", CultureInfo.InvariantCulture),
             SubscriptionRevenue = totalSubscriptionRevenue.ToString("0", CultureInfo.InvariantCulture),
             TotalDiscount = totalDiscount.ToString("0", CultureInfo.InvariantCulture),
-            AvgOrderValue = avgOrderValue.ToString("0", CultureInfo.InvariantCulture)
+            AvgOrderValue = avgOrderValue.ToString("0", CultureInfo.InvariantCulture),
+            ImportCost = totalImportCost.ToString("0", CultureInfo.InvariantCulture),
+            NetProfit = netProfit.ToString("0", CultureInfo.InvariantCulture)
         };
     }
 }

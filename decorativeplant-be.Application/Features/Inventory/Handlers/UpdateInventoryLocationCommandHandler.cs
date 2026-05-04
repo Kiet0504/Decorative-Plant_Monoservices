@@ -30,6 +30,7 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
         }
 
         location.ParentLocationId = request.ParentLocationId;
+        location.TaxonomyId = request.TaxonomyId;
         location.Code = request.Code;
         location.Name = request.Name;
         location.Type = request.Type;
@@ -52,6 +53,7 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
             Id = location.Id,
             BranchId = location.BranchId,
             ParentLocationId = location.ParentLocationId,
+            TaxonomyId = location.TaxonomyId,
             Code = location.Code,
             Name = location.Name,
             Type = location.Type,

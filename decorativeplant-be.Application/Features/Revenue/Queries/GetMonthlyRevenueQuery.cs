@@ -74,13 +74,39 @@ public class GetMonthlyRevenueQueryHandler : IRequestHandler<GetMonthlyRevenueQu
             }).ToList();
         }
 
+        // Add Import Costs from Plant Batches
+        var batchPoints = await _context.PlantBatches
+            .Where(b => (request.BranchId == null || b.BranchId == request.BranchId) &&
+                        b.CreatedAt >= fromDate && b.CreatedAt <= toDate)
+            .Select(b => new { b.CreatedAt, b.SourceInfo })
+            .ToListAsync(cancellationToken);
+
+        foreach (var bp in batchPoints)
+        {
+            decimal cost = 0;
+            if (bp.SourceInfo != null && bp.SourceInfo.RootElement.TryGetProperty("purchase_cost", out var costProp))
+            {
+                if (costProp.ValueKind == JsonValueKind.Number && costProp.TryGetDecimal(out var dVal))
+                    cost = dVal;
+                else if (costProp.ValueKind == JsonValueKind.String && decimal.TryParse(costProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var sVal))
+                    cost = sVal;
+            }
+            points.Add(new MonthlyDataPoint { CreatedAt = bp.CreatedAt, Revenue = 0, ImportCost = cost, OrderId = Guid.Empty });
+        }
+
         var monthlyData = points
             .GroupBy(p => new { p.CreatedAt!.Value.Year, p.CreatedAt.Value.Month })
-            .Select(g => new MonthlyRevenueDto
-            {
-                Month = new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMM"),
-                Revenue = g.Sum(x => x.Revenue),
-                OrderCount = g.Select(x => x.OrderId).Distinct().Count()
+            .Select(g => {
+                var rev = g.Sum(x => x.Revenue);
+                var cost = g.Sum(x => x.ImportCost);
+                return new MonthlyRevenueDto
+                {
+                    Month = new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMM"),
+                    Revenue = rev,
+                    ImportCost = cost,
+                    NetProfit = rev - cost,
+                    OrderCount = g.Where(x => x.OrderId != Guid.Empty).Select(x => x.OrderId).Distinct().Count()
+                };
             })
             .ToList();
 
@@ -93,6 +119,7 @@ public class GetMonthlyRevenueQueryHandler : IRequestHandler<GetMonthlyRevenueQu
     {
         public DateTime? CreatedAt { get; set; }
         public decimal Revenue { get; set; }
+        public decimal ImportCost { get; set; }
         public Guid OrderId { get; set; }
     }
 }

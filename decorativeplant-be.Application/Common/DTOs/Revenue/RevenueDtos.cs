@@ -7,12 +7,16 @@ public class RevenueSummaryDto
     public string SubscriptionRevenue { get; set; } = "0";
     public string TotalDiscount { get; set; } = "0";
     public string AvgOrderValue { get; set; } = "0";
+    public string ImportCost { get; set; } = "0";
+    public string NetProfit { get; set; } = "0";
 }
 
 public class MonthlyRevenueDto
 {
     public string Month { get; set; } = "";
     public decimal Revenue { get; set; }
+    public decimal ImportCost { get; set; }
+    public decimal NetProfit { get; set; }
     public int OrderCount { get; set; }
 }
 

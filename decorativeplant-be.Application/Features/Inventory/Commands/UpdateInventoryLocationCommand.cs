@@ -7,6 +7,7 @@ public class UpdateInventoryLocationCommand : IRequest<InventoryLocationDto>
 {
     public Guid Id { get; set; }
     public Guid? ParentLocationId { get; set; }
+    public Guid? TaxonomyId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Type { get; set; } = "Shelf";
