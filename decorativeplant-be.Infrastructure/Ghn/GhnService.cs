@@ -184,6 +184,8 @@ public class GhnService : IShippingService
                 {
                     GhnOrderCode = ghnOrderCode,
                     Status = data.TryGetProperty("status", out var s) ? s.GetString() : null,
+                    OriginAddress = data.TryGetProperty("from_address", out var fa) ? fa.GetString() : null,
+                    DestinationAddress = data.TryGetProperty("to_address", out var ta) ? ta.GetString() : null,
                     ExpectedDeliveryTime = data.TryGetProperty("leadtime", out var lt) ? lt.GetString() : null,
                 };
                 if (data.TryGetProperty("log", out var logs) && logs.ValueKind == JsonValueKind.Array)

@@ -50,6 +50,7 @@ public class PayOSCreatePaymentResult
     public string QrCode { get; set; } = string.Empty;
     public string PaymentLinkId { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public long ExpireAt { get; set; }
 }
 
 public class PayOSPaymentInfo

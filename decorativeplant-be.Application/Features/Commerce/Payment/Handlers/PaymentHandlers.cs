@@ -98,10 +98,43 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
         var firstOrder = orders.First();
         var mainOrderCode = firstOrder.OrderCode ?? firstOrder.Id.ToString();
 
-        // Removed reuse logic to ensure we always generate a fresh PayOS link if the user clicks Pay Now again.
-        // This avoids the "Order does not exist or has already been processed" error on PayOS when an old link expires or gets cancelled.
+        // REUSE LOGIC: Check if there's an existing pending transaction for these exact orders that hasn't expired yet.
+        // PayOS links in this system are configured to expire in 30 minutes (see PayOSService.cs).
+        var cutoff30Min = DateTime.UtcNow.AddMinutes(-30);
+        var existingValid = await _context.PaymentTransactions
+            .Where(p => p.OrderId == firstOrder.Id && p.CreatedAt >= cutoff30Min)
+            .ToListAsync(ct);
 
-        // To prevent database bloat from spamming "Pay Now", we will mark existing pending transactions as cancelled.
+        foreach (var pt in existingValid)
+        {
+            var root = pt.Details!.RootElement;
+            var status = root.TryGetProperty("status", out var st) ? st.GetString() : null;
+            if (string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase))
+            {
+                // Verify expiration using the stored timestamp if available
+                if (root.TryGetProperty("expired_at", out var expJson) && expJson.ValueKind == JsonValueKind.Number)
+                {
+                    var expireTimestamp = expJson.GetInt64();
+                    if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= expireTimestamp)
+                    {
+                        continue; // Link has expired, skip it
+                    }
+                }
+
+                // Check if the order IDs match exactly to ensure we're paying for the same set of orders
+                if (root.TryGetProperty("order_ids", out var oidsJson) && oidsJson.ValueKind == JsonValueKind.Array)
+                {
+                    var existingIds = oidsJson.EnumerateArray().Select(e => e.GetGuid()).ToList();
+                    if (existingIds.Count == cmd.Request.OrderIds.Count && !existingIds.Except(cmd.Request.OrderIds).Any())
+                    {
+                        _logger.LogInformation("Reusing existing valid PayOS link for orders: {OrderIds}", string.Join(",", cmd.Request.OrderIds));
+                        return MapToResponse(pt);
+                    }
+                }
+            }
+        }
+
+        // To prevent database bloat from spamming "Pay Now", we will mark older existing pending transactions as cancelled.
         var sortedOrderIds = cmd.Request.OrderIds.OrderBy(id => id).ToList();
         var existingPending = await _context.PaymentTransactions
             .Where(p => p.OrderId == firstOrder.Id && p.Details != null)
@@ -172,6 +205,7 @@ public class CreatePaymentHandler : IRequestHandler<CreatePaymentCommand, Paymen
                 checkout_url = result.CheckoutUrl,
                 qr_code = result.QrCode,
                 payos_order_code = payosOrderCode,
+                expired_at = result.ExpireAt,
                 order_ids = cmd.Request.OrderIds // Crucial: store list of all order ids
             })),
             CreatedAt = DateTime.UtcNow
@@ -340,6 +374,8 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
         // Wrap stock + order mutations in a transaction with pessimistic locking
         var strategy = _context.Database.CreateExecutionStrategy();
+        var ordersToNotify = new List<Guid>();
+
         await strategy.ExecuteAsync(async () =>
         {
             using var transaction = await _context.Database.BeginTransactionAsync(ct);
@@ -363,6 +399,9 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
 
                             if (order.Status == "pending")
                             {
+                                // Only notify if the order was actually in pending and we're moving it forward
+                                ordersToNotify.Add(order.Id);
+
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
@@ -455,12 +494,12 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
         });
 
         // Send email notifications outside the transaction (non-critical)
-        if (isSuccess && orderIdsList.Any())
+        if (isSuccess && ordersToNotify.Any())
         {
             var orders = await _context.OrderHeaders
                 .Include(o => o.User)
                 .Include(o => o.OrderItems)
-                .Where(o => orderIdsList.Contains(o.Id))
+                .Where(o => ordersToNotify.Contains(o.Id))
                 .ToListAsync(ct);
 
             foreach (var order in orders)
@@ -482,7 +521,7 @@ public class HandlePayOSWebhookHandler : IRequestHandler<HandlePayOSWebhookComma
                 // Push real-time update đến client đang xem order
                 try
                 {
-                    await _realtimeNotifier.NotifyOrderStatusUpdatedAsync(order.Id, order.Status, "payos");
+                    await _realtimeNotifier.NotifyOrderStatusUpdatedAsync(order.Id, order.Status ?? string.Empty, "payos");
                 }
                 catch (Exception ex)
                 {
@@ -653,6 +692,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
 
                 details["status"] = "paid";
                 payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
+                var ordersToNotify = new List<Guid>();
 
                 // Wrap stock + order mutations in a transaction with pessimistic locking
                 var strategy = _context.Database.CreateExecutionStrategy();
@@ -674,6 +714,7 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
 
                             if (order.Status == "pending")
                             {
+                                ordersToNotify.Add(order.Id);
                                 // Deduct stock with pessimistic locking
                                 if (order.OrderItems != null)
                                     await _stockService.DeductOrderStockAsync(order.OrderItems, ct);
@@ -715,24 +756,27 @@ public class SyncPaymentCommandHandler : IRequestHandler<SyncPaymentCommand, boo
                 });
 
                 // Send email notifications outside the transaction (non-critical)
-                var syncedOrders = await _context.OrderHeaders
-                    .Include(o => o.User)
-                    .Include(o => o.OrderItems)
-                    .Where(o => orderIds.Contains(o.Id))
-                    .ToListAsync(ct);
-
-                foreach (var order in syncedOrders)
+                if (ordersToNotify.Any())
                 {
-                    await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
-                        order, order.User, _emailTemplateService, _logger, ct);
+                    var syncedOrders = await _context.OrderHeaders
+                        .Include(o => o.User)
+                        .Include(o => o.OrderItems)
+                        .Where(o => ordersToNotify.Contains(o.Id))
+                        .ToListAsync(ct);
 
-                    try
+                    foreach (var order in syncedOrders)
                     {
-                        await decorativeplant_be.Application.Common.NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Staff notify failed for Order {OrderCode} during sync", order.OrderCode);
+                        await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
+                            order, order.User, _emailTemplateService, _logger, ct);
+
+                        try
+                        {
+                            await decorativeplant_be.Application.Common.NewOrderForStaffNotifier.NotifyAsync(order, _context, _emailService, _logger, _orderAssignment, ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Staff notify failed for Order {OrderCode} during sync", order.OrderCode);
+                        }
                     }
                 }
 
@@ -801,7 +845,7 @@ public class ConfirmCodReceivedCommandHandler : IRequestHandler<ConfirmCodReceiv
         payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
 
         // Sync to OrderHeader.Notes so the Order summary shows "Paid" badge correctly
-        var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId }, ct);
+        var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId! }, ct);
         if (order != null)
         {
             var notesObj = new Dictionary<string, object?>();
@@ -888,7 +932,7 @@ public class MarkRefundedCommandHandler : IRequestHandler<MarkRefundedCommand, P
         payment.Details = JsonDocument.Parse(JsonSerializer.Serialize(details));
 
         // Sync refunded status to OrderHeader.Notes
-        var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId }, ct);
+        var order = await _context.OrderHeaders.FindAsync(new object[] { payment.OrderId! }, ct);
         if (order != null)
         {
             var notesObj = new Dictionary<string, object?>();

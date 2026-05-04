@@ -54,7 +54,8 @@ public class PayOSService : IPayOSService
             CheckoutUrl = result.checkoutUrl,
             QrCode = result.qrCode,
             PaymentLinkId = result.paymentLinkId,
-            Status = result.status
+            Status = result.status,
+            ExpireAt = paymentData.expiredAt!.Value
         };
     }
 

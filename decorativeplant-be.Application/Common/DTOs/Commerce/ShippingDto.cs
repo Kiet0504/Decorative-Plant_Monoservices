@@ -66,6 +66,8 @@ public class GhnTrackingResponse
     public string? Carrier { get; set; }
     public string? BranchId { get; set; }
     public string? Status { get; set; }
+    public string? OriginAddress { get; set; }
+    public string? DestinationAddress { get; set; }
     public string? ExpectedDeliveryTime { get; set; }
     public List<GhnTrackingLog> Logs { get; set; } = new();
 }
