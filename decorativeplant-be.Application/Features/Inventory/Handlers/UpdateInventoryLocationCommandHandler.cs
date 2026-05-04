@@ -40,6 +40,7 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
             description = request.Description,
             capacity = request.Capacity,
             environment_type = request.EnvironmentType?.Trim(),
+            target_growth_stage = request.TargetGrowthStage,
             position_x = request.PositionX,
             position_y = request.PositionY
         };
@@ -60,6 +61,7 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
             Description = request.Description,
             Capacity = request.Capacity,
             EnvironmentType = request.EnvironmentType,
+            TargetGrowthStage = request.TargetGrowthStage,
             PositionX = request.PositionX,
             PositionY = request.PositionY
         };

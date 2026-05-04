@@ -14,6 +14,7 @@ public class CreateInventoryLocationCommand : IRequest<InventoryLocationDto>
     public string? Description { get; set; }
     public int? Capacity { get; set; }
     public string? EnvironmentType { get; set; }
+    public string? TargetGrowthStage { get; set; }
     public double? PositionX { get; set; }
     public double? PositionY { get; set; }
 }

@@ -74,6 +74,7 @@ public class GetInventoryLocationsQueryHandler : IRequestHandler<GetInventoryLoc
                             l.Taxonomy.ScientificName
                         ) : null,
                         EnvironmentType = (isObject && details!.Value.TryGetProperty("environment_type", out var env) && env.ValueKind == JsonValueKind.String) ? env.GetString() : null,
+                        TargetGrowthStage = (isObject && (details!.Value.TryGetProperty("target_growth_stage", out var tgs) || details!.Value.TryGetProperty("targetGrowthStage", out tgs)) && tgs.ValueKind == JsonValueKind.String) ? tgs.GetString() : null,
                         PositionX = (isObject && details!.Value.TryGetProperty("position_x", out var posX) && posX.ValueKind == JsonValueKind.Number && posX.TryGetDouble(out var posXVal)) ? posXVal : null,
                         PositionY = (isObject && details!.Value.TryGetProperty("position_y", out var posY) && posY.ValueKind == JsonValueKind.Number && posY.TryGetDouble(out var posYVal)) ? posYVal : null,
                         HostedBatches = l.BatchStocks

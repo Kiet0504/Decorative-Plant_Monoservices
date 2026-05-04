@@ -22,6 +22,7 @@ public class InventoryLocationDto
         ? Math.Max(0, Capacity.Value - CurrentOccupancy.Value)
         : Capacity;
     public string? EnvironmentType { get; set; }
+    public string? TargetGrowthStage { get; set; }
     public double? PositionX { get; set; }
     public double? PositionY { get; set; }
     public List<HostedBatchPreviewDto> HostedBatches { get; set; } = new();

@@ -25,6 +25,7 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
             description = request.Description,
             capacity = request.Capacity,
             environment_type = request.EnvironmentType?.Trim(),
+            target_growth_stage = request.TargetGrowthStage,
             position_x = request.PositionX ?? 1,
             position_y = request.PositionY ?? 1
         };
@@ -57,6 +58,7 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
             Description = request.Description,
             Capacity = request.Capacity,
             EnvironmentType = request.EnvironmentType,
+            TargetGrowthStage = request.TargetGrowthStage,
             PositionX = request.PositionX,
             PositionY = request.PositionY
         };
