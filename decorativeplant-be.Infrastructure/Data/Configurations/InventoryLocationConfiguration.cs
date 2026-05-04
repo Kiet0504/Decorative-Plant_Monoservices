@@ -16,6 +16,7 @@ public class InventoryLocationConfiguration : IEntityTypeConfiguration<Inventory
         builder.Property(i => i.Type).HasMaxLength(50);
         builder.Property(i => i.Details).HasColumnType("jsonb").HasConversion(JsonDocumentConverter.Instance);
         builder.HasOne(i => i.Branch).WithMany(b => b.InventoryLocations).HasForeignKey(i => i.BranchId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(i => i.Taxonomy).WithMany().HasForeignKey(i => i.TaxonomyId).OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(i => i.ParentLocation).WithMany(i => i.ChildLocations).HasForeignKey(i => i.ParentLocationId).OnDelete(DeleteBehavior.SetNull);
     }
 }

@@ -7,12 +7,14 @@ public class CreateInventoryLocationCommand : IRequest<InventoryLocationDto>
 {
     public Guid? BranchId { get; set; }
     public Guid? ParentLocationId { get; set; }
+    public Guid? TaxonomyId { get; set; }
     public string Code { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string Type { get; set; } = "Shelf"; // Default to Shelf
     public string? Description { get; set; }
     public int? Capacity { get; set; }
     public string? EnvironmentType { get; set; }
+    public string? TargetGrowthStage { get; set; }
     public double? PositionX { get; set; }
     public double? PositionY { get; set; }
 }

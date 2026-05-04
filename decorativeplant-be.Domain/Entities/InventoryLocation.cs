@@ -10,12 +10,14 @@ public class InventoryLocation
     public Guid Id { get; set; }
     public Guid? BranchId { get; set; }
     public Guid? ParentLocationId { get; set; }
+    public Guid? TaxonomyId { get; set; }
     public string? Code { get; set; }
     public string? Name { get; set; }
     public string? Type { get; set; }
     public JsonDocument? Details { get; set; }
 
     public Branch? Branch { get; set; }
+    public PlantTaxonomy? Taxonomy { get; set; }
     public InventoryLocation? ParentLocation { get; set; }
     public ICollection<InventoryLocation> ChildLocations { get; set; } = new List<InventoryLocation>();
     public ICollection<BatchStock> BatchStocks { get; set; } = new List<BatchStock>();

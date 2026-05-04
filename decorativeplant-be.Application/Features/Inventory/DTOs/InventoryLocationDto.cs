@@ -7,6 +7,8 @@ public class InventoryLocationDto
     public Guid Id { get; set; }
     public Guid? BranchId { get; set; }
     public Guid? ParentLocationId { get; set; }
+    public Guid? TaxonomyId { get; set; }
+    public string? SpeciesName { get; set; }
     public string? Code { get; set; }
     public string? Name { get; set; }
     public string? Type { get; set; } // e.g. Warehouse, Zone, Shelf
@@ -20,6 +22,7 @@ public class InventoryLocationDto
         ? Math.Max(0, Capacity.Value - CurrentOccupancy.Value)
         : Capacity;
     public string? EnvironmentType { get; set; }
+    public string? TargetGrowthStage { get; set; }
     public double? PositionX { get; set; }
     public double? PositionY { get; set; }
     public List<HostedBatchPreviewDto> HostedBatches { get; set; } = new();

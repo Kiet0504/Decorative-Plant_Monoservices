@@ -25,6 +25,7 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
             description = request.Description,
             capacity = request.Capacity,
             environment_type = request.EnvironmentType?.Trim(),
+            target_growth_stage = request.TargetGrowthStage,
             position_x = request.PositionX ?? 1,
             position_y = request.PositionY ?? 1
         };
@@ -34,6 +35,7 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
             Id = Guid.NewGuid(),
             BranchId = request.BranchId,
             ParentLocationId = request.ParentLocationId,
+            TaxonomyId = request.TaxonomyId,
             Code = request.Code,
             Name = request.Name,
             Type = request.Type,
@@ -49,12 +51,14 @@ public class CreateInventoryLocationCommandHandler : IRequestHandler<CreateInven
             Id = entity.Id,
             BranchId = entity.BranchId,
             ParentLocationId = entity.ParentLocationId,
+            TaxonomyId = entity.TaxonomyId,
             Code = entity.Code,
             Name = entity.Name,
             Type = entity.Type,
             Description = request.Description,
             Capacity = request.Capacity,
             EnvironmentType = request.EnvironmentType,
+            TargetGrowthStage = request.TargetGrowthStage,
             PositionX = request.PositionX,
             PositionY = request.PositionY
         };

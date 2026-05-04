@@ -30,6 +30,7 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
         }
 
         location.ParentLocationId = request.ParentLocationId;
+        location.TaxonomyId = request.TaxonomyId;
         location.Code = request.Code;
         location.Name = request.Name;
         location.Type = request.Type;
@@ -39,6 +40,7 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
             description = request.Description,
             capacity = request.Capacity,
             environment_type = request.EnvironmentType?.Trim(),
+            target_growth_stage = request.TargetGrowthStage,
             position_x = request.PositionX,
             position_y = request.PositionY
         };
@@ -52,12 +54,14 @@ public class UpdateInventoryLocationCommandHandler : IRequestHandler<UpdateInven
             Id = location.Id,
             BranchId = location.BranchId,
             ParentLocationId = location.ParentLocationId,
+            TaxonomyId = location.TaxonomyId,
             Code = location.Code,
             Name = location.Name,
             Type = location.Type,
             Description = request.Description,
             Capacity = request.Capacity,
             EnvironmentType = request.EnvironmentType,
+            TargetGrowthStage = request.TargetGrowthStage,
             PositionX = request.PositionX,
             PositionY = request.PositionY
         };
