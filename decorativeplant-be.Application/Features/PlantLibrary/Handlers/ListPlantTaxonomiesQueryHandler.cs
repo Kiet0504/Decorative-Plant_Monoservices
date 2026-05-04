@@ -25,7 +25,7 @@ public class ListPlantTaxonomiesQueryHandler : IRequestHandler<ListPlantTaxonomi
         var categoryRepo = _repositoryFactory.CreateRepository<PlantCategory>();
 
         // We use IApplicationDbContext directly for complex taxonomies filtering (to support OnlyWithActiveListings)
-        var q = _context.PlantTaxonomies.AsQueryable();
+        var q = _context.PlantTaxonomies.Include(x => x.Category).AsQueryable();
 
         if (request.CategoryId.HasValue)
         {
@@ -65,20 +65,12 @@ public class ListPlantTaxonomiesQueryHandler : IRequestHandler<ListPlantTaxonomi
 
         var totalCount = await q.CountAsync(cancellationToken);
         var items = await q
+            .OrderBy(x => x.ScientificName)
             .Skip((request.Page - 1) * request.PageSize)
             .Take(request.PageSize)
             .ToListAsync(cancellationToken); 
         
         var pagedItems = items;
-
-        // Populate Categories for display
-        foreach(var item in pagedItems)
-        {
-            if (item.CategoryId.HasValue && item.Category == null)
-            {
-                item.Category = await categoryRepo.GetByIdAsync(item.CategoryId.Value, cancellationToken);
-            }
-        }
 
         var dtos = pagedItems.Select(PlantTaxonomyMapper.ToSummaryDto).ToList();
 

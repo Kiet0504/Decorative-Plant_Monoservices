@@ -285,6 +285,7 @@ public class GetShippingZonesHandler : IRequestHandler<GetShippingZonesQuery, Pa
         var total = await query.CountAsync(ct);
 
         var list = await query
+            .OrderByDescending(z => z.Name)
             .Skip((q.Page - 1) * q.PageSize)
             .Take(q.PageSize)
             .ToListAsync(ct);

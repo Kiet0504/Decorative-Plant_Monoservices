@@ -133,30 +133,50 @@ public class ListPlantBatchesQueryHandler : IRequestHandler<ListPlantBatchesQuer
             .Take(request.PageSize)
             .ToList();
 
-        // Populate Taxonomy Name for display
-        var taxRepo = _repositoryFactory.CreateRepository<PlantTaxonomy>();
+        // 1. Collect IDs for batch fetching
+        var taxonomyIds = pagedItems.Where(i => i.TaxonomyId.HasValue && i.Taxonomy == null).Select(i => i.TaxonomyId!.Value).Distinct().ToList();
+        var branchIds = pagedItems.Where(i => i.BranchId.HasValue && i.Branch == null).Select(i => i.BranchId!.Value).Distinct().ToList();
+        var batchIds = pagedItems.Select(i => i.Id).ToList();
+
+        // 2. Batch fetch related data
+        var taxonomies = taxonomyIds.Any() 
+            ? await _context.PlantTaxonomies.Include(t => t.Category).Where(t => taxonomyIds.Contains(t.Id)).ToDictionaryAsync(t => t.Id, cancellationToken)
+            : new Dictionary<Guid, PlantTaxonomy>();
+
+        var branches = branchIds.Any()
+            ? await _context.Branches.Where(b => branchIds.Contains(b.Id)).ToDictionaryAsync(b => b.Id, cancellationToken)
+            : new Dictionary<Guid, decorativeplant_be.Domain.Entities.Branch>();
+
+        var allBatchStocks = await _context.BatchStocks
+            .Include(bs => bs.Location)
+            .Where(bs => batchIds.Contains(bs.BatchId ?? Guid.Empty))
+            .ToListAsync(cancellationToken);
+
+        var stocksByBatch = allBatchStocks.GroupBy(bs => bs.BatchId).ToDictionary(g => g.Key, g => g.ToList());
+
+        // 3. Assign fetched data back to items
         foreach (var item in pagedItems)
         {
-            if (item.TaxonomyId.HasValue && item.Taxonomy == null)
+            if (item.TaxonomyId.HasValue && item.Taxonomy == null && taxonomies.TryGetValue(item.TaxonomyId.Value, out var tax))
             {
-                item.Taxonomy = await _context.PlantTaxonomies
-                    .Include(t => t.Category)
-                    .FirstOrDefaultAsync(t => t.Id == item.TaxonomyId.Value, cancellationToken);
+                item.Taxonomy = tax;
             }
 
-            if (item.BranchId.HasValue && item.Branch == null)
+            if (item.BranchId.HasValue && item.Branch == null && branches.TryGetValue(item.BranchId.Value, out var branch))
             {
-                var branchRepo = _repositoryFactory.CreateRepository<decorativeplant_be.Domain.Entities.Branch>();
-                item.Branch = await branchRepo.GetByIdAsync(item.BranchId.Value, cancellationToken);
+                item.Branch = branch;
             }
 
-            // Load Stocks for Aggregation
             if (item.BatchStocks == null || !item.BatchStocks.Any())
             {
-                item.BatchStocks = await _context.BatchStocks
-                    .Include(bs => bs.Location)
-                    .Where(bs => bs.BatchId == item.Id)
-                    .ToListAsync(cancellationToken);
+                if (stocksByBatch.TryGetValue(item.Id, out var stocks))
+                {
+                    item.BatchStocks = stocks;
+                }
+                else
+                {
+                    item.BatchStocks = new List<BatchStock>();
+                }
             }
         }
 

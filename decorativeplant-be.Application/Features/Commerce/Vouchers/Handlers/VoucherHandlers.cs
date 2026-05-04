@@ -195,6 +195,7 @@ public class GetVouchersHandler : IRequestHandler<GetVouchersQuery, PagedResult<
         var total = await query.CountAsync(ct);
         
         var items = await query
+            .OrderByDescending(v => v.Code)
             .Skip((q.Page - 1) * q.PageSize)
             .Take(q.PageSize)
             .ToListAsync(ct);
