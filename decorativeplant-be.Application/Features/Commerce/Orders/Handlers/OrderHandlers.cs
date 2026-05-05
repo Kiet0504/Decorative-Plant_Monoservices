@@ -660,22 +660,12 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
 
         order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
 
-        // If order is confirmed, try to create GHN shipments
-        if (normalizedStatus == OrderStatusMachine.Confirmed)
-        {
-            await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
-        }
-        else if (normalizedStatus == OrderStatusMachine.Processing)
-        {
-            // Retry: Confirm → GHN can fail silently (carrier API); Pack step can recover before Hand to GHN.
-            var hasShipments = order.Notes?.RootElement.TryGetProperty("shipments", out var shEl) == true
-                && shEl.ValueKind == JsonValueKind.Array
-                && shEl.GetArrayLength() > 0;
-            if (!hasShipments && OrderTypeInfoHelper.IsDeliveryFulfillment(order))
-            {
-                await GhnOrderHelper.TryCreateGhnOrderAsync(order, _shippingService, _logger);
-            }
-        }
+        // GHN shipment is intentionally NOT created here. Creating the GHN order at
+        // `confirmed` causes GHN to immediately report `ready_to_pick`, which the webhook
+        // maps to `processing` and silently bumps the order past `confirmed` before the
+        // staff has packed anything. The handoff is now driven explicitly by the
+        // "Hand to GHN" action in the fulfillment UI (POST /shipping). Pack step
+        // (`processing`) just records packing evidence; no carrier call.
 
         await _context.SaveChangesAsync(ct);
 
