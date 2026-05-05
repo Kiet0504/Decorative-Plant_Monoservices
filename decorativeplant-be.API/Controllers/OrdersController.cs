@@ -1032,19 +1032,6 @@ public class OrdersController : BaseController
         //    (b) Mapped status equals current order status → append nothing (no duplicate history entry).
         else if (!string.Equals(order.Status, mapped, StringComparison.OrdinalIgnoreCase))
         {
-            // Guard: GHN sends ready_to_pick/picking (→ processing) immediately after order
-            // creation, but we've already set the order to shipping when handing off to GHN.
-            // Do NOT downgrade shipping→processing — only update the Shipping.Status row.
-            if (mapped == "processing" &&
-                (order.Status is "shipping" or "shipped" or "in_transit" or "delivered" or "completed"))
-            {
-                logger.LogInformation(
-                    "GHN webhook: skipping processing downgrade for order {OrderCode} (current: {Status}, ghnStatus: {GhnStatus}).",
-                    order.OrderCode, order.Status, payload.Status);
-            }
-            else
-            {
-
             var wasTerminalBefore = decorativeplant_be.Application.Features.Commerce.Orders
                 .OrderStatusMachine.IsTerminal(order.Status);
 
@@ -1139,8 +1126,6 @@ public class OrdersController : BaseController
                     }
                 }
             }
-
-            } // end else (not a processing downgrade)
         }
 
         await context.SaveChangesAsync(CancellationToken.None);
