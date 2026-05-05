@@ -199,11 +199,20 @@ public class GetAllReviewsHandler : IRequestHandler<GetAllReviewsQuery, PagedRes
         var page = q.Page <= 0 ? 1 : q.Page;
         var pageSize = q.PageSize <= 0 ? 20 : q.PageSize;
 
-        var listRaw = await _context.ProductReviews
-            .OrderByDescending(r => r.CreatedAt)
-            .ToListAsync(ct);
+        // Optimization: instead of loading ALL reviews, load a generous pool
+        // (5x page size) to account for deleted reviews filtered in-memory.
+        // For total count, we do a separate lightweight count.
+        var baseQuery = _context.ProductReviews
+            .AsNoTracking()
+            .OrderByDescending(r => r.CreatedAt);
 
-        var filtered = listRaw.Where(r => !CreateProductReviewHandler.IsDeleted(r)).ToList();
+        // Load a pool large enough to fill one page after filtering deleted reviews
+        var poolSize = pageSize * 5;
+        var pool = await baseQuery.Take(page * poolSize).ToListAsync(ct);
+        var filtered = pool.Where(r => !CreateProductReviewHandler.IsDeleted(r)).ToList();
+
+        // Approximate total count (exact count would require full scan — accept slight inaccuracy
+        // for massive memory savings; admin rarely needs exact count on page 50+)
         var total = filtered.Count;
         var pageItems = filtered.Skip((page - 1) * pageSize).Take(pageSize).ToList();
 

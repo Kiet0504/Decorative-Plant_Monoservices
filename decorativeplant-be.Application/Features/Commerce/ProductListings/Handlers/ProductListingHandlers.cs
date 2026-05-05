@@ -372,10 +372,13 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
             var normalizedTitle = currentTitle?.Trim().ToLowerInvariant();
 
             // Find all other listings for the same species
-            var otherListings = await _context.ProductListings
+            // Optimize: filter by TaxonomyId at DB level when available to avoid loading entire table
+            var otherQuery = _context.ProductListings
                 .Include(x => x.Batch)
-                .Where(x => x.Id != entity.Id)
-                .ToListAsync(ct);
+                .Where(x => x.Id != entity.Id);
+            if (taxonomyId.HasValue)
+                otherQuery = otherQuery.Where(x => x.Batch != null && x.Batch.TaxonomyId == taxonomyId.Value);
+            var otherListings = await otherQuery.ToListAsync(ct);
 
             var targets = otherListings.Where(x => 
             {
@@ -497,6 +500,7 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
     {
         // 1. Initial query with necessary includes
         var q = _context.ProductListings
+            .AsNoTracking()
             .Include(x => x.Batch)
                 .ThenInclude(b => b!.BatchStocks)
                     .ThenInclude(bs => bs.Location)
@@ -518,9 +522,87 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             }
         }
 
-        // 2. Fetch all relevant entries for aggregation
-        // Note: We don't filter by BranchId in SQL yet if we want to show 'Global' info 
-        // BUT if the query.BranchId is set, the customer only wants to see what's available AT that branch.
+        // --- FAST PATH: Non-grouped queries (Admin panel, AI Chat) ---
+        // When not grouping by species, we can paginate at DB level for common cases,
+        // avoiding loading the entire ProductListings table into memory.
+        if (!query.GroupBySpecies)
+        {
+            // Apply BranchId filter at DB level
+            if (query.BranchId.HasValue)
+                q = q.Where(x => x.BranchId == query.BranchId.Value);
+
+            // Case A: status=all, no search → full DB-level pagination (Admin default view)
+            if (query.Status == "all" && string.IsNullOrEmpty(query.Search))
+            {
+                var dbTotalCount = await q.CountAsync(ct);
+                var dbSorted = q.OrderByDescending(x => x.CreatedAt);
+                var dbPaged = await dbSorted
+                    .Skip((query.Page - 1) * query.PageSize)
+                    .Take(query.PageSize)
+                    .ToListAsync(ct);
+                var pagedMapped = dbPaged.Select(CreateProductListingHandler.MapToResponse).ToList();
+                return new PagedResult<ProductListingResponse>
+                {
+                    Items = pagedMapped,
+                    TotalCount = dbTotalCount,
+                    Page = query.Page,
+                    PageSize = query.PageSize
+                };
+            }
+
+            // Case B: has search or specific status → load, filter in memory, then paginate
+            // Still faster than grouped path because we skip the GroupBySpecies aggregation.
+            var nonGroupedItems = await q.ToListAsync(ct);
+            var nonGroupedMapped = nonGroupedItems.Select(CreateProductListingHandler.MapToResponse).ToList();
+
+            // Status filter
+            if (!string.IsNullOrEmpty(query.Status) && query.Status != "all" && query.Status != "active")
+                nonGroupedMapped = nonGroupedMapped.Where(x => x.Status == query.Status).ToList();
+
+            if (query.Status != "all")
+            {
+                nonGroupedMapped = nonGroupedMapped
+                    .Where(p => p.Status == "active" || p.Status == "published")
+                    .Where(p => decimal.TryParse(p.Price ?? "0", out var pr) && pr > 0)
+                    .Where(p => p.StockQuantity > 0)
+                    .Where(p => p.Visibility == "public")
+                    .ToList();
+            }
+
+            // Search
+            if (!string.IsNullOrEmpty(query.Search))
+            {
+                var searchLower = query.Search.Trim().ToLowerInvariant();
+                nonGroupedMapped = nonGroupedMapped.Where(p =>
+                    (p.Title ?? "").ToLowerInvariant().Contains(searchLower) ||
+                    (p.ScientificName ?? "").ToLowerInvariant().Contains(searchLower)
+                ).ToList();
+            }
+
+            // Sort
+            var sortBy = query.SortBy?.ToLower();
+            var desc = query.SortOrder?.ToLower() == "desc";
+            nonGroupedMapped = sortBy switch
+            {
+                "inventory" => desc ? nonGroupedMapped.OrderByDescending(x => x.StockQuantity).ToList() : nonGroupedMapped.OrderBy(x => x.StockQuantity).ToList(),
+                "price" => desc ? nonGroupedMapped.OrderByDescending(x => ParsePrice(x.Price)).ToList() : nonGroupedMapped.OrderBy(x => ParsePrice(x.Price)).ToList(),
+                "createdat" => desc ? nonGroupedMapped.OrderByDescending(x => x.CreatedAt).ToList() : nonGroupedMapped.OrderBy(x => x.CreatedAt).ToList(),
+                _ => nonGroupedMapped.OrderByDescending(x => x.CreatedAt).ToList()
+            };
+
+            var ngTotal = nonGroupedMapped.Count;
+            var ngPaged = nonGroupedMapped.Skip((query.Page - 1) * query.PageSize).Take(query.PageSize).ToList();
+            return new PagedResult<ProductListingResponse>
+            {
+                Items = ngPaged,
+                TotalCount = ngTotal,
+                Page = query.Page,
+                PageSize = query.PageSize
+            };
+        }
+
+        // --- GROUPED PATH: GroupBySpecies = true (Shop frontend, Room Scan, AI recommendations) ---
+        // Must load all to aggregate across branches. AsNoTracking() above already reduces memory.
 
         var allListings = await q.ToListAsync(ct);
         
@@ -542,13 +624,8 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             mapped = mapped.Where(x => x.Status == query.Status).ToList();
         }
 
-        // 5. Condition Grouping or Individual View
-        List<ProductListingResponse> finalResult;
-
-        if (query.GroupBySpecies)
-        {
-            // Group by Species (Normalized Title + Scientific Name)
-            finalResult = mapped
+        // 5. Grouped View (GroupBySpecies is always true here; non-grouped returned early)
+        var finalResult = mapped
                 .GroupBy(p => (p.ScientificName ?? p.Title ?? "").Trim().ToLowerInvariant())
                 .Select(g =>
                 {
@@ -619,30 +696,6 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
                 // Filter out private/hidden items for customers
                 .Where(p => query.Status == "all" || p.Visibility == "public")
                 .ToList();
-        }
-        else
-        {
-            // Individual View (No grouping) - used for Admin management
-            finalResult = mapped;
-
-            // Apply branch filter if provided
-            if (query.BranchId.HasValue)
-            {
-                finalResult = finalResult.Where(x => x.BranchId == query.BranchId.Value).ToList();
-            }
-
-            // --- NEW: Safety Filtering for non-grouped view for customers ---
-            if (query.Status != "all")
-            {
-                // Filter out draft/private items unless 'all' is explicitly requested (usually by staff)
-                finalResult = finalResult
-                    .Where(p => p.Status == "active" || p.Status == "published")
-                    .Where(p => decimal.TryParse(p.Price ?? "0", out var pr) && pr > 0)
-                    .Where(p => p.StockQuantity > 0)
-                    .Where(p => p.Visibility == "public")
-                    .ToList();
-            }
-        }
 
         // 6. Post-mapping Search Filter
         if (!string.IsNullOrEmpty(query.Search))
@@ -776,6 +829,7 @@ public class GetProductListingByIdHandler : IRequestHandler<GetProductListingByI
         var taxonomyId = entity.Batch?.TaxonomyId;
 
         var allOthers = await _context.ProductListings
+            .AsNoTracking()
             .Include(x => x.Batch)
                 .ThenInclude(b => b!.BatchStocks)
                     .ThenInclude(bs => bs.Location)
