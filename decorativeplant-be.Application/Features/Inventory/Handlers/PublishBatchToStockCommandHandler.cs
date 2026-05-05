@@ -48,6 +48,13 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                 throw new BadRequestException($"Only healthy plants can be sent to sales. Current status: {health}");
         }
 
+        if (batch.Specs != null && batch.Specs.RootElement.TryGetProperty("maturity_stage", out var stageProp))
+        {
+            var stage = stageProp.GetString()?.ToLower();
+            if (stage != "stable")
+                throw new BadRequestException($"Only plants in the 'stable' stage can be sent to sales. Current stage: {stage}");
+        }
+
         if (request.Quantity <= 0)
             throw new BadRequestException("Quantity must be greater than zero.");
 
