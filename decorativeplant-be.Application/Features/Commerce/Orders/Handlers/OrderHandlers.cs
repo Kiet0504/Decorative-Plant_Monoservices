@@ -555,6 +555,12 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             response.PaymentStatus = root.TryGetProperty("payment_status", out var ps) ? ps.GetString() : null;
             response.TrackingCode = root.TryGetProperty("tracking_code", out var tc) ? tc.GetString() : null;
             response.CarrierName = root.TryGetProperty("carrier_name", out var cn2) ? cn2.GetString() : null;
+            if (root.TryGetProperty("cod_override", out var co))
+            {
+                response.CodOverride = co.ValueKind == JsonValueKind.Number
+                    ? co.GetRawText()
+                    : co.GetString();
+            }
             if (root.TryGetProperty("evidence_images", out var imagesElement) && imagesElement.ValueKind == JsonValueKind.Array)
             {
                 response.EvidenceImageUrls = imagesElement.EnumerateArray()

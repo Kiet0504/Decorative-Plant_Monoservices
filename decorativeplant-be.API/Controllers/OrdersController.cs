@@ -586,6 +586,30 @@ public class OrdersController : BaseController
 
         var ok = await shippingService.UpdateCodAsync(shipping.TrackingCode, request.CodAmount);
         if (!ok) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to update COD amount on GHN."));
+
+        // Persist the override on the order so the UI can show "original → new" without
+        // overwriting the historical Financials.Total. Only the cod_override key is touched;
+        // every other note field is preserved.
+        var notes = new Dictionary<string, object?>();
+        if (order.Notes != null)
+        {
+            foreach (var p in order.Notes.RootElement.EnumerateObject())
+            {
+                notes[p.Name] = p.Value.ValueKind switch
+                {
+                    JsonValueKind.String => p.Value.GetString(),
+                    JsonValueKind.Number => p.Value.TryGetInt64(out var l) ? l : p.Value.GetDouble(),
+                    JsonValueKind.True   => true,
+                    JsonValueKind.False  => false,
+                    JsonValueKind.Null   => null,
+                    _                    => JsonSerializer.Deserialize<object?>(p.Value.GetRawText()),
+                };
+            }
+        }
+        notes["cod_override"] = request.CodAmount.ToString();
+        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+        await context.SaveChangesAsync(default);
+
         return Ok(ApiResponse<object>.SuccessResponse(new { codAmount = request.CodAmount }, "COD amount updated successfully."));
     }
 
@@ -1055,8 +1079,20 @@ public class OrdersController : BaseController
                             && EF.Functions.JsonContains(p.Details, "{\"method\":\"cod\",\"status\":\"success\"}"));
                     if (!alreadyPaid)
                     {
-                        var totalStr = order.Financials?.RootElement.TryGetProperty("total", out var tot) == true
-                            ? tot.GetString() ?? "0" : "0";
+                        // Prefer cod_override (= what staff updated on GHN) so the recorded
+                        // payment amount matches what shipper actually collected.
+                        string totalStr = "0";
+                        if (order.Notes != null
+                            && order.Notes.RootElement.TryGetProperty("cod_override", out var coEl))
+                        {
+                            totalStr = coEl.ValueKind == JsonValueKind.String
+                                ? coEl.GetString() ?? "0"
+                                : coEl.GetRawText();
+                        }
+                        else if (order.Financials?.RootElement.TryGetProperty("total", out var tot) == true)
+                        {
+                            totalStr = tot.GetString() ?? "0";
+                        }
                         var codTx = new PaymentTransaction
                         {
                             Id = Guid.NewGuid(),

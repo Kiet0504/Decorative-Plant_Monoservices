@@ -99,6 +99,9 @@ public class OrderResponse
     public Guid? AssignedStaffId { get; set; }
     public string? AssignedStaffName { get; set; }
     public List<string>? EvidenceImageUrls { get; set; }
+    // Set when staff edits the COD amount on GHN after order creation. The original
+    // total (Financials.Total) is preserved so the UI can show old → new.
+    public string? CodOverride { get; set; }
     public List<OrderItemResponse> Items { get; set; } = new();
 }
 
