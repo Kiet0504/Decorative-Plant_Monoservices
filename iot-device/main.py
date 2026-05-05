@@ -29,6 +29,13 @@ API_URL_INGEST = config.env.get("API_URL", "")
 active_rules = []
 mqtt_client = None
 
+# --- Sensor Failure Tracking ---
+# Track consecutive failure count per sensor key
+# If a sensor returns None for SENSOR_FAIL_THRESHOLD times in a row, send an alert
+SENSOR_FAIL_THRESHOLD = 2
+sensor_fail_counts = {}   # { "temp_sensor": 0, "humidity_sensor": 0, ... }
+sensor_alerted = {}       # { "temp_sensor": False, ... } - avoid alert spam
+
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
@@ -48,7 +55,6 @@ def mqtt_callback(topic, msg):
     print("\n[MQTT] ======== CO LENH MOI ========")
     try:
         raw_msg = msg.decode('utf-8')
-        # print("[MQTT] Raw Payload: " + raw_msg) # Giam bot log de tranh lag
         data = ujson.loads(raw_msg)
         t = topic.decode()
         if t == TOPIC_RULES:
@@ -63,17 +69,19 @@ def mqtt_callback(topic, msg):
         print("[MQTT] Loi callback: ", e)
 
 def send_sensor_data(sensor_data):
-    """Gui du lieu cam bien len server"""
-    gc.collect() # Giai phong RAM truoc khi gui thong tin cam bien
+    """Gui du lieu cam bien len server. Bo qua cam bien bi loi (None)."""
+    gc.collect()
     headers = {
         "Content-Type": "application/json",
         "x-device-secret": config.env.get("DEVICE_SECRET", "")
     }
-    
+
     print("\n[Sensor] Dang gui du lieu len Server...")
     try:
-        # Gui tung thong so va don dep RAM ngay sau moi lan gui (tranh hụt RAM cho MQTT SSL)
+        sent = 0
         for key, value in sensor_data.items():
+            if value is None:
+                continue  # Bo qua cam bien bi loi, khong gui gia tri sai
             payload = {
                 "ComponentKey": key,
                 "Value": str(value),
@@ -82,9 +90,55 @@ def send_sensor_data(sensor_data):
             response = urequests.post(API_URL_INGEST, json=payload, headers=headers)
             response.close()
             gc.collect()
-        print("  OK! Da gui {} thong so.".format(len(sensor_data)))
+            sent += 1
+        print("  OK! Da gui {} thong so.".format(sent))
     except Exception as e:
         print("[Sensor] Loi khi gui du lieu: ", e)
+
+def send_sensor_alert(sensor_key):
+    """Gui canh bao len server khi cam bien bi loi 2 lan lien tiep."""
+    gc.collect()
+    headers = {
+        "Content-Type": "application/json",
+        "x-device-secret": config.env.get("DEVICE_SECRET", "")
+    }
+    payload = {
+        "ComponentKey": sensor_key,
+        "Value": "ERROR",
+        "Timestamp": time.time()
+    }
+    try:
+        print("[Alert] Cam bien {} loi {} lan - Gui canh bao!".format(sensor_key, SENSOR_FAIL_THRESHOLD))
+        response = urequests.post(API_URL_INGEST, json=payload, headers=headers)
+        response.close()
+        gc.collect()
+    except Exception as e:
+        print("[Alert] Loi khi gui canh bao cam bien: ", e)
+
+def check_sensor_failures(sensor_data):
+    """
+    Kiem tra cac cam bien bi loi lien tiep.
+    Neu mot cam bien tra ve None 2 lan lien tiep -> gui canh bao.
+    Neu cam bien phuc hoi -> reset bo dem va trang thai canh bao.
+    """
+    global sensor_fail_counts, sensor_alerted
+
+    for key, value in sensor_data.items():
+        if value is None:
+            # Tang bo dem loi
+            sensor_fail_counts[key] = sensor_fail_counts.get(key, 0) + 1
+            print("[Sensor] {} loi lan thu {}.".format(key, sensor_fail_counts[key]))
+
+            # Neu dat nguong va chua gui canh bao -> gui alert
+            if sensor_fail_counts[key] >= SENSOR_FAIL_THRESHOLD and not sensor_alerted.get(key, False):
+                send_sensor_alert(key)
+                sensor_alerted[key] = True  # Danh dau da gui, tranh spam
+        else:
+            # Cam bien phuc hoi -> reset
+            if sensor_fail_counts.get(key, 0) > 0:
+                print("[Sensor] {} da phuc hoi sau {} lan loi.".format(key, sensor_fail_counts[key]))
+            sensor_fail_counts[key] = 0
+            sensor_alerted[key] = False  # Cho phep gui lai canh bao neu loi tiep
 
 def connect_mqtt():
     global mqtt_client
@@ -105,41 +159,46 @@ def connect_mqtt():
 def main():
     if not connect_wifi():
         time.sleep(5); machine.reset()
-    
+
     if not connect_mqtt():
         time.sleep(5); machine.reset()
 
     last_trigger = 0
     last_ingest = 0
     last_ping = time.time()
-    
+
     while True:
         try:
             # 1. Kiem tra tin nhan MQTT
             mqtt_client.check_msg()
-            
+
             # 2. Gui ping de giữ ket noi (Keep-alive) moi 20s
             if time.time() - last_ping > 20:
                 mqtt_client.ping()
                 last_ping = time.time()
-                
+
             # 3. Xu ly timer thiet bi
             automation.HardwareActions.process_timed_actions()
-            
+
             # 4. Doc va Gui du lieu cam bien moi 15 giay
             if time.time() - last_ingest > 15:
                 # Doc du lieu CAM BIEN THAT
                 sensor_data = sensors.read_all()
+
+                # Kiem tra va canh bao neu cam bien loi lien tiep
+                check_sensor_failures(sensor_data)
+
+                # Chi gui cac cam bien co gia tri hop le (khong gui None)
                 send_sensor_data(sensor_data)
-                
+
                 # Sau khi co data moi thi check Rule luon
                 automation.evaluate_and_run(sensor_data, active_rules, mqtt_client)
-                
+
                 last_ingest = time.time()
                 last_trigger = time.time()
-                
+
             time.sleep(0.5)
-            
+
         except Exception as e:
             print("[Main] Mat ket noi ({}). Dang thu lai...".format(e))
             time.sleep(5)

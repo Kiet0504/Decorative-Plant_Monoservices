@@ -63,6 +63,53 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
         };
 
         await _iotRepository.AddSensorReadingAsync(reading, cancellationToken);
+
+        // --- Sensor Hardware Failure Alert ---
+        // If firmware sends Value="ERROR", it means the sensor hardware failed 2 consecutive reads.
+        // Create an IotAlert (same style as connectivity alert) and skip automation.
+        if (string.Equals(request.Value.ToString(), "ERROR", StringComparison.OrdinalIgnoreCase))
+        {
+            var existingSensorAlert = (await _iotRepository.GetIotAlertsAsync(device.Id, null, cancellationToken))
+                .FirstOrDefault(a => a.ComponentKey == request.ComponentKey && a.ResolutionInfo == null);
+
+            if (existingSensorAlert == null)
+            {
+                var sensorAlert = new IotAlert
+                {
+                    Id = Guid.NewGuid(),
+                    DeviceId = device.Id,
+                    ComponentKey = request.ComponentKey,
+                    AlertInfo = JsonSerializer.SerializeToDocument(new
+                    {
+                        severity = "WARNING",
+                        title = "Sensor Hardware Failure",
+                        message = $"Sensor '{request.ComponentKey}' failed to read for 2 consecutive cycles.",
+                        description = $"The sensor has returned no valid data. It may be disconnected, damaged, or malfunctioning.",
+                        solution = "1. Check the sensor wiring.\n2. Verify sensor power supply.\n3. Replace the sensor if the issue persists.",
+                        lastTriggeredAt = DateTime.UtcNow.ToString("o"),
+                        notificationCount = 1,
+                        lastNotificationAt = DateTime.UtcNow.ToString("o"),
+                        isSensorFailureAlert = true
+                    }),
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                await _iotRepository.CreateIotAlertAsync(sensorAlert, cancellationToken);
+
+                await _publisher.Publish(new decorativeplant_be.Application.Features.IoT.Events.IotAlertTriggeredNotification
+                {
+                    Device = device,
+                    Alert = sensorAlert,
+                    RuleName = "SENSOR MONITOR"
+                }, cancellationToken);
+
+                Console.WriteLine($"[SensorAlert] Hardware failure alert created for component '{request.ComponentKey}' on device {device.Id}");
+            }
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return true; // Skip automation for error readings
+        }
+
         
         // --- Update Activity Log ---
         var activityDict = new Dictionary<string, string>();
