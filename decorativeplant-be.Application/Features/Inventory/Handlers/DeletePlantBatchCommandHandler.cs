@@ -69,15 +69,10 @@ public class DeletePlantBatchCommandHandler : IRequestHandler<DeletePlantBatchCo
         var transfers = await transferRepo.FindAsync(x => x.BatchId == request.Id, cancellationToken);
         foreach (var transfer in transfers) await transferRepo.DeleteAsync(transfer, cancellationToken);
 
-        // Detach Product Listings (preserve storefront products, just unlink from batch)
+        // Delete Product Listings
         var listingRepo = _repositoryFactory.CreateRepository<ProductListing>();
         var listings = await listingRepo.FindAsync(x => x.BatchId == request.Id, cancellationToken);
-        foreach (var listing in listings)
-        {
-            listing.BatchId = null;
-            listing.Batch = null;
-            await listingRepo.UpdateAsync(listing, cancellationToken);
-        }
+        foreach (var listing in listings) await listingRepo.DeleteAsync(listing, cancellationToken);
 
         // 3. FINAL DELETE
         await batchRepo.DeleteAsync(batch, cancellationToken);
