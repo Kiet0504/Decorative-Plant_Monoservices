@@ -52,10 +52,37 @@ public class PendingOrderCleanupJob : BackgroundService
         var expirationTime = DateTime.UtcNow.Subtract(_expirationThreshold);
 
         // Find pending orders older than the threshold
-        var expiredOrders = await context.OrderHeaders
+        var candidateOrders = await context.OrderHeaders
             .Include(o => o.OrderItems)
             .Where(o => o.Status == "pending" && o.CreatedAt <= expirationTime)
             .ToListAsync(cancellationToken);
+
+        // Exclude orders that must never be auto-expired:
+        //   1. COD orders — no online payment required.
+        //   2. Already-paid orders — PayOS webhook confirmed payment but staff
+        //      hasn't confirmed yet. Expiring these would cancel a paid order.
+        var expiredOrders = candidateOrders
+            .Where(o =>
+            {
+                if (o.TypeInfo != null)
+                {
+                    var ti = o.TypeInfo.RootElement;
+                    if (ti.TryGetProperty("payment_method", out var pm) &&
+                        string.Equals(pm.GetString(), "cod", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+
+                if (o.Notes != null)
+                {
+                    var notes = o.Notes.RootElement;
+                    if (notes.TryGetProperty("payment_status", out var ps) &&
+                        string.Equals(ps.GetString(), "paid", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+
+                return true;
+            })
+            .ToList();
 
         if (!expiredOrders.Any())
         {
