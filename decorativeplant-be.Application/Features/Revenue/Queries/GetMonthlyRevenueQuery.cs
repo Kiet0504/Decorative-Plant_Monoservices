@@ -33,12 +33,12 @@ public class GetMonthlyRevenueQueryHandler : IRequestHandler<GetMonthlyRevenueQu
                 .Where(oi => oi.BranchId == branchId && 
                             (oi.Order!.Status == "Paid" || oi.Order!.Status == "Completed" || oi.Order!.Status == "paid" || oi.Order!.Status == "completed") &&
                             oi.Order.CreatedAt >= fromDate && oi.Order.CreatedAt <= toDate)
-                .Select(oi => new { oi.OrderId, oi.Order!.CreatedAt, oi.Pricing, OrderFinancials = oi.Order.Financials })
+                .Select(oi => new { oi.OrderId, oi.Order!.CreatedAt, oi.Pricing, OrderFinancials = oi.Order.Financials, OrderNotes = oi.Order.Notes })
                 .ToListAsync(cancellationToken);
 
             points = items.Select(item => {
                 decimal netRevenue = 0;
-                if (item.Pricing != null && item.Pricing.RootElement.TryGetProperty("subtotal", out var subProp) && 
+                if (item.Pricing != null && item.Pricing.RootElement.TryGetProperty("subtotal", out var subProp) &&
                     decimal.TryParse(subProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var sub))
                 {
                     decimal orderSubtotal = 0;
@@ -52,7 +52,8 @@ public class GetMonthlyRevenueQueryHandler : IRequestHandler<GetMonthlyRevenueQu
                             orderDiscount = od;
                     }
                     decimal itemDiscount = orderSubtotal > 0 ? (sub / orderSubtotal) * orderDiscount : 0;
-                    netRevenue = sub - itemDiscount;
+                    var scale = RevenueAdjustments.CodScaleFactor(item.OrderNotes, item.OrderFinancials);
+                    netRevenue = (sub - itemDiscount) * scale;
                 }
                 return new MonthlyDataPoint { CreatedAt = item.CreatedAt, Revenue = netRevenue, OrderId = item.OrderId ?? Guid.Empty };
             }).ToList();
@@ -62,12 +63,14 @@ public class GetMonthlyRevenueQueryHandler : IRequestHandler<GetMonthlyRevenueQu
             var orders = await _context.OrderHeaders
                 .Where(o => (o.Status == "Paid" || o.Status == "Completed" || o.Status == "paid" || o.Status == "completed")
                          && o.CreatedAt >= fromDate && o.CreatedAt <= toDate)
-                .Select(o => new { o.Id, o.CreatedAt, o.Financials })
+                .Select(o => new { o.Id, o.CreatedAt, o.Financials, o.Notes })
                 .ToListAsync(cancellationToken);
 
             points = orders.Select(o => {
                 decimal rev = 0;
-                if (o.Financials != null && o.Financials.RootElement.TryGetProperty("total", out var totProp) && 
+                var ov = RevenueAdjustments.TryReadCodOverride(o.Notes);
+                if (ov.HasValue) rev = ov.Value;
+                else if (o.Financials != null && o.Financials.RootElement.TryGetProperty("total", out var totProp) &&
                     decimal.TryParse(totProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var tot))
                     rev = tot;
                 return new MonthlyDataPoint { CreatedAt = o.CreatedAt, Revenue = rev, OrderId = o.Id };

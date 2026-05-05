@@ -44,11 +44,12 @@ public class GetBranchRevenueQueryHandler : IRequestHandler<GetBranchRevenueQuer
                 decimal grossRevenue = 0;
                 foreach (var item in g)
                 {
-                    if (item.Pricing != null && 
-                        item.Pricing.RootElement.TryGetProperty("subtotal", out var subProp) && 
+                    if (item.Pricing != null &&
+                        item.Pricing.RootElement.TryGetProperty("subtotal", out var subProp) &&
                         decimal.TryParse(subProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var sub))
                     {
-                        grossRevenue += sub;
+                        var scale = RevenueAdjustments.CodScaleFactor(item.Order?.Notes, item.Order?.Financials);
+                        grossRevenue += sub * scale;
                     }
                 }
 

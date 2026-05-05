@@ -38,19 +38,19 @@ public class GetRevenueSummaryQueryHandler : IRequestHandler<GetRevenueSummaryQu
                 .Where(oi => oi.BranchId == branchId && 
                             (oi.Order!.Status == "Paid" || oi.Order!.Status == "Completed" || oi.Order!.Status == "paid" || oi.Order!.Status == "completed") &&
                             oi.Order.CreatedAt >= fromDate && oi.Order.CreatedAt <= toDate)
-                .Select(oi => new { oi.OrderId, oi.Pricing, OrderFinancials = oi.Order!.Financials })
+                .Select(oi => new { oi.OrderId, oi.Pricing, OrderFinancials = oi.Order!.Financials, OrderNotes = oi.Order!.Notes })
                 .ToListAsync(cancellationToken);
 
             var ordersProcessed = new HashSet<Guid>();
             foreach (var item in items)
             {
-                if (item.Pricing != null && item.Pricing.RootElement.TryGetProperty("subtotal", out var subProp) && 
+                if (item.Pricing != null && item.Pricing.RootElement.TryGetProperty("subtotal", out var subProp) &&
                     decimal.TryParse(subProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var sub))
                 {
                     // Proportional discount calculation
                     decimal orderSubtotal = 0;
                     decimal orderDiscount = 0;
-                    
+
                     if (item.OrderFinancials != null)
                     {
                         var root = item.OrderFinancials.RootElement;
@@ -61,8 +61,11 @@ public class GetRevenueSummaryQueryHandler : IRequestHandler<GetRevenueSummaryQu
                     }
 
                     decimal itemDiscount = orderSubtotal > 0 ? (sub / orderSubtotal) * orderDiscount : 0;
-                    totalDiscount += itemDiscount;
-                    totalOrderRevenue += (sub - itemDiscount);
+                    // If staff edited the COD amount on GHN, scale this item's contribution
+                    // proportionally so reported revenue reflects what shipper actually collected.
+                    var scale = RevenueAdjustments.CodScaleFactor(item.OrderNotes, item.OrderFinancials);
+                    totalDiscount += itemDiscount * scale;
+                    totalOrderRevenue += (sub - itemDiscount) * scale;
                     
                     if (item.OrderId.HasValue && !ordersProcessed.Contains(item.OrderId.Value))
                     {
@@ -78,19 +81,23 @@ public class GetRevenueSummaryQueryHandler : IRequestHandler<GetRevenueSummaryQu
             var orders = await _context.OrderHeaders
                 .Where(o => (o.Status == "Paid" || o.Status == "Completed" || o.Status == "paid" || o.Status == "completed")
                          && o.CreatedAt >= fromDate && o.CreatedAt <= toDate)
-                .Select(o => o.Financials)
+                .Select(o => new { o.Financials, o.Notes })
                 .ToListAsync(cancellationToken);
 
             orderCount = orders.Count;
-            foreach (var financials in orders)
+            foreach (var o in orders)
             {
-                if (financials == null) continue;
-                var root = financials.RootElement;
-                
+                if (o.Financials == null) continue;
+                var root = o.Financials.RootElement;
+
                 if (root.TryGetProperty("discount", out var discProp) && decimal.TryParse(discProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var disc))
                     totalDiscount += disc;
 
-                if (root.TryGetProperty("total", out var totalProp) && decimal.TryParse(totalProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var tot))
+                // Prefer cod_override (= cash shipper actually collected) over the original total.
+                var ov = RevenueAdjustments.TryReadCodOverride(o.Notes);
+                if (ov.HasValue)
+                    totalOrderRevenue += ov.Value;
+                else if (root.TryGetProperty("total", out var totalProp) && decimal.TryParse(totalProp.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var tot))
                     totalOrderRevenue += tot;
             }
         }
