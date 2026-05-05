@@ -82,6 +82,7 @@ public class ProductListingResponse
     public bool Featured { get; set; }
     public int ViewCount { get; set; }
     public int SoldCount { get; set; }
+    public double Rating { get; set; }
     public List<string> Tags { get; set; } = new();
     public List<ProductImageDto> Images { get; set; } = new();
     public DateTime? CreatedAt { get; set; }

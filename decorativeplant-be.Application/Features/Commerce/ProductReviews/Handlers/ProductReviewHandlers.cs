@@ -11,6 +11,27 @@ using decorativeplant_be.Domain.Entities;
 
 namespace decorativeplant_be.Application.Features.Commerce.ProductReviews.Handlers;
 
+/// <summary>
+/// Display name for review author. Treats blank DisplayName as missing so Email is used (C# ?? does not skip "").
+/// </summary>
+internal static class ProductReviewAuthorDisplayName
+{
+    public static string FromDisplayAndEmail(string? displayName, string? email)
+    {
+        var d = displayName?.Trim();
+        if (!string.IsNullOrEmpty(d)) return d;
+
+        var e = email?.Trim();
+        if (!string.IsNullOrEmpty(e))
+        {
+            var at = e.IndexOf('@');
+            return at > 0 ? e[..at] : e;
+        }
+
+        return "Customer";
+    }
+}
+
 public class CreateProductReviewHandler : IRequestHandler<CreateProductReviewCommand, ProductReviewResponse>
 {
     private readonly IApplicationDbContext _context;
@@ -64,7 +85,8 @@ public class CreateProductReviewHandler : IRequestHandler<CreateProductReviewCom
         if (e.Content != null)
         {
             var root = e.Content.RootElement;
-            r.Rating = root.TryGetProperty("rating", out var rt) ? rt.GetInt32() : 0;
+            if (root.TryGetProperty("rating", out var rt) && rt.ValueKind == JsonValueKind.Number)
+                r.Rating = (int)Math.Clamp((int)Math.Round(rt.GetDouble()), 0, 5);
             r.Title = root.TryGetProperty("title", out var t) ? t.GetString() : null;
             r.Comment = root.TryGetProperty("comment", out var c) ? c.GetString() : null;
             r.IsVerified = root.TryGetProperty("is_verified", out var iv) && iv.GetBoolean();
@@ -132,10 +154,34 @@ public class GetReviewsByListingHandler : IRequestHandler<GetReviewsByListingQue
             .Skip((q.Page - 1) * q.PageSize)
             .Take(q.PageSize)
             .ToList();
-            
+
+        var userIds = list.Where(r => r.UserId.HasValue).Select(r => r.UserId!.Value).Distinct().ToList();
+        var users = await _context.UserAccounts
+            .Where(u => userIds.Contains(u.Id))
+            .Select(u => new { u.Id, u.DisplayName, u.Email, u.AvatarUrl })
+            .ToListAsync(ct);
+        var userMap = users.ToDictionary(
+            u => u.Id,
+            u => (
+                Name: ProductReviewAuthorDisplayName.FromDisplayAndEmail(u.DisplayName, u.Email),
+                Email: u.Email,
+                Avatar: u.AvatarUrl));
+
+        var items = list.Select(r =>
+        {
+            var dto = CreateProductReviewHandler.MapToResponse(r);
+            if (r.UserId.HasValue && userMap.TryGetValue(r.UserId.Value, out var u))
+            {
+                dto.UserName = u.Name;
+                dto.UserEmail = u.Email;
+                dto.UserAvatar = u.Avatar;
+            }
+            return dto;
+        }).ToList();
+
         return new PagedResult<ProductReviewResponse>
         {
-            Items = list.Select(CreateProductReviewHandler.MapToResponse).ToList(),
+            Items = items,
             TotalCount = total,
             Page = q.Page,
             PageSize = q.PageSize
@@ -164,9 +210,16 @@ public class GetAllReviewsHandler : IRequestHandler<GetAllReviewsQuery, PagedRes
         var userIds = pageItems.Where(r => r.UserId.HasValue).Select(r => r.UserId!.Value).Distinct().ToList();
         var listingIds = pageItems.Where(r => r.ListingId.HasValue).Select(r => r.ListingId!.Value).Distinct().ToList();
 
-        var userMap = await _context.UserAccounts
+        var userRows = await _context.UserAccounts
             .Where(u => userIds.Contains(u.Id))
-            .ToDictionaryAsync(u => u.Id, u => u.DisplayName ?? u.Email, ct);
+            .Select(u => new { u.Id, u.DisplayName, u.Email, u.AvatarUrl })
+            .ToListAsync(ct);
+        var userMap = userRows.ToDictionary(
+            u => u.Id,
+            u => (
+                Name: ProductReviewAuthorDisplayName.FromDisplayAndEmail(u.DisplayName, u.Email),
+                Email: u.Email,
+                Avatar: u.AvatarUrl));
 
         var listings = await _context.ProductListings
             .Where(p => listingIds.Contains(p.Id))
@@ -181,7 +234,12 @@ public class GetAllReviewsHandler : IRequestHandler<GetAllReviewsQuery, PagedRes
         var items = pageItems.Select(r =>
         {
             var dto = CreateProductReviewHandler.MapToResponse(r);
-            if (r.UserId.HasValue && userMap.TryGetValue(r.UserId.Value, out var userName)) dto.UserName = userName;
+            if (r.UserId.HasValue && userMap.TryGetValue(r.UserId.Value, out var u))
+            {
+                dto.UserName = u.Name;
+                dto.UserEmail = u.Email;
+                dto.UserAvatar = u.Avatar;
+            }
             if (r.ListingId.HasValue && listingMap.TryGetValue(r.ListingId.Value, out var productName)) dto.ProductName = productName;
             return dto;
         }).ToList();
