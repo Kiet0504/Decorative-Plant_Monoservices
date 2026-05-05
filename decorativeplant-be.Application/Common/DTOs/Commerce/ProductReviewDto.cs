@@ -30,6 +30,8 @@ public class ProductReviewResponse
     public List<ReviewImageDto> Images { get; set; } = new();
     public DateTime? CreatedAt { get; set; }
     public string? UserName { get; set; }
+    public string? UserEmail { get; set; }
+    public string? UserAvatar { get; set; }
     public string? ProductName { get; set; }
 }
 

@@ -470,6 +470,22 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
     private readonly IApplicationDbContext _context;
     public GetProductListingsHandler(IApplicationDbContext context) => _context = context;
 
+    private static bool IsDeletedReview(ProductReview review)
+    {
+        if (review.StatusInfo == null) return false;
+        return review.StatusInfo.RootElement.TryGetProperty("status", out var s) && s.GetString() == "deleted";
+    }
+
+    private static double ReadReviewRating(ProductReview review)
+    {
+        if (review.Content == null) return 0;
+        var root = review.Content.RootElement;
+        if (!root.TryGetProperty("rating", out var rt) || rt.ValueKind != JsonValueKind.Number) return 0;
+        var value = rt.GetDouble();
+        if (double.IsNaN(value) || double.IsInfinity(value)) return 0;
+        return Math.Clamp(value, 0, 5);
+    }
+
     private static decimal ParsePrice(string? priceStr)
     {
         if (string.IsNullOrEmpty(priceStr)) return 0;
@@ -663,6 +679,31 @@ public class GetProductListingsHandler : IRequestHandler<GetProductListingsQuery
             .Skip((query.Page - 1) * query.PageSize)
             .Take(query.PageSize)
             .ToList();
+
+        // 8. Attach review rating (used by /products card stars)
+        var listingIds = pagedItems.Select(x => x.Id).Distinct().ToList();
+        if (listingIds.Count > 0)
+        {
+            var reviewRows = await _context.ProductReviews
+                .Where(r => r.ListingId.HasValue && listingIds.Contains(r.ListingId.Value))
+                .ToListAsync(ct);
+
+            var reviewGroups = reviewRows
+                .Where(r => !IsDeletedReview(r))
+                .GroupBy(r => r.ListingId!.Value)
+                .ToDictionary(
+                    g => g.Key,
+                    g =>
+                    {
+                        var ratings = g.Select(ReadReviewRating).Where(x => x > 0).ToList();
+                        return ratings.Count == 0 ? 0 : ratings.Average();
+                    });
+
+            foreach (var item in pagedItems)
+            {
+                item.Rating = reviewGroups.TryGetValue(item.Id, out var avg) ? Math.Round(avg, 1) : 0;
+            }
+        }
 
         return new PagedResult<ProductListingResponse>
         {
