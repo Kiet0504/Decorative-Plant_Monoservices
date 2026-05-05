@@ -5,7 +5,8 @@ namespace decorativeplant_be.Application.Features.Inventory.Commands;
 
 public class RequestStockTransferCommand : IRequest<StockTransferDto>
 {
-    public Guid BatchId { get; set; }
+    public Guid? BatchId { get; set; }
+    public Guid? ListingId { get; set; }
     public Guid FromBranchId { get; set; }
     public Guid ToBranchId { get; set; }
     public Guid FromLocationId { get; set; }
