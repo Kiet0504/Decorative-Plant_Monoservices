@@ -192,9 +192,10 @@ public sealed class GeminiPlacementPreviewGenerator : IAiPlacementPreviewGenerat
         var note = string.IsNullOrWhiteSpace(notes) ? "" : "\nUser notes:\n" + notes.Trim();
         return
             "Edit the provided room photo.\n" +
-            "The image may include on-photo guides: a solid green rectangle and the label \"PLACE PLANT HERE\" marks the exact target region. " +
-            "Place ONE realistic potted houseplant so its pot sits naturally in that marked region (contact with floor/table as appropriate). " +
-            "Align the plant with the guide more strictly than numeric coordinates alone.\n" +
+            "The input is a composite: the room plus rough listing-product thumbnails pasted into dashed/square regions (like the user's playground preview). " +
+            "The green-highlighted region labeled \"PRIMARY — GENERATE HERE\" is the active target for THIS request; replace that pasted thumbnail with ONE fully photorealistic potted plant that matches the shop listing context (species/vibe), correct scale, and natural contact with the floor/table. " +
+            "Remove sticker edges, flat lighting, and white padding from the pasted product cutout in the primary region. " +
+            "Other regions may show similar pasted thumbnails for layout reference—do not duplicate extra plants unless clearly requested in notes.\n" +
             $"Overall style direction: {styleKey}.\n" +
             "Apply this style to the scene in a cohesive way—not only the pot: modest coordinated decor touches are encouraged " +
             "(e.g. cushion tones, a throw, small tabletop objects, subtle wall color harmony, rug hints) while staying photorealistic. " +
