@@ -95,9 +95,16 @@ public class OrderAssignmentService : IOrderAssignmentService
             select new { u.Id, u.DisplayName }
         ).ToListAsync(ct);
 
+        var branchName = await _context.Branches
+            .Where(b => b.Id == branchId.Value)
+            .Select(b => b.Name)
+            .FirstOrDefaultAsync(ct) ?? "(unknown)";
+
         if (staffIds.Count == 0)
         {
-            _logger.LogInformation("OrderAssignmentService: No fulfillment_staff at branch {BranchId}.", branchId);
+            _logger.LogInformation(
+                "OrderAssignmentService: Order {OrderCode} -> branch {BranchName} ({BranchId}). No fulfillment_staff at branch.",
+                order.OrderCode, branchName, branchId);
             return null;
         }
 
@@ -111,17 +118,25 @@ public class OrderAssignmentService : IOrderAssignmentService
             .Select(g => new { StaffId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.StaffId, x => x.Count, ct);
 
-        var candidate = staffIds
+        var ranked = staffIds
             .Select(s => new { s.Id, s.DisplayName, Load = workloads.GetValueOrDefault(s.Id, 0) })
-            .Where(s => s.Load < MaxActiveOrders)
             .OrderBy(s => s.Load)
-            .FirstOrDefault();
+            .ToList();
+
+        var rosterSummary = string.Join(", ",
+            ranked.Select(s => $"{s.DisplayName ?? s.Id.ToString()}={s.Load}/{MaxActiveOrders}{(s.Load < MaxActiveOrders ? "" : "[FULL]")}"));
+
+        _logger.LogInformation(
+            "OrderAssignmentService: Order {OrderCode} -> branch {BranchName} ({BranchId}). Candidates ({Count}): {Roster}. Source={Source}.",
+            order.OrderCode, branchName, branchId, ranked.Count, rosterSummary, assignmentSource);
+
+        var candidate = ranked.FirstOrDefault(s => s.Load < MaxActiveOrders);
 
         if (candidate == null)
         {
             _logger.LogInformation(
-                "OrderAssignmentService: All {Count} staff at branch {BranchId} are at capacity ({Max}). Order {OrderCode} queued ({Source}).",
-                staffIds.Count, branchId, MaxActiveOrders, order.OrderCode, assignmentSource);
+                "OrderAssignmentService: All {Count} staff at branch {BranchName} ({BranchId}) are at capacity ({Max}). Order {OrderCode} queued ({Source}).",
+                ranked.Count, branchName, branchId, MaxActiveOrders, order.OrderCode, assignmentSource);
             return null;
         }
 
@@ -129,8 +144,8 @@ public class OrderAssignmentService : IOrderAssignmentService
         await _context.SaveChangesAsync(ct);
 
         _logger.LogInformation(
-            "OrderAssignmentService: Order {OrderCode} assigned to staff {StaffId} ({Name}) with {Load} active orders ({Source}).",
-            order.OrderCode, candidate.Id, candidate.DisplayName, candidate.Load, assignmentSource);
+            "OrderAssignmentService: Order {OrderCode} -> branch {BranchName} ({BranchId}) ASSIGNED to staff {StaffName} ({StaffId}) with {Load} active orders ({Source}).",
+            order.OrderCode, branchName, branchId, candidate.DisplayName, candidate.Id, candidate.Load, assignmentSource);
 
         return await _context.UserAccounts.FindAsync([candidate.Id], ct);
     }
