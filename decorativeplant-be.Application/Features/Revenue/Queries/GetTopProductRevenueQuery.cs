@@ -36,17 +36,18 @@ public class GetTopProductRevenueQueryHandler : IRequestHandler<GetTopProductRev
         var orderItems = await query.ToListAsync(cancellationToken);
 
         var topProducts = orderItems
-            .GroupBy(oi => oi.ListingId)
+            .GroupBy(oi => {
+                if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var titleProp))
+                    return titleProp.GetString() ?? "Unknown";
+                return "Unknown";
+            })
             .Select(g => {
                 var firstItem = g.First();
                 decimal productRevenue = 0;
                 int unitsSold = 0;
-                string speciesName = "Unknown";
+                string speciesName = g.Key;
                 string unitPrice = "0";
                 string? imageUrl = null;
-
-                if (firstItem.Snapshots != null && firstItem.Snapshots.RootElement.TryGetProperty("title_snapshot", out var titleProp))
-                    speciesName = titleProp.GetString() ?? "Unknown";
 
                 if (firstItem.Pricing != null && firstItem.Pricing.RootElement.TryGetProperty("unit_price", out var upProp))
                     unitPrice = upProp.GetString() ?? "0";
