@@ -74,12 +74,15 @@ public class ShipStockTransferCommandHandler : IRequestHandler<ShipStockTransfer
         var sourceStock = stocks.FirstOrDefault(s => s.Location?.Type == "Sales" || s.Location?.Type == "Storefront") 
                           ?? stocks.FirstOrDefault();
 
+        int? sourceStockSnapshot = null;
+
         if (sourceStock != null && sourceStock.Quantities != null)
         {
             var root = sourceStock.Quantities.RootElement;
             var quantities = JsonSerializer.Deserialize<BatchStockQuantities>(root.GetRawText());
             if (quantities != null)
             {
+                sourceStockSnapshot = quantities.AvailableQuantity;
                 // In this workflow, we deduct directly from Available, Total, and TotalReceived
                 if (quantities.AvailableQuantity < transfer.Quantity)
                 {
@@ -116,15 +119,37 @@ public class ShipStockTransferCommandHandler : IRequestHandler<ShipStockTransfer
             }
         }
 
+        // Take a fresh snapshot of the destination stock before shipping (to record its baseline)
+        var destStockSnapshot = 0;
+        var destBatchId = transfer.BatchId;
+        // Try to find if a listing already exists for this taxonomy at the destination to get the primary batch
+        var existingDestListing = await _context.ProductListings
+            .Include(pl => pl.Batch)
+            .FirstOrDefaultAsync(pl => pl.BranchId == transfer.ToBranchId && pl.Batch != null && pl.Batch.TaxonomyId == (transfer.Batch != null ? transfer.Batch.TaxonomyId : Guid.Empty), cancellationToken);
+        
+        var effectiveDestBatchId = existingDestListing?.BatchId ?? destBatchId;
+        var destBatchStock = await _context.BatchStocks
+            .Where(bs => bs.BatchId == effectiveDestBatchId)
+            .Where(bs => _context.InventoryLocations.Any(l => l.Id == bs.LocationId && l.BranchId == transfer.ToBranchId))
+            .FirstOrDefaultAsync(cancellationToken);
+        
+        if (destBatchStock != null && destBatchStock.Quantities != null)
+        {
+            var dq = JsonSerializer.Deserialize<BatchStockQuantities>(destBatchStock.Quantities.RootElement.GetRawText());
+            destStockSnapshot = dq?.AvailableQuantity ?? 0;
+        }
+
         // Update Transfer
         transfer.Status = "shipped";
         
-        // Update Logistics Info
+        // Update Logistics Info with fresh snapshots
         transfer.LogisticsInfo = InventoryMapper.BuildLogisticsInfo(
             shippedAt: DateTime.UtcNow,
             shippedBy: request.ShippedBy,
             trackingNumber: request.TrackingNumber,
             shippingProvider: request.ShippingProvider,
+            fromStockSnapshot: sourceStockSnapshot,
+            toStockSnapshot: destStockSnapshot,
             existingInfo: transfer.LogisticsInfo
         );
 

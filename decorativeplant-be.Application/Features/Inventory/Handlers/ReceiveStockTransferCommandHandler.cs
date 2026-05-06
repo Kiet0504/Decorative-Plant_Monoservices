@@ -95,6 +95,8 @@ public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTr
         var quantities = JsonSerializer.Deserialize<BatchStockQuantities>(destStock.Quantities!.RootElement.GetRawText()) 
             ?? new BatchStockQuantities();
 
+        int? toStockSnapshot = quantities.AvailableQuantity;
+
         // Add received stock to all indicators
         quantities.Quantity += transfer.Quantity;
         quantities.AvailableQuantity += transfer.Quantity;
@@ -142,6 +144,7 @@ public class ReceiveStockTransferCommandHandler : IRequestHandler<ReceiveStockTr
             receivedAt: DateTime.UtcNow,
             receivedBy: request.ReceivedBy,
             receivingNotes: request.Notes,
+            toStockSnapshot: toStockSnapshot,
             existingInfo: transfer.LogisticsInfo
         );
 
