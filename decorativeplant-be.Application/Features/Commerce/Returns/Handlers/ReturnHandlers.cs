@@ -20,7 +20,7 @@ public class CreateReturnRequestHandler : IRequestHandler<CreateReturnRequestCom
 {
     // Window measured from DeliveredAt. Beyond this, the buyer must contact support — we don't
     // want indefinite return exposure on stock that may have already been restocked/aged out.
-    private const int ReturnWindowDays = 7;
+    private const int ReturnWindowDays = 3;
 
     private readonly IApplicationDbContext _context;
     public CreateReturnRequestHandler(IApplicationDbContext context) => _context = context;
@@ -97,6 +97,12 @@ public class CreateReturnRequestHandler : IRequestHandler<CreateReturnRequestCom
             r.ReturnShippingCode = root.TryGetProperty("return_shipping_code", out var rsc) ? rsc.GetString() : null;
             if (root.TryGetProperty("resolved_at", out var ra) && DateTime.TryParse(ra.GetString(), out var dt))
                 r.ResolvedAt = dt;
+            if (root.TryGetProperty("refund_evidence_images", out var rei) && rei.ValueKind == JsonValueKind.Array)
+                r.RefundEvidenceImageUrls = rei.EnumerateArray()
+                    .Select(el => el.GetString())
+                    .Where(s => s != null)
+                    .Select(s => s!)
+                    .ToList();
         }
 
         if (e.Images?.RootElement.ValueKind == JsonValueKind.Array)
@@ -133,6 +139,17 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
 
         var entity = await _context.ReturnRequests.FirstOrDefaultAsync(r => r.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"Return request {cmd.Id} not found.");
+
+        if (status == "refunded")
+        {
+            if (entity.Status != "approved")
+                throw new BadRequestException(
+                    "Cannot mark as refunded: return request must be approved first.");
+
+            if (cmd.Request.EvidenceImageUrls == null || cmd.Request.EvidenceImageUrls.Count == 0)
+                throw new BadRequestException(
+                    "Cannot mark as refunded: at least one bill/transfer proof image is required.");
+        }
 
         var order = entity.OrderId.HasValue
             ? await _context.OrderHeaders.Include(o => o.OrderItems)
@@ -205,6 +222,10 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
                             "Cannot mark this return as refunded: no completed payment found on the order (likely an unpaid COD). " +
                             "Use 'approved' instead, which restores stock without triggering a payout.");
                     }
+
+                    info["refund_evidence_images"] = cmd.Request.EvidenceImageUrls;
+                    info["refunded_by"] = cmd.ActorUserId?.ToString();
+                    entity.Info = JsonDocument.Parse(JsonSerializer.Serialize(info));
 
                     _context.PaymentTransactions.Add(new PaymentTransaction
                     {

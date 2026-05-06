@@ -14,6 +14,8 @@ public class UpdateReturnStatusRequest
     public string Status { get; set; } = string.Empty;
     public string? ResolutionNote { get; set; }
     public bool CreateGhnReturnOrder { get; set; }
+    /// <summary>Required when Status = "refunded". URLs of bill/transfer proof images.</summary>
+    public List<string>? EvidenceImageUrls { get; set; }
 }
 
 public class ReturnRequestResponse
@@ -28,6 +30,7 @@ public class ReturnRequestResponse
     public string? ResolutionNote { get; set; }
     public string? ReturnShippingCode { get; set; }
     public List<ReturnImageDto> Images { get; set; } = new();
+    public List<string> RefundEvidenceImageUrls { get; set; } = new();
     public DateTime? CreatedAt { get; set; }
     public DateTime? ResolvedAt { get; set; }
 }

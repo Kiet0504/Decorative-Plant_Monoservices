@@ -72,9 +72,27 @@ public class AutoCompleteDeliveredOrdersJob : BackgroundService
 
         if (candidates.Count == 0) return;
 
+        var candidateIds = candidates.Select(o => o.Id).ToHashSet();
+        var ordersWithPendingReturn = (await context.ReturnRequests
+            .Where(r => r.OrderId != null
+                     && candidateIds.Contains(r.OrderId.Value)
+                     && r.Status == "pending")
+            .Select(r => r.OrderId!.Value)
+            .Distinct()
+            .ToListAsync(ct))
+            .ToHashSet();
+
         var auto = 0;
         foreach (var order in candidates)
         {
+            if (ordersWithPendingReturn.Contains(order.Id))
+            {
+                _logger.LogInformation(
+                    "Skip auto-complete for {OrderCode} — pending return request exists.",
+                    order.OrderCode);
+                continue;
+            }
+
             try
             {
                 OrderStatusMachine.Apply(order, OrderStatusMachine.Completed,
