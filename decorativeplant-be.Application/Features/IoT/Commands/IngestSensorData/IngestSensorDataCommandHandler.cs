@@ -47,10 +47,63 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
             infoDict["lastSeenAt"] = nowStr;
             device.DeviceInfo = JsonSerializer.SerializeToDocument(infoDict);
             await _iotRepository.UpdateIotDeviceAsync(device, cancellationToken);
+            
+            // Commit heartbeat immediately so device appears ONLINE even if sensor fails
+            await _unitOfWork.SaveChangesAsync(cancellationToken); 
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[Heartbeat Error] Failed to update LastSeenAt for device {device.Id}: {ex.Message}");
+        }
+
+        // --- Sensor Hardware Failure Alert ---
+        // If firmware sends Value="ERROR", it means the sensor hardware failed 2 consecutive reads.
+        if (string.Equals(request.Value, "ERROR", StringComparison.OrdinalIgnoreCase))
+        {
+            var existingSensorAlert = (await _iotRepository.GetIotAlertsAsync(device.Id, null, cancellationToken))
+                .FirstOrDefault(a => a.ComponentKey == request.ComponentKey && a.ResolutionInfo == null);
+
+            if (existingSensorAlert == null)
+            {
+                var sensorAlert = new IotAlert
+                {
+                    Id = Guid.NewGuid(),
+                    DeviceId = device.Id,
+                    ComponentKey = request.ComponentKey,
+                    AlertInfo = JsonSerializer.SerializeToDocument(new
+                    {
+                        severity = "WARNING",
+                        title = "Sensor Hardware Failure",
+                        message = $"Sensor '{request.ComponentKey}' failed to read for 2 consecutive cycles.",
+                        description = $"The sensor has returned no valid data. It may be disconnected, damaged, or malfunctioning.",
+                        solution = "1. Check the sensor wiring.\n2. Verify sensor power supply.\n3. Replace the sensor if the issue persists.",
+                        lastTriggeredAt = DateTime.UtcNow.ToString("o"),
+                        notificationCount = 1,
+                        lastNotificationAt = DateTime.UtcNow.ToString("o"),
+                        isSensorFailureAlert = true
+                    }),
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                await _iotRepository.CreateIotAlertAsync(sensorAlert, cancellationToken);
+                await _publisher.Publish(new decorativeplant_be.Application.Features.IoT.Events.IotAlertTriggeredNotification
+                {
+                    Device = device,
+                    Alert = sensorAlert,
+                    RuleName = "SENSOR MONITOR"
+                }, cancellationToken);
+            }
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        // --- VALIDATE & CONVERT VALUE ---
+        if (!decimal.TryParse(request.Value, out decimal numericValue))
+        {
+            Console.WriteLine($"[Ingest Error] Could not parse sensor value '{request.Value}' to decimal for component '{request.ComponentKey}'");
+            // Still save heartbeat but don't record invalid reading
+            await _unitOfWork.SaveChangesAsync(cancellationToken);
+            return true;
         }
 
         var reading = new SensorReading
@@ -58,12 +111,12 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
             Id = Guid.NewGuid(),
             DeviceId = device.Id,
             ComponentKey = request.ComponentKey,
-            Value = request.Value,
+            Value = numericValue, // Explicitly use the parsed decimal value
             RecordedAt = DateTime.UtcNow
         };
 
         await _iotRepository.AddSensorReadingAsync(reading, cancellationToken);
-        
+
         // --- Update Activity Log ---
         var activityDict = new Dictionary<string, string>();
         if (device.ActivityLog != null)
@@ -75,7 +128,7 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
             }
             catch { }
         }
-        activityDict["last_data_at"] = reading.RecordedAt?.ToString("o") ?? DateTime.UtcNow.ToString("o"); // ISO 8601
+        activityDict["last_data_at"] = DateTime.UtcNow.ToString("o"); 
         device.ActivityLog = JsonSerializer.SerializeToDocument(activityDict);
         await _iotRepository.UpdateIotDeviceAsync(device, cancellationToken);
 
@@ -101,16 +154,12 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
 
         if (!isAutomationEnabled)
         {
-            Console.WriteLine($"[Diagnostic] Automation is DISABLED globally for device {device.Id}. Skipping rules.");
             await _unitOfWork.SaveChangesAsync(cancellationToken);
             return true;
         }
 
         var rules = await _iotRepository.GetAutomationRulesAsync(device.Id, null, cancellationToken);
         var activeRules = rules.Where(r => r.IsActive).ToList();
-
-        // Dictionary to track which actuators are being triggered by which rules
-        // Key: Actuator Key, Value: List of (Rule, ActionType)
         var triggeredActuators = new Dictionary<string, List<(AutomationRule Rule, string ActionType)>>();
 
         foreach (var rule in activeRules)
@@ -122,9 +171,7 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
                 var condRoot = rule.Conditions.RootElement;
                 var logic = "and";
                 if (condRoot.ValueKind == JsonValueKind.Object && condRoot.TryGetProperty("logic", out var logicProp))
-                {
                     logic = logicProp.GetString()?.ToLower() ?? "and";
-                }
 
                 List<JsonElement> rulesList = new();
                 if (condRoot.ValueKind == JsonValueKind.Array) rulesList = condRoot.EnumerateArray().ToList();
@@ -132,17 +179,14 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
 
                 if (rulesList.Count == 0) continue;
 
-                // Simple check for if THIS sensor reading affects this rule
                 var isAffectedByThisSensor = rulesList.Any(c => c.TryGetProperty("component_key", out var k) && k.GetString() == request.ComponentKey);
                 if (!isAffectedByThisSensor) continue;
 
-                // Evaluate conditions
                 bool ruleMatched = (logic == "and");
                 foreach (var condition in rulesList)
                 {
                     if (!condition.TryGetProperty("component_key", out var compKeyProp)) continue;
                     var compKey = compKeyProp.GetString();
-                    
                     if (compKey != request.ComponentKey) continue; 
 
                     if (!condition.TryGetProperty("operator", out var opProp)) continue;
@@ -158,11 +202,10 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
                             if (decimal.TryParse(sVal, out var d)) threshold = d;
                             else if (sVal?.Contains("-") == true)
                             {
-                                // Range check
                                 var parts = sVal.Split("-");
                                 if (parts.Length == 2 && decimal.TryParse(parts[0], out var min) && decimal.TryParse(parts[1], out var max))
                                 {
-                                    bool inRange = request.Value >= min && request.Value <= max;
+                                    bool inRange = numericValue >= min && numericValue <= max;
                                     bool condTrue = op == "between" ? inRange : !inRange;
                                     ruleMatched = (logic == "and") ? (ruleMatched && condTrue) : (ruleMatched || condTrue);
                                     continue;
@@ -173,12 +216,12 @@ public class IngestSensorDataCommandHandler : IRequestHandler<IngestSensorDataCo
 
                     bool triggered = op switch
                     {
-                        ">" => request.Value > threshold,
-                        "<" => request.Value < threshold,
-                        "=" => request.Value == threshold,
-                        "==" => request.Value == threshold,
-                        ">=" => request.Value >= threshold,
-                        "<=" => request.Value <= threshold,
+                        ">" => numericValue > threshold,
+                        "<" => numericValue < threshold,
+                        "=" => numericValue == threshold,
+                        "==" => numericValue == threshold,
+                        ">=" => numericValue >= threshold,
+                        "<=" => numericValue <= threshold,
                         _ => false
                     };
 

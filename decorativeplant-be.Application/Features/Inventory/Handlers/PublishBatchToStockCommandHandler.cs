@@ -48,6 +48,13 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                 throw new BadRequestException($"Only healthy plants can be sent to sales. Current status: {health}");
         }
 
+        if (batch.Specs != null && batch.Specs.RootElement.TryGetProperty("maturity_stage", out var stageProp))
+        {
+            var stage = stageProp.GetString()?.ToLower();
+            if (stage != "stable")
+                throw new BadRequestException($"Only plants in the 'stable' stage can be sent to sales. Current stage: {stage}");
+        }
+
         if (request.Quantity <= 0)
             throw new BadRequestException("Quantity must be greater than zero.");
 
@@ -152,6 +159,21 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
         {
             string taxonomyDesc = batch.Taxonomy?.TaxonomyInfo?.RootElement.TryGetProperty("description", out var descProp) == true ? descProp.GetString() ?? "" : "New stock arrival. Please update details.";
             
+            // Try to inherit price from any other listing of the same taxonomy
+            string inheritedPrice = "0";
+            var otherListingWithPrice = await _context.ProductListings
+                .Include(x => x.Batch)
+                .Where(x => x.Batch!.TaxonomyId == batch.TaxonomyId && x.ProductInfo != null)
+                .OrderByDescending(x => x.CreatedAt)
+                .Select(x => x.ProductInfo)
+                .FirstOrDefaultAsync(ct);
+
+            if (otherListingWithPrice != null && otherListingWithPrice.RootElement.TryGetProperty("price", out var priceProp))
+            {
+                var p = priceProp.GetString();
+                if (!string.IsNullOrEmpty(p) && p != "0") inheritedPrice = p;
+            }
+
             var images = new List<object>();
             if (!string.IsNullOrEmpty(batch.Taxonomy?.ImageUrl))
             {
@@ -176,7 +198,7 @@ public class PublishBatchToStockCommandHandler : IRequestHandler<PublishBatchToS
                     scientific_name = batch.Taxonomy?.ScientificName,
                     slug = $"batch-{batch.BatchCode?.ToLower() ?? batch.Id.ToString().Substring(0, 8)}",
                     description = taxonomyDesc,
-                    price = "0", 
+                    price = request.Price ?? inheritedPrice, 
                     stock_quantity = totalAvailable,
                     min_order = 1,
                     max_order = 10,
