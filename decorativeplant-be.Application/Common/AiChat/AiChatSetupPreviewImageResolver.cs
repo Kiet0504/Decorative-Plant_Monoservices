@@ -17,7 +17,7 @@ public static class AiChatSetupPreviewImageResolver
         ["tropical"] =
             "https://images.unsplash.com/photo-1459411552884-841db9b3cc2a?auto=format&fit=crop&w=900&h=540&q=80",
         ["desk"] =
-            "https://images.unsplash.com/photo-1497215728101-856f4ea77174?auto=format&fit=crop&w=900&h=540&q=80",
+            "https://images.unsplash.com/photo-1531668720450-39cf1563fab9?auto=format&fit=crop&w=900&h=540&q=80",
         ["pet_safe"] =
             "https://images.unsplash.com/photo-1463320726281-696a485928c7?auto=format&fit=crop&w=900&h=540&q=80",
         ["scandinavian"] =
@@ -25,7 +25,7 @@ public static class AiChatSetupPreviewImageResolver
         ["bohemian"] =
             "https://images.unsplash.com/photo-1484101403633-562f891dc89a?auto=format&fit=crop&w=900&h=540&q=80",
         ["biophilic"] =
-            "https://images.unsplash.com/photo-1416879595882-3373a0480a5f?auto=format&fit=crop&w=900&h=540&q=80",
+            "https://images.unsplash.com/photo-1519710164239-da123dc03ef4?auto=format&fit=crop&w=900&h=540&q=80",
         ["japandi"] =
             "https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=900&h=540&q=80",
         ["mid_century"] =
