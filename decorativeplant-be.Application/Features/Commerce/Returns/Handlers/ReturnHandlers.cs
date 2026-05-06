@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using decorativeplant_be.Application.Common.DTOs.Commerce;
 using decorativeplant_be.Application.Common.DTOs.Common;
 using decorativeplant_be.Application.Common.Exceptions;
@@ -19,7 +20,7 @@ public class CreateReturnRequestHandler : IRequestHandler<CreateReturnRequestCom
 {
     // Window measured from DeliveredAt. Beyond this, the buyer must contact support — we don't
     // want indefinite return exposure on stock that may have already been restocked/aged out.
-    private const int ReturnWindowDays = 7;
+    private const int ReturnWindowDays = 3;
 
     private readonly IApplicationDbContext _context;
     public CreateReturnRequestHandler(IApplicationDbContext context) => _context = context;
@@ -93,8 +94,15 @@ public class CreateReturnRequestHandler : IRequestHandler<CreateReturnRequestCom
             r.Reason = root.TryGetProperty("reason", out var reason) ? reason.GetString() : null;
             r.Description = root.TryGetProperty("description", out var desc) ? desc.GetString() : null;
             r.ResolutionNote = root.TryGetProperty("resolution_note", out var note) ? note.GetString() : null;
+            r.ReturnShippingCode = root.TryGetProperty("return_shipping_code", out var rsc) ? rsc.GetString() : null;
             if (root.TryGetProperty("resolved_at", out var ra) && DateTime.TryParse(ra.GetString(), out var dt))
                 r.ResolvedAt = dt;
+            if (root.TryGetProperty("refund_evidence_images", out var rei) && rei.ValueKind == JsonValueKind.Array)
+                r.RefundEvidenceImageUrls = rei.EnumerateArray()
+                    .Select(el => el.GetString())
+                    .Where(s => s != null)
+                    .Select(s => s!)
+                    .ToList();
         }
 
         if (e.Images?.RootElement.ValueKind == JsonValueKind.Array)
@@ -113,10 +121,14 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
 {
     private readonly IApplicationDbContext _context;
     private readonly IStockService _stockService;
-    public UpdateReturnStatusHandler(IApplicationDbContext context, IStockService stockService)
+    private readonly IShippingService _shippingService;
+    private readonly Microsoft.Extensions.Logging.ILogger<UpdateReturnStatusHandler> _logger;
+    public UpdateReturnStatusHandler(IApplicationDbContext context, IStockService stockService, IShippingService shippingService, Microsoft.Extensions.Logging.ILogger<UpdateReturnStatusHandler> logger)
     {
         _context = context;
         _stockService = stockService;
+        _shippingService = shippingService;
+        _logger = logger;
     }
 
     public async Task<ReturnRequestResponse> Handle(UpdateReturnStatusCommand cmd, CancellationToken ct)
@@ -127,6 +139,17 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
 
         var entity = await _context.ReturnRequests.FirstOrDefaultAsync(r => r.Id == cmd.Id, ct)
             ?? throw new NotFoundException($"Return request {cmd.Id} not found.");
+
+        if (status == "refunded")
+        {
+            if (entity.Status != "approved")
+                throw new BadRequestException(
+                    "Cannot mark as refunded: return request must be approved first.");
+
+            if (cmd.Request.EvidenceImageUrls == null || cmd.Request.EvidenceImageUrls.Count == 0)
+                throw new BadRequestException(
+                    "Cannot mark as refunded: at least one bill/transfer proof image is required.");
+        }
 
         var order = entity.OrderId.HasValue
             ? await _context.OrderHeaders.Include(o => o.OrderItems)
@@ -160,6 +183,15 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
                 // On approval: transition order to returned + restore stock + free the voucher.
                 if (status == "approved" && order != null)
                 {
+                    if (cmd.Request.CreateGhnReturnOrder)
+                    {
+                        var ghnReturnCode = await TryCreateReturnShippingOrderAsync(order, _shippingService, _logger);
+                        if (!string.IsNullOrEmpty(ghnReturnCode))
+                        {
+                            info["return_shipping_code"] = ghnReturnCode;
+                        }
+                    }
+
                     OrderStatusMachine.ApplyFromExternalSource(
                         order,
                         OrderStatusMachine.Returned,
@@ -171,6 +203,9 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
 
                     if (order.VoucherId.HasValue)
                         await VoucherUsageHelper.RollbackUsageAsync(_context, order.VoucherId.Value, ct);
+
+                    // Re-persist info because we may have added return_shipping_code
+                    entity.Info = JsonDocument.Parse(JsonSerializer.Serialize(info));
                 }
 
                 // On refunded: book a pending offline refund PaymentTransaction so finance can
@@ -187,6 +222,10 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
                             "Cannot mark this return as refunded: no completed payment found on the order (likely an unpaid COD). " +
                             "Use 'approved' instead, which restores stock without triggering a payout.");
                     }
+
+                    info["refund_evidence_images"] = cmd.Request.EvidenceImageUrls;
+                    info["refunded_by"] = cmd.ActorUserId?.ToString();
+                    entity.Info = JsonDocument.Parse(JsonSerializer.Serialize(info));
 
                     _context.PaymentTransactions.Add(new PaymentTransaction
                     {
@@ -263,6 +302,99 @@ public class UpdateReturnStatusHandler : IRequestHandler<UpdateReturnStatusComma
             if (v == "cod") return "offline";
         }
         return "payos";
+    }
+
+    private static async Task<string?> TryCreateReturnShippingOrderAsync(OrderHeader order, IShippingService shippingService, Microsoft.Extensions.Logging.ILogger logger)
+    {
+        logger.LogInformation("GHN: Starting RETURN shipment creation for Order {OrderCode}", order.OrderCode);
+
+        if (order.DeliveryAddress == null)
+        {
+            logger.LogWarning("GHN: Skipping - DeliveryAddress is null for Order {OrderCode}", order.OrderCode);
+            return null;
+        }
+
+        try
+        {
+            var da = order.DeliveryAddress.RootElement;
+            string GetProp(params string[] keys)
+            {
+                foreach (var k in keys)
+                {
+                    if (!da.TryGetProperty(k, out var p)) continue;
+                    var s = p.ValueKind == JsonValueKind.String ? p.GetString() : (p.ValueKind == JsonValueKind.Number ? p.GetRawText().Trim() : "");
+                    if (!string.IsNullOrEmpty(s)) return s;
+                }
+                return "";
+            }
+            int GetIntProp(int def, params string[] keys)
+            {
+                foreach (var k in keys)
+                {
+                    if (!da.TryGetProperty(k, out var p)) continue;
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var i)) return i;
+                    if (p.ValueKind == JsonValueKind.String && int.TryParse(p.GetString(), out var v)) return v;
+                }
+                return def;
+            }
+
+            // Customer address becomes From
+            var fromName = GetProp("recipientName", "recipient_name");
+            var fromPhone = GetProp("phone");
+            var fromAddress = GetProp("addressLine1", "address_line_1");
+            var fromDistrict = GetIntProp(shippingService.DefaultFromDistrictId, "districtId", "district_id");
+            var fromWard = GetProp("wardCode", "ward_code");
+            if (string.IsNullOrEmpty(fromWard)) fromWard = shippingService.DefaultFromWardCode;
+
+            if (string.IsNullOrEmpty(fromName)) fromName = "Customer Return";
+            if (string.IsNullOrEmpty(fromPhone)) fromPhone = "0900000000";
+
+            var ghnItems = order.OrderItems?.Select(oi => {
+                var name = "Return - Decorative Plant";
+                if (oi.Snapshots != null && oi.Snapshots.RootElement.TryGetProperty("title_snapshot", out var ts))
+                    name = "Return - " + (ts.GetString() ?? "Plant");
+                return new ShippingOrderItem { Name = name, Quantity = oi.Quantity, Weight = 500 };
+            }).ToList() ?? new List<ShippingOrderItem> { new ShippingOrderItem { Name = "Return - Plant", Quantity = 1, Weight = 500 } };
+
+            var clientCode = $"RETURN-{order.OrderCode ?? order.Id.ToString()}";
+
+            var res = await shippingService.CreateOrderAsync(new ShippingOrderRequest {
+                // Shop is To
+                ToName = "Shop Decorative Plant",
+                ToPhone = "0900000000",
+                ToAddress = "Store Address",
+                ToDistrictId = shippingService.DefaultFromDistrictId,
+                ToWardCode = shippingService.DefaultFromWardCode,
+                
+                // Customer is From
+                FromDistrictId = fromDistrict,
+                FromWardCode = fromWard,
+                
+                Weight = Math.Max(ghnItems.Sum(i => i.Quantity) * 500, 500),
+                InsuranceValue = 0, // No insurance for return to save costs
+                ClientOrderCode = clientCode,
+                Items = ghnItems,
+                ServiceTypeId = shippingService.DefaultServiceTypeId,
+                
+                CodAmount = 0, // No COD for return
+                PaymentTypeId = 1, // 1 = Seller pays shipping
+                Note = $"Return for order {order.OrderCode}"
+            });
+
+            if (!res.Success || string.IsNullOrEmpty(res.OrderCode))
+            {
+                logger.LogError("GHN Error for Return Order {OrderCode}: {Message}", order.OrderCode, res.Message);
+                return null;
+            }
+
+            logger.LogInformation("Successfully created GHN return order {TrackingCode} for {OrderCode}", res.OrderCode, order.OrderCode);
+            return res.OrderCode;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "GHN Error creating return for {OrderCode}", order.OrderCode);
+            return null;
+        }
     }
 }
 

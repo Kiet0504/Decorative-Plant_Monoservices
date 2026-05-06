@@ -16,4 +16,14 @@ public class OrderHub : Hub
     {
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"order-{orderId}");
     }
+
+    public async Task SubscribeToReturn(string returnId)
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, $"return-{returnId}");
+    }
+
+    public async Task UnsubscribeFromReturn(string returnId)
+    {
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"return-{returnId}");
+    }
 }

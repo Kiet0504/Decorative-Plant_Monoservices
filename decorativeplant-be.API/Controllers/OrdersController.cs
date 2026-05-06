@@ -635,7 +635,7 @@ public class OrdersController : BaseController
 
         var ok = await shippingService.UpdateOrderInfoAsync(shipping.TrackingCode, request);
         if (!ok) return BadRequest(ApiResponse<object>.ErrorResponse("Failed to update order info on GHN."));
-        return Ok(ApiResponse<object>.SuccessResponse(null, "Order info updated on GHN."));
+        return Ok(ApiResponse<object>.SuccessResponse(new object(), "Order info updated on GHN."));
     }
 
     // ── Support Tickets (stored in OrderHeader.Notes.support_tickets[]) ──
@@ -738,7 +738,7 @@ public class OrdersController : BaseController
         notes["support_tickets"] = result;
         order.Notes = System.Text.Json.JsonDocument.Parse(JsonSerializer.Serialize(notes));
         await context.SaveChangesAsync(CancellationToken.None);
-        return Ok(ApiResponse<object>.SuccessResponse(null, "Ticket resolved."));
+        return Ok(ApiResponse<object>.SuccessResponse(new object(), "Ticket resolved."));
     }
 
     private static List<object?> ReadSupportTickets(OrderHeader order)
@@ -1012,6 +1012,8 @@ public class OrdersController : BaseController
             .FirstOrDefaultAsync(s => s.TrackingCode == payload.OrderCode);
 
         OrderHeader? order = null;
+        ReturnRequest? returnReq = null;
+
         if (shipping?.OrderId != null)
         {
             order = await context.OrderHeaders.Include(o => o.OrderItems)
@@ -1020,9 +1022,23 @@ public class OrdersController : BaseController
 
         if (order == null)
         {
-            // Fallback: JSONB containment query — avoids loading all orders into memory.
+            // Fallback A: Check ReturnRequests (automated return pickup)
+            var returnSearchJson = JsonSerializer.Serialize(new { return_shipping_code = payload.OrderCode });
+            returnReq = await context.ReturnRequests
+                .Include(r => r.Order).ThenInclude(o => o != null ? o.OrderItems : null)
+                .FirstOrDefaultAsync(r => r.Info != null && EF.Functions.JsonContains(r.Info, returnSearchJson));
+
+            if (returnReq != null)
+            {
+                order = returnReq.Order;
+            }
+        }
+
+        if (order == null)
+        {
+            // Fallback B: JSONB containment query for shipments array — avoids loading all orders into memory.
             // Uses PostgreSQL @> operator; fires only when Shipping row is missing (rare).
-            var searchJson = System.Text.Json.JsonSerializer.Serialize(new
+            var searchJson = JsonSerializer.Serialize(new
             {
                 shipments = new[] { new { tracking_code = payload.OrderCode } }
             });
@@ -1032,8 +1048,8 @@ public class OrdersController : BaseController
                 .FirstOrDefaultAsync();
         }
 
-        if (order == null)
-            return NotFound(ApiResponse<object>.ErrorResponse("Order for tracking code not found"));
+        if (order == null && returnReq == null)
+            return NotFound(ApiResponse<object>.ErrorResponse("Order or Return for tracking code not found"));
 
         // 3) Idempotency guards.
         //    (a) Shipping row status already matches → GHN is retrying. Ack without writing.
@@ -1041,20 +1057,48 @@ public class OrdersController : BaseController
         {
             logger.LogInformation("GHN webhook duplicate for tracking {Code} status {Status} — no-op.",
                 payload.OrderCode, payload.Status);
-            return Ok(ApiResponse<object>.SuccessResponse(new { orderId = order.Id, status = order.Status, duplicate = true }));
+            return Ok(ApiResponse<object>.SuccessResponse(new { 
+                orderId = order?.Id, 
+                returnId = returnReq?.Id,
+                status = order?.Status ?? returnReq?.Status, 
+                duplicate = true 
+            }));
         }
 
         if (shipping != null) shipping.Status = payload.Status;
+
+        if (returnReq != null)
+        {
+            var notes = new Dictionary<string, object?>();
+            if (returnReq.Info != null)
+            {
+                foreach (var p in returnReq.Info.RootElement.EnumerateObject())
+                {
+                    notes[p.Name] = p.Value.ValueKind switch
+                    {
+                        JsonValueKind.String => p.Value.GetString(),
+                        JsonValueKind.Number => p.Value.TryGetInt64(out var l) ? l : p.Value.GetDouble(),
+                        JsonValueKind.True => true,
+                        JsonValueKind.False => false,
+                        JsonValueKind.Null => null,
+                        _ => JsonSerializer.Deserialize<object?>(p.Value.GetRawText()),
+                    };
+                }
+            }
+            notes["ghn_status"] = payload.Status;
+            notes["ghn_description"] = payload.Description;
+            returnReq.Info = JsonDocument.Parse(JsonSerializer.Serialize(notes));
+        }
 
         var mapped = MapGhnStatusToOrderStatus(payload.Status);
         if (mapped == null)
         {
             // Unknown/unmapped GHN state — log and persist the shipping row update only.
             logger.LogInformation("GHN webhook: status {Status} has no order-status mapping, keeping order.status={Order}.",
-                payload.Status, order.Status);
+                payload.Status, order?.Status ?? "none");
         }
         //    (b) Mapped status equals current order status → append nothing (no duplicate history entry).
-        else if (!string.Equals(order.Status, mapped, StringComparison.OrdinalIgnoreCase))
+        else if (order != null && !string.Equals(order.Status, mapped, StringComparison.OrdinalIgnoreCase))
         {
             var wasTerminalBefore = decorativeplant_be.Application.Features.Commerce.Orders
                 .OrderStatusMachine.IsTerminal(order.Status);
@@ -1167,17 +1211,37 @@ public class OrdersController : BaseController
         await context.SaveChangesAsync(CancellationToken.None);
 
         // Push real-time update đến các client đang subscribe order này
-        await hubContext.Clients
-            .Group($"order-{order.Id}")
-            .SendAsync("OrderStatusUpdated", new
-            {
-                orderId = order.Id,
-                status = order.Status,
-                source = "ghn",
-                updatedAt = DateTime.UtcNow
-            });
+        if (order != null)
+        {
+            await hubContext.Clients
+                .Group($"order-{order.Id}")
+                .SendAsync("OrderStatusUpdated", new
+                {
+                    orderId = order.Id,
+                    status = order.Status,
+                    source = "ghn",
+                    updatedAt = DateTime.UtcNow
+                });
+        }
 
-        return Ok(ApiResponse<object>.SuccessResponse(new { orderId = order.Id, status = order.Status }));
+        if (returnReq != null)
+        {
+            await hubContext.Clients
+                .Group($"return-{returnReq.Id}")
+                .SendAsync("ReturnStatusUpdated", new
+                {
+                    returnId = returnReq.Id,
+                    orderId = returnReq.OrderId,
+                    ghnStatus = payload.Status,
+                    updatedAt = DateTime.UtcNow
+                });
+        }
+
+        return Ok(ApiResponse<object>.SuccessResponse(new { 
+            orderId = order?.Id, 
+            returnId = returnReq?.Id,
+            status = order?.Status ?? returnReq?.Status 
+        }));
     }
 
     public class GhnWebhookRequest

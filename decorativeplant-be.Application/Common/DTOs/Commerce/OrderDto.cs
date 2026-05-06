@@ -96,6 +96,7 @@ public class OrderResponse
     public string? CustomerNote { get; set; }
     public DateTime? CreatedAt { get; set; }
     public DateTime? ConfirmedAt { get; set; }
+    public DateTime? DeliveredAt { get; set; }
     public Guid? AssignedStaffId { get; set; }
     public string? AssignedStaffName { get; set; }
     public List<string>? EvidenceImageUrls { get; set; }

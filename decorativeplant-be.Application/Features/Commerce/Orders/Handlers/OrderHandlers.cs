@@ -504,7 +504,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         var response = new OrderResponse
         {
             Id = o.Id, OrderCode = o.OrderCode, UserId = o.UserId,
-            Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt,
+            Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt, DeliveredAt = o.DeliveredAt,
             AssignedStaffId = o.AssignedStaffId,
             AssignedStaffName = o.AssignedStaff?.DisplayName
         };
