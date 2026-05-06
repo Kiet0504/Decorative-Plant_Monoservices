@@ -145,11 +145,18 @@ public class GetAutomationSuggestionQueryHandler : IRequestHandler<GetAutomation
 
                         if (metric.Value.TryGetProperty("minAction", out var minAction))
                         {
+                            string targetKey = "";
+                            if (minAction.TryGetProperty("target", out var tProp)) targetKey = tProp.GetString() ?? "";
+                            else if (minAction.TryGetProperty("target_component_key", out var tkProp)) targetKey = tkProp.GetString() ?? "";
+
+                            string actionType = "turn_on";
+                            if (minAction.TryGetProperty("type", out var typeProp)) actionType = typeProp.GetString() ?? "turn_on";
+
                             suggestion.SuggestedAction = new SuggestedActionDto
                             {
-                                TargetComponentKey = minAction.GetProperty("target").GetString(),
-                                ActionType = minAction.GetProperty("type").GetString(),
-                                Value = "true" // Standard for turn_on/off
+                                TargetComponentKey = targetKey,
+                                ActionType = actionType,
+                                Value = "" 
                             };
                         }
                         suggestions.Add(suggestion);
@@ -168,11 +175,18 @@ public class GetAutomationSuggestionQueryHandler : IRequestHandler<GetAutomation
 
                         if (metric.Value.TryGetProperty("maxAction", out var maxAction))
                         {
+                            string targetKey = "";
+                            if (maxAction.TryGetProperty("target", out var tProp)) targetKey = tProp.GetString() ?? "";
+                            else if (maxAction.TryGetProperty("target_component_key", out var tkProp)) targetKey = tkProp.GetString() ?? "";
+
+                            string actionType = "turn_off";
+                            if (maxAction.TryGetProperty("type", out var typeProp)) actionType = typeProp.GetString() ?? "turn_off";
+
                             suggestion.SuggestedAction = new SuggestedActionDto
                             {
-                                TargetComponentKey = maxAction.GetProperty("target").GetString(),
-                                ActionType = maxAction.GetProperty("type").GetString(),
-                                Value = "true"
+                                TargetComponentKey = targetKey,
+                                ActionType = actionType,
+                                Value = ""
                             };
                         }
                         suggestions.Add(suggestion);
