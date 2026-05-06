@@ -141,5 +141,5 @@ public class DeviceCommandRequest
 public class IngestSensorDataRequest
 {
     public string ComponentKey { get; set; } = string.Empty;
-    public decimal Value { get; set; }
+    public string Value { get; set; } = string.Empty;
 }

@@ -18,8 +18,8 @@ public class IotHeartbeatMonitorJob : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<IotHeartbeatMonitorJob> _logger;
-    private const int CheckIntervalMinutes = 1;
-    private const int TimeoutMinutes = 3; // Tăng lên 3 phút để tránh báo động giả do lag mạng
+    private const int CheckIntervalSeconds = 15; // Kiểm tra mỗi 15 giây
+    private const int TimeoutSeconds = 30;       // Quá 30 giây không có data là báo động
 
     public IotHeartbeatMonitorJob(IServiceProvider serviceProvider, ILogger<IotHeartbeatMonitorJob> logger)
     {
@@ -42,7 +42,7 @@ public class IotHeartbeatMonitorJob : BackgroundService
                 _logger.LogError(ex, "Error occurred in IotHeartbeatMonitorJob.");
             }
 
-            await Task.Delay(TimeSpan.FromMinutes(CheckIntervalMinutes), stoppingToken);
+            await Task.Delay(TimeSpan.FromSeconds(CheckIntervalSeconds), stoppingToken);
         }
 
         _logger.LogInformation("IotHeartbeatMonitorJob is stopping.");
@@ -79,11 +79,9 @@ public class IotHeartbeatMonitorJob : BackgroundService
             }
 
             // 1. Check overall device connectivity
-            if (lastSeen == null || (now - lastSeen.Value).TotalMinutes >= TimeoutMinutes)
+            if (lastSeen == null || (now - lastSeen.Value).TotalSeconds >= TimeoutSeconds)
             {
                 await CreateConnectivityAlert(device, lastSeen, context, publisher, unitOfWork, ct);
-                // Khôi phục continue: Nếu cả bộ ESP offline thì chỉ báo 1 lỗi Connectivity thôi cho đỡ spam
-                continue;
             }
 
             // 2. Device is online → check each sensor component individually
@@ -147,6 +145,25 @@ public class IotHeartbeatMonitorJob : BackgroundService
                     }
                 }
             }
+
+            // --- AUTO-DISCOVERY LOGIC ---
+            // Nếu không thấy khai báo components, tự tìm các componentKey đã từng gửi data trong 24h qua
+            if (sensorComponents.Count == 0)
+            {
+                var yesterday = now.AddDays(-1);
+                var activeKeys = await context.SensorReadings
+                    .Where(r => r.DeviceId == device.Id && r.RecordedAt >= yesterday)
+                    .Select(r => r.ComponentKey)
+                    .Distinct()
+                    .ToListAsync(ct);
+
+                foreach (var key in activeKeys)
+                {
+                    // Bỏ qua các key hệ thống
+                    if (key == null || key == "connectivity_status" || key.StartsWith("sensor_silent_")) continue;
+                    sensorComponents.Add((key, key));
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -159,7 +176,7 @@ public class IotHeartbeatMonitorJob : BackgroundService
             try
             {
                 // Get latest reading for this specific component within the timeout window
-                var cutoff = now.AddMinutes(-TimeoutMinutes);
+                var cutoff = now.AddSeconds(-TimeoutSeconds);
                 var recentReadings = await iotRepository.GetSensorMetricsAsync(
                     device.Id, compKey, cutoff, now, ct);
 
@@ -170,7 +187,7 @@ public class IotHeartbeatMonitorJob : BackgroundService
 
                 if (!validReadings.Any())
                 {
-                    // This sensor has been silent for >= TimeoutMinutes while the device is online
+                    // This sensor has been silent for >= TimeoutSeconds while the device is online
                     await CreateSensorSilentAlert(device, compKey, compName, context, publisher, unitOfWork, ct);
                 }
                 else
@@ -207,7 +224,7 @@ public class IotHeartbeatMonitorJob : BackgroundService
             {
                 severity = "WARNING",
                 title = "Sensor Not Responding",
-                message = $"Sensor '{compName}' has not sent data for more than {TimeoutMinutes} minutes.",
+                message = $"Sensor '{compName}' has not sent data for more than {TimeoutSeconds} seconds.",
                 description = $"The device is online but component '{compKey}' is silent. The sensor may be disconnected or damaged.",
                 solution = $"1. Check the wiring for '{compName}'.\n2. Verify the sensor is powered.\n3. Replace the sensor if the issue persists.",
                 lastTriggeredAt = DateTime.UtcNow.ToString("o"),
@@ -274,7 +291,7 @@ public class IotHeartbeatMonitorJob : BackgroundService
                 severity = "CRITICAL",
                 title = "Connectivity Lost",
                 message = "Device is currently offline (Unplugged or No Internet).",
-                description = $"The device has not responded for more than {TimeoutMinutes} minutes. Last activity: {lastSeenStr}.",
+                description = $"The device has not responded for more than {TimeoutSeconds} seconds. Last activity: {lastSeenStr}.",
                 solution = "1. Check the device power supply.\n2. Verify the WiFi connection.\n3. Ensure the device is within range of your router.",
                 lastTriggeredAt = DateTime.UtcNow.ToString("o"),
                 notificationCount = 1,
