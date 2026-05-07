@@ -831,12 +831,14 @@ public class OrdersController : BaseController
 
     private static string? MapGhnStatusToOrderStatus(string ghnStatus) => ghnStatus switch
     {
-        "ready_to_pick" or "picking" or "money_collect_picking"                                                                                  => "processing",
-        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail" or "money_collect_delivering" or "exception"     => "shipping",
-        "delivered"                                                                                                                              => "delivered",
-        "waiting_to_return" or "return" or "return_transporting" or "return_sorting" or "returning" or "return_fail" or "returned"               => "returned",
-        "cancel" or "lost" or "damage"                                                                                                           => "cancelled",
-        _                                                                                                                                         => null,
+        "ready_to_pick" or "picking" or "money_collect_picking"                                                                  => "processing",
+        "picked" or "storing" or "sorting" or "transporting" or "delivering" or "delivery_fail" or "money_collect_delivering" or "exception" => "shipping",
+        "delivered"                                                                                                                           => "delivered",
+        "waiting_to_return" or "return" or "return_transporting" or "return_sorting" or "return_fail"                                        => "returning",
+        "returning"                                                                                                                           => "returning",
+        "returned"                                                                                                                            => "returned",
+        "cancel" or "lost" or "damage"                                                                                                        => "cancelled",
+        _                                                                                                                                      => null,
     };
 
     [HttpPost]
@@ -1120,7 +1122,8 @@ public class OrdersController : BaseController
                     var alreadyPaid = await context.PaymentTransactions
                         .AnyAsync(p => p.OrderId == order.Id
                             && p.Details != null
-                            && EF.Functions.JsonContains(p.Details, "{\"method\":\"cod\",\"status\":\"success\"}"));
+                            && (EF.Functions.JsonContains(p.Details, "{\"method\":\"cod\",\"status\":\"cod_collected\"}")
+                             || EF.Functions.JsonContains(p.Details, "{\"method\":\"cod\",\"status\":\"success\"}")));
                     if (!alreadyPaid)
                     {
                         // Prefer cod_override (= what staff updated on GHN) so the recorded
@@ -1148,14 +1151,37 @@ public class OrdersController : BaseController
                                 method = "cod",
                                 type = "payment",
                                 amount = totalStr,
-                                status = "success",
+                                // cod_collected = customer paid shipper; money still with GHN.
+                                // Staff must confirm receipt after GHN remits → status becomes "success".
+                                status = "cod_collected",
                                 external_id = payload.OrderCode,
                                 collected_at = DateTime.UtcNow
                             })),
                             CreatedAt = DateTime.UtcNow
                         };
                         context.PaymentTransactions.Add(codTx);
-                        logger.LogInformation("GHN webhook: recorded COD settlement for order {OrderId} amount {Amount}.",
+
+                        // Reflect in Notes so the order badge shows "COD Collected" (not "Paid" yet).
+                        var notesDict = new Dictionary<string, object?>();
+                        if (order.Notes != null)
+                        {
+                            foreach (var p in order.Notes.RootElement.EnumerateObject())
+                            {
+                                notesDict[p.Name] = p.Value.ValueKind switch
+                                {
+                                    JsonValueKind.String => p.Value.GetString(),
+                                    JsonValueKind.Number => p.Value.TryGetInt64(out var l) ? l : p.Value.GetDouble(),
+                                    JsonValueKind.True   => true,
+                                    JsonValueKind.False  => false,
+                                    JsonValueKind.Null   => null,
+                                    _                    => JsonSerializer.Deserialize<object?>(p.Value.GetRawText()),
+                                };
+                            }
+                        }
+                        notesDict["payment_status"] = "cod_collected";
+                        order.Notes = JsonDocument.Parse(JsonSerializer.Serialize(notesDict));
+
+                        logger.LogInformation("GHN webhook: recorded COD collected for order {OrderId} amount {Amount}. Awaiting staff remittance confirmation.",
                             order.Id, totalStr);
                     }
                 }

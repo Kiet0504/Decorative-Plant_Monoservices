@@ -96,7 +96,7 @@ public class PaymentsController : BaseController
     }
 
     [HttpPost("{id:guid}/confirm-cod")]
-    [Authorize]
+    [Authorize(Roles = "store_staff,branch_manager,fulfillment_staff,admin")]
     public async Task<IActionResult> ConfirmCodReceived(Guid id)
     {
         var result = await Mediator.Send(new ConfirmCodReceivedCommand { PaymentId = id, StaffId = GetUserId() });

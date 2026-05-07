@@ -819,8 +819,10 @@ public class ConfirmCodReceivedCommandHandler : IRequestHandler<ConfirmCodReceiv
         if (status == "success")
             throw new BadRequestException("This COD payment has already been confirmed as received.");
 
-        if (status != "cod_picked_up")
-            throw new BadRequestException($"Payment must be in 'cod_picked_up' status to confirm receipt. Current status: {status ?? "null"}");
+        // cod_picked_up = offline counter order (customer paid at store)
+        // cod_collected  = GHN delivered + collected cash; money still with GHN pending remittance
+        if (status != "cod_picked_up" && status != "cod_collected")
+            throw new BadRequestException($"Payment must be in 'cod_picked_up' or 'cod_collected' status to confirm receipt. Current status: {status ?? "null"}");
 
         var details = new Dictionary<string, object?>();
         foreach (var prop in root.EnumerateObject())
@@ -894,7 +896,7 @@ public class MarkRefundedCommandHandler : IRequestHandler<MarkRefundedCommand, P
 
         // Only allow refund on payments that have been paid/success
         var refundableStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "paid", "success", "cod_picked_up" };
+            { "paid", "success", "cod_picked_up", "cod_collected" };
 
         if (status == null || !refundableStatuses.Contains(status))
             throw new BadRequestException(

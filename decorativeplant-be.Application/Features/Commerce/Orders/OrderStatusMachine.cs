@@ -18,6 +18,7 @@ public static class OrderStatusMachine
     public const string Delivered  = "delivered";
     public const string Completed  = "completed";
     public const string Cancelled  = "cancelled";
+    public const string Returning  = "returning";  // GHN in-transit back to shop (non-terminal)
     public const string Returned   = "returned";
     public const string Expired    = "expired";
 
@@ -47,6 +48,7 @@ public static class OrderStatusMachine
         [ReadyForPickup]    = 2,
         [PickedUp]          = 4,
         [Cancelled]  = -1,
+        [Returning]  = -1,
         [Returned]   = -1,
         [Expired]    = -1,
     };
