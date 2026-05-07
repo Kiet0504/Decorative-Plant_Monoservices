@@ -328,12 +328,16 @@ public class UpdateProductListingHandler : IRequestHandler<UpdateProductListingC
         if (req.Description != null) productInfo["description"] = req.Description;
         if (req.Price != null) 
         {
-            if (cmd.UserRole != "admin")
+            var currentPrice = productInfo.ContainsKey("price") ? productInfo["price"]?.ToString() : null;
+            if (req.Price != currentPrice)
             {
-                _logger.LogWarning("Non-admin user attempted to update price for product {Id}", entity.Id);
-                throw new ValidationException("Only administrators can update product prices.");
+                if (cmd.UserRole != "admin")
+                {
+                    _logger.LogWarning("Non-admin user attempted to update price for product {Id}", entity.Id);
+                    throw new ValidationException("Only administrators can update product prices.");
+                }
+                productInfo["price"] = req.Price;
             }
-            productInfo["price"] = req.Price;
         }
         if (req.MinOrder.HasValue) productInfo["min_order"] = req.MinOrder.Value;
         if (req.MaxOrder.HasValue) productInfo["max_order"] = req.MaxOrder.Value;

@@ -40,18 +40,49 @@ public class ApproveStockTransferCommandHandler : IRequestHandler<ApproveStockTr
         
         if (request.Approved)
         {
+            var fromBranchId = request.FromBranchId ?? transfer.FromBranchId;
+            if (!fromBranchId.HasValue)
+            {
+                throw new ValidationException("A source branch (FromBranchId) must be specified to approve this transfer.");
+            }
+
+            // 1. Check Physical Stock Availability
+            var stocks = await _context.BatchStocks
+                .Include(bs => bs.Location)
+                .Where(bs => bs.BatchId == transfer.BatchId && bs.Location != null && bs.Location.BranchId == fromBranchId.Value)
+                .ToListAsync(cancellationToken);
+
+            var sourceStock = stocks.FirstOrDefault(s => s.Location?.Type == "Sales" || s.Location?.Type == "Storefront") 
+                              ?? stocks.FirstOrDefault();
+
+            if (sourceStock == null || sourceStock.Quantities == null)
+            {
+                throw new ValidationException("No stock records found at the selected source branch.");
+            }
+
+            var quantities = JsonSerializer.Deserialize<BatchStockQuantities>(sourceStock.Quantities.RootElement.GetRawText());
+            
+            // 2. Calculate Reserved Stock from other pending transfers
+            var otherPendingReserved = await _context.StockTransfers
+                .Where(t => t.BatchId == transfer.BatchId 
+                            && t.FromBranchId == fromBranchId.Value
+                            && t.Id != transfer.Id
+                            && (t.Status == "requested" || t.Status == "pending" || t.Status == "approved" || t.Status == "delivery_staff_assigned"))
+                .SumAsync(t => (int?)t.Quantity, cancellationToken) ?? 0;
+
+            var netAvailable = (quantities?.AvailableQuantity ?? 0) - otherPendingReserved;
+
+            if (netAvailable < transfer.Quantity)
+            {
+                throw new ValidationException($"Insufficient net available stock ({netAvailable}) at source branch. (Physical: {quantities?.AvailableQuantity ?? 0}, Reserved for other transfers: {otherPendingReserved}).");
+            }
+
             // In this workflow, stock is NOT deducted during approval.
-            // It is only deducted when the source branch clicks "Ship".
-            // Here we only ensure the source branch is correctly identified.
             if (request.FromBranchId.HasValue)
             {
                 transfer.FromBranchId = request.FromBranchId.Value;
             }
 
-            if (!transfer.FromBranchId.HasValue)
-            {
-                throw new ValidationException("A source branch (FromBranchId) must be specified to approve this transfer.");
-            }
 
             // Tie revenue to the OrderItem
             if (transfer.LogisticsInfo != null)
@@ -101,5 +132,17 @@ public class ApproveStockTransferCommandHandler : IRequestHandler<ApproveStockTr
         await _context.SaveChangesAsync(cancellationToken);
 
         return InventoryMapper.ToStockTransferDto(transfer);
+    }
+
+    private class BatchStockQuantities
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("quantity")]
+        public int Quantity { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reserved_quantity")]
+        public int ReservedQuantity { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("available_quantity")]
+        public int AvailableQuantity { get; set; }
     }
 }

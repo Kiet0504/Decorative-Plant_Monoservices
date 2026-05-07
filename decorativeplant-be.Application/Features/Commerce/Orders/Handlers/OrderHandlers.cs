@@ -446,12 +446,18 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             await _context.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
-            // Notify branch staff for COD orders (bank_transfer notifications fire
-            // later in the PayOS webhook handler, once payment is actually confirmed).
+            // Notify + workload-assign staff:
+            //   - Confirmed orders (bank_transfer already paid, or BOPIS cash auto-confirm)
+            //   - Pending COD orders — assigned staff is the one who will confirm/fulfill,
+            //     so they need the order on their queue immediately at create time.
+            // bank_transfer pending orders intentionally skip — PayOS webhook fires the
+            // notify after payment is confirmed.
             // Fire-and-log — never block the response on email.
             var user = cmd.UserId != Guid.Empty ? await _context.UserAccounts.FirstOrDefaultAsync(u => u.Id == cmd.UserId, ct) : null;
 
-            foreach (var order in orders.Where(o => o.Status == OrderStatusMachine.Confirmed))
+            foreach (var order in orders.Where(o =>
+                o.Status == OrderStatusMachine.Confirmed
+                || (o.Status == OrderStatusMachine.Pending && IsCodOrder(o))))
             {
                 await OrderCustomerNotificationHelper.TrySendOrderConfirmedEmailAsync(
                     order, user, _emailTemplateService, _logger, ct);
@@ -476,6 +482,13 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         }); // end strategy.ExecuteAsync
     }
 
+    private static bool IsCodOrder(OrderHeader o)
+    {
+        if (o.TypeInfo == null) return false;
+        return o.TypeInfo.RootElement.TryGetProperty("payment_method", out var pm)
+            && string.Equals(pm.GetString(), "cod", StringComparison.OrdinalIgnoreCase);
+    }
+
     internal static string NormalizePaymentMethod(string? raw)
     {
         var v = (raw ?? "").Trim().ToLowerInvariant();
@@ -491,7 +504,7 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
         var response = new OrderResponse
         {
             Id = o.Id, OrderCode = o.OrderCode, UserId = o.UserId,
-            Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt,
+            Status = o.Status ?? "pending", CreatedAt = o.CreatedAt, ConfirmedAt = o.ConfirmedAt, DeliveredAt = o.DeliveredAt,
             AssignedStaffId = o.AssignedStaffId,
             AssignedStaffName = o.AssignedStaff?.DisplayName
         };
@@ -555,6 +568,12 @@ public class CreateOrderHandler : IRequestHandler<CreateOrderCommand, List<Order
             response.PaymentStatus = root.TryGetProperty("payment_status", out var ps) ? ps.GetString() : null;
             response.TrackingCode = root.TryGetProperty("tracking_code", out var tc) ? tc.GetString() : null;
             response.CarrierName = root.TryGetProperty("carrier_name", out var cn2) ? cn2.GetString() : null;
+            if (root.TryGetProperty("cod_override", out var co))
+            {
+                response.CodOverride = co.ValueKind == JsonValueKind.Number
+                    ? co.GetRawText()
+                    : co.GetString();
+            }
             if (root.TryGetProperty("evidence_images", out var imagesElement) && imagesElement.ValueKind == JsonValueKind.Array)
             {
                 response.EvidenceImageUrls = imagesElement.EnumerateArray()
@@ -679,6 +698,24 @@ public class UpdateOrderStatusHandler : IRequestHandler<UpdateOrderStatusCommand
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send offline delivered confirmation email for {OrderCode}", order.OrderCode);
+            }
+        }
+
+        // pending -> confirmed: COD orders skip the create-time notify block (only Confirmed
+        // orders enter it), so workload-assign is triggered here instead. Without this, COD
+        // orders would sit unassigned until OrderAssignmentQueueJob ticks.
+        if (string.Equals(previousStatus, OrderStatusMachine.Pending, StringComparison.OrdinalIgnoreCase)
+            && normalizedStatus == OrderStatusMachine.Confirmed
+            && !order.AssignedStaffId.HasValue)
+        {
+            try
+            {
+                await NewOrderForStaffNotifier.NotifyAsync(
+                    order, _context, _emailService, _logger, _orderAssignment, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Staff notify failed after confirm for Order {OrderCode}", order.OrderCode);
             }
         }
 
