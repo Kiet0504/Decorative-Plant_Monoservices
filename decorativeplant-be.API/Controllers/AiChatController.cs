@@ -137,6 +137,28 @@ public class AiChatController : BaseController
     }
 
     /// <summary>
+    /// Append a message to an existing thread without invoking the LLM.
+    /// Useful for client-generated content like preview images.
+    /// </summary>
+    [HttpPost("chat/message/append")]
+    public async Task<ActionResult<ApiResponse<AiChatAppendMessageResultDto>>> AppendMessage([FromBody] AiChatAppendMessageRequestDto request)
+    {
+        var userId = GetUserId();
+        if (userId == null)
+        {
+            return Unauthorized(ApiResponse<AiChatAppendMessageResultDto>.ErrorResponse("User ID is required.", statusCode: 401));
+        }
+
+        var result = await Mediator.Send(new AppendAiChatMessageCommand
+        {
+            UserId = userId.Value,
+            Request = request ?? new AiChatAppendMessageRequestDto()
+        });
+
+        return Ok(ApiResponse<AiChatAppendMessageResultDto>.SuccessResponse(result, "OK"));
+    }
+
+    /// <summary>
     /// Generate a lightweight preview image for plant setup idea cards.
     /// Returns a curated stock preview per setup style (see <see cref="AiChatSetupPreviewImageResolver"/>), or a deterministic Picsum image when the style is unknown.
     /// </summary>
